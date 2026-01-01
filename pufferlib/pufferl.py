@@ -73,6 +73,8 @@ class PuffeRL:
         atn_space = vecenv.single_action_space
         total_agents = vecenv.num_agents
         self.total_agents = total_agents
+        
+        self.solved_at_step = None
 
         # Experience
         if config['batch_size'] == 'auto' and config['bptt_horizon'] == 'auto':
@@ -488,6 +490,15 @@ class PuffeRL:
 
         device = config['device']
         agent_steps = int(dist_sum(self.global_step, device))
+        
+        # Check if agent has solved the task
+        score_key = 'score'
+        if (self.solved_at_step is None and 
+            score_key in self.stats and 
+            self.stats[score_key] >= 0.99):
+            self.solved_at_step = agent_steps
+            print(f'solved at step {self.solved_at_step}!')
+        
         logs = {
             'SPS': dist_sum(self.sps, device),
             'agent_steps': agent_steps,
@@ -501,6 +512,9 @@ class PuffeRL:
             #**{f'losses/{k}': dist_mean(v, device) for k, v in self.losses.items()},
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
+        
+        if self.solved_at_step is not None:
+            logs['metrics/steps_to_solve'] = self.solved_at_step
 
         if torch.distributed.is_initialized():
            if torch.distributed.get_rank() != 0:
@@ -959,12 +973,16 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
         logs = pufferl.train()
 
         if logs is not None:
+                        
             should_stop_early = False
             if early_stop_fn is not None:
                 should_stop_early = early_stop_fn(logs)
                 # This is hacky, but need to see if threshold looks reasonable
                 if 'early_stop_threshold' in logs:
                     pufferl.logger.log({'environment/early_stop_threshold': logs['early_stop_threshold']}, logs['agent_steps'])
+
+            if pufferl.solved_at_step is not None:
+                should_stop_early = True
 
             if pufferl.global_step > logging_threshold:
                 all_logs.append(logs)
@@ -990,6 +1008,52 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
     model_path = pufferl.close()
     pufferl.logger.close(model_path, early_stop=False)
     return all_logs
+
+def controlled_exp(env_name, args=None):
+    """Run experiments with all combinations of specified parameter values."""
+    import itertools
+    from copy import deepcopy
+
+    args = args or load_config(env_name)
+    if not args["wandb"] and not args["neptune"]:
+        raise pufferlib.APIUsageError("Targeted experiments require either wandb or neptune")
+
+    # Check if controlled_exp config exists
+    if "controlled_exp" not in args:
+        raise pufferlib.APIUsageError("No [controlled_exp.*] sections found in config")
+
+    # Extract parameters from controlled_exp namespace
+    params = {}
+    for section, section_config in args["controlled_exp"].items():
+        if isinstance(section_config, dict):
+            for param, param_config in section_config.items():
+                if isinstance(param_config, dict) and "values" in param_config:
+                    params[f"{section}.{param}"] = param_config["values"]
+
+    if not params:
+        raise pufferlib.APIUsageError("No parameters with 'values' lists found in [controlled_exp.*] sections")
+
+    # Generate all combinations
+    keys = list(params.keys())
+    combinations = list(itertools.product(*[params[k] for k in keys]))
+
+    print(f"Running a total of {len(combinations)} experiments with parameters: {keys}")
+
+    # Run each combination
+    for i, combo in enumerate(combinations, 1):
+        exp_args = deepcopy(args)
+
+        # Set parameters
+        for key, value in zip(keys, combo):
+            section, param = key.split(".")
+            exp_args[section][param] = value
+
+        print(f"\nExperiment {i}/{len(combinations)}: {dict(zip(keys, combo))}")
+
+        # Train
+        train(env_name, args=exp_args)
+
+    print(f"\n✓ Completed all {len(combinations)} experiments")
 
 def eval(env_name, args=None, vecenv=None, policy=None):
     args = args or load_config(env_name)
@@ -1322,26 +1386,29 @@ def process_config(config, parser=None):
     return args
 
 def main():
-    err = 'Usage: puffer [train, eval, sweep, autotune, profile, export] [env_name] [optional args]. --help for more info'
+    err = "Usage: puffer [train, eval, sweep, controlled_exp, autotune, profile, export, sanity] [env_name] [optional args]. --help for more info"
     if len(sys.argv) < 3:
         raise pufferlib.APIUsageError(err)
 
     mode = sys.argv.pop(1)
     env_name = sys.argv.pop(1)
-    if mode == 'train':
+    if mode == "train":
         train(env_name=env_name)
-    elif mode == 'eval':
+    elif mode == "eval":
         eval(env_name=env_name)
-    elif mode == 'sweep':
+    elif mode == "sweep":
         sweep(env_name=env_name)
-    elif mode == 'autotune':
+    elif mode == "controlled_exp":
+        controlled_exp(env_name=env_name)
+    elif mode == "autotune":
         autotune(env_name=env_name)
-    elif mode == 'profile':
+    elif mode == "profile":
         profile(env_name=env_name)
-    elif mode == 'export':
+    elif mode == "export":
         export(env_name=env_name)
     else:
         raise pufferlib.APIUsageError(err)
+
 
 if __name__ == '__main__':
     main()
