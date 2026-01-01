@@ -2,6 +2,16 @@
 #include "rlgl.h"
 #include <unistd.h>
 #include <sys/wait.h>
+#include <stdint.h>
+
+// Defaults if args not provided via command line
+const int MAX_GRID_SIZE = 20;
+const int HORIZON = 128;
+const float SPEED = 1.0;
+const int VISION = 5;
+const int DISCRETIZE = 1;
+const float DIFFICULTY = 0.85;
+const int FPS = 15;
 
 typedef struct {
     int pipefd[2];
@@ -20,7 +30,7 @@ bool OpenVideo(VideoRecorder *recorder, const char *output_filename, int width, 
         return false;
     }
 
-    if (recorder->pid == 0) { // Child process: run ffmpeg
+    if (recorder->pid == 0) {
         close(recorder->pipefd[1]);
         dup2(recorder->pipefd[0], STDIN_FILENO);
         close(recorder->pipefd[0]);
@@ -56,73 +66,60 @@ void CloseVideo(VideoRecorder *recorder) {
 }
 
 int main(int argc, char *argv[]) {
-    // Environment parameters
-    int max_size = 32;
-    int num_agents = 1;
-    int horizon = 128;
-    float speed = 1;
-    int vision = 5;
-    bool discretize = true;
-    int seed = 0;
-
-    // Video recording parameters
-    int max_frames = argc >= 2 ? atoi(argv[1]) : 100;
+    int max_frames = argc >= 2 ? atoi(argv[1]) : HORIZON;
     char* output_path = argc >= 3 ? argv[2] : NULL;
-    int fps = argc >= 4 ? atoi(argv[3]) : 15;
+    int fps = argc >= 4 ? atoi(argv[3]) : FPS;
+    char* actions_path = argc >= 5 ? argv[4] : NULL;
+    int seed = argc >= 6 ? atoi(argv[5]) : 0;  // Maze seed
+    
+    // Environment parameters
+    int max_size = argc >= 7 ? atoi(argv[6]) : MAX_GRID_SIZE;
+    int horizon = argc >= 8 ? atoi(argv[7]) : HORIZON;
+    float speed = argc >= 9 ? atof(argv[8]) : SPEED;
+    int vision = argc >= 10 ? atoi(argv[9]) : VISION;
+    int discretize = argc >= 11 ? atoi(argv[10]) : DISCRETIZE;
+    float difficulty = argc >= 12 ? atof(argv[11]) : DIFFICULTY;
+    
+    int num_agents = 1;
 
     // Initialize environment
     Grid* env = allocate_grid(max_size, num_agents, horizon, vision, speed, discretize);
     
-    //env->width = 32;
-    //env->height = 32; 
-    //env->agents[0].spawn_x = 16;
-    //env->agents[0].spawn_y = 16;
-    //env->agents[0].color = 6;
-    //reset(env, seed);
-    //load_locked_room_preset(env);
-     
     State* levels = calloc(1, sizeof(State));
-    create_maze_level(env, 31, 31, 0.85, seed);
+    // Generate maze with same seed as Python (important so that the actions and observations align)
+    create_maze_level(env, max_size-1, max_size-1, difficulty, seed);
     init_state(levels, max_size, num_agents);
     get_state(env, levels);
     env->num_maps = 1;
     env->levels = levels;
     
-    //generate_locked_room(env);
-    //State state;
-    //init_state(&state, env->max_size, env->num_agents);
-    //get_state(env, &state);
-
-    /*
-    width = height = 31;
-    env->width=31;
-    env->height=31;
-    env->agents[0].spawn_x = 1;
-    env->agents[0].spawn_y = 1;
-    reset(env, seed);
-    generate_growing_tree_maze(env->grid, env->width, env->height, max_size, 0.85, 0);
-    env->grid[(env->height-2)*env->max_size + (env->width - 2)] = GOAL;
-    */
-
-    // Initialize rendering first
-    c_render(env);
+    // Load actions
+    int* loaded_actions = NULL;
+    if (actions_path != NULL) {
+        FILE* f = fopen(actions_path, "rb");
+        if (f != NULL) {
+            loaded_actions = (int*)malloc(horizon * sizeof(int));
+            size_t read_count = fread(loaded_actions, sizeof(int), horizon, f);
+            fclose(f);
+            printf("Loaded %zu actions\n", read_count);
+        }
+    }
     
-    // Setup video recorder
     int render_width = 512, render_height = 512;
+    
+    c_render(env);
     VideoRecorder recorder = {0};
     bool recording = false;
     if (output_path != NULL) {
         recording = OpenVideo(&recorder, output_path, render_width, render_height, fps);
         if (recording) {
             printf("Recording video to: %s\n", output_path);
-        } else {
-            fprintf(stderr, "Failed to start video recording\n");
         }
     }
     
     // Main loop
-    int tick = 0, frame_count = 0;
-    while (!WindowShouldClose() && frame_count < max_frames) {
+    int frame_count = 0;
+    while (!WindowShouldClose() && frame_count < horizon) {
         Agent* agent = &env->agents[0];
         env->actions[0] = ATN_FORWARD;
 
@@ -144,19 +141,14 @@ int main(int argc, char *argv[]) {
                 env->actions[0] = ATN_PASS;
             }
         } else {
-            for (int i = 0; i < num_agents; i++) {
-                env->actions[i] = rand() % 5;
+            if (loaded_actions != NULL) {
+                env->actions[0] = loaded_actions[frame_count];
+            } else {
+                env->actions[0] = rand() % 5;
             }
         }
 
-        //env->actions[0] = actions[t];
-        tick = (tick + 1)%12;
-        bool done = false;
-        if (tick % 1 == 0) {
-            c_step(env);
-            //printf("direction: %f\n", env->agents[0].direction);
-        }
-        
+        c_step(env);
         c_render(env);
         if (recording) WriteFrame(&recorder, render_width, render_height);
         frame_count++;
@@ -164,12 +156,12 @@ int main(int argc, char *argv[]) {
     
     printf("Completed %d frames\n", frame_count);
     
-    // Cleanup
     if (recording) {
         CloseVideo(&recorder);
         printf("Video saved to: %s\n", output_path);
     }
     
+    if (loaded_actions) free(loaded_actions);
     if (levels) {
         if (levels->grid) free(levels->grid);
         if (levels->agents) free(levels->agents);
@@ -177,8 +169,6 @@ int main(int argc, char *argv[]) {
     }
     
     free_allocated_grid(env);
-    //TakeScreenshot("output.png"); 
-    
     CloseWindow();
     return 0;
 }

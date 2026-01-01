@@ -477,7 +477,7 @@ class PuffeRL:
             
             # Add video recording on checkpoint intervals
             if self.epoch % config['video_interval'] == 0 or done_training:
-                self.record_video()
+                self.record_video(policy=self.uncompiled_policy)
                 
         return logs
 
@@ -569,32 +569,94 @@ class PuffeRL:
         os.replace(state_path + '.tmp', state_path)
         return model_path
     
-    def record_video(self):
+    def record_video(self, policy=None, max_episode_len=300):
         """Record a video of the agent and log to wandb/neptune"""
         import subprocess
         import os
         
         video_path = os.path.join("resources/grid", f'video_{self.epoch}.mp4')
         os.makedirs(os.path.dirname(video_path), exist_ok=True)
+        actions_path = "resources/grid/actions.bin"
         
-        # Render
+        # Create a single eval env using the same method as training
+        eval_args = {
+            'package': 'ocean',
+            'env': self.config.get('env_kwargs', {}),
+            'vec': {'backend': 'Serial', 'num_envs': 1}
+        }
+        
+        # Use a fixed seed for reproducibility
+        maze_seed = self.epoch  # Use epoch as seed so each video has a different but reproducible maze
+        
+        eval_env = load_env(self.config['env'], eval_args)
+        eval_env.async_reset(maze_seed)  # Reset with specific seed
+        obs = eval_env.recv()[0]
+        
+        device = self.config['device']
+        state = dict(
+            lstm_h=torch.zeros(eval_env.num_agents, policy.hidden_size, device=device),
+            lstm_c=torch.zeros(eval_env.num_agents, policy.hidden_size, device=device),
+        )
+            
+        actions = []
+        with torch.no_grad():
+            for time_step in range(max_episode_len):
+                obs = torch.as_tensor(obs).to(device)
+                logits, value = policy.forward_eval(obs, state)
+                action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
+                action = action.cpu().numpy().reshape(eval_env.action_space.shape)
+                
+                actions.append(int(action[0]))
+                
+                eval_env.send(action)
+                obs = eval_env.recv()[0]
+
+        # Get environment parameters
+        driver_env = eval_env.driver_env
+        max_size = driver_env.max_size
+        horizon = driver_env.horizon
+        speed = driver_env.speed
+        vision = driver_env.vision
+        discretize = 1 if driver_env.discretize else 0
+        difficulty = driver_env.difficulty
+        
+        eval_env.close()
+            
+        # Save actions
+        np.array(actions, dtype=np.int32).tofile(actions_path)
+        
+        # Render with actions - C will generate same maze with same seed
         result = subprocess.run([
             'xvfb-run', '-s', '-screen 0 1280x720x24',
-            './grid', '300', video_path, '15'
+            './grid', 
+            str(max_episode_len),
+            video_path,
+            '15',
+            actions_path,
+            str(maze_seed),        # Pass the seed
+            str(max_size),
+            str(horizon),
+            str(speed),
+            str(vision),
+            str(discretize),
+            str(difficulty)
         ], timeout=60, cwd=os.getcwd(), 
         stdout=subprocess.DEVNULL, 
         stderr=subprocess.DEVNULL)
+        
+        # Cleanup
+        if os.path.exists(actions_path):
+            os.remove(actions_path)
         
         if not os.path.exists(video_path):
             return
         
         if hasattr(self.logger, "wandb") and self.logger.wandb:
             import wandb
-            
             self.logger.wandb.log({
                 'render/video': wandb.Video(video_path, format="mp4")
             }, step=self.global_step)
-            
+                        
     def print_dashboard(self, clear=False, idx=[0],
             c1='[cyan]', c2='[dim default]', b1='[bright_cyan]', b2='[default]'):
         config = self.config
@@ -1013,6 +1075,8 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
 
             if pufferl.solved_at_step is not None:
                 should_stop_early = True
+                # Log last video at solve time
+                pufferl.record_video(policy=pufferl.uncompiled_policy, max_episode_len=300)
 
             if pufferl.global_step > logging_threshold:
                 all_logs.append(logs)

@@ -9,10 +9,11 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
     int max_size = unpack(kwargs, "max_size");
     float difficulty = unpack(kwargs, "difficulty");
     int size = unpack(kwargs, "size");
+    int seed = unpack(kwargs, "seed");
     State* levels = calloc(num_maps, sizeof(State));
 
     if (max_size <= 5) {
-        PyErr_SetString(PyExc_ValueError, "max_size must be >5");
+        PyErr_SetString(PyExc_ValueError, "max_size must be  > 5");
         return NULL;
     }
 
@@ -21,7 +22,7 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
     env.max_size = max_size;
     init_grid(&env);
 
-    srand(time(NULL));
+    srand(seed);
     int start_seed = rand();
     for (int i = 0; i < num_maps; i++) {
         int sz = size;
@@ -32,8 +33,7 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         if (sz % 2 == 0) {
             sz -= 1;
         }
-
-        //float difficulty = (float)rand()/(float)(RAND_MAX);
+        
         create_maze_level(&env, sz, sz, difficulty, start_seed + i);
         init_state(&levels[i], max_size, 1);
         get_state(&env, &levels[i]);
