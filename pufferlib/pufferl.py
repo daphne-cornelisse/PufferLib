@@ -474,7 +474,11 @@ class PuffeRL:
         if self.epoch % config['checkpoint_interval'] == 0 or done_training:
             self.save_checkpoint()
             self.msg = f'Checkpoint saved at update {self.epoch}'
-
+            
+            # Add video recording on checkpoint intervals
+            if self.epoch % config['video_interval'] == 0 or done_training:
+                self.record_video()
+                
         return logs
 
     def mean_and_log(self):
@@ -564,7 +568,33 @@ class PuffeRL:
         torch.save(state, state_path + '.tmp')
         os.replace(state_path + '.tmp', state_path)
         return model_path
-
+    
+    def record_video(self):
+        """Record a video of the agent and log to wandb/neptune"""
+        import subprocess
+        import os
+        
+        video_path = os.path.join("resources/grid", f'video_{self.epoch}.mp4')
+        os.makedirs(os.path.dirname(video_path), exist_ok=True)
+        
+        # Render
+        result = subprocess.run([
+            'xvfb-run', '-s', '-screen 0 1280x720x24',
+            './grid', '300', video_path, '15'
+        ], timeout=60, cwd=os.getcwd(), 
+        stdout=subprocess.DEVNULL, 
+        stderr=subprocess.DEVNULL)
+        
+        if not os.path.exists(video_path):
+            return
+        
+        if hasattr(self.logger, "wandb") and self.logger.wandb:
+            import wandb
+            
+            self.logger.wandb.log({
+                'render/video': wandb.Video(video_path, format="mp4")
+            }, step=self.global_step)
+            
     def print_dashboard(self, clear=False, idx=[0],
             c1='[cyan]', c2='[dim default]', b1='[bright_cyan]', b2='[default]'):
         config = self.config
