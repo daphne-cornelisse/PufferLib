@@ -17,6 +17,7 @@ class Grid(pufferlib.PufferEnv):
         horizon=128, 
         speed=1.0, 
         discretize=True,
+        difficulty=0.85,
         report_interval=128, 
         buf=None,
         seed=0
@@ -34,12 +35,27 @@ class Grid(pufferlib.PufferEnv):
         self.render_mode = render_mode
         self.num_agents = num_envs
         self.report_interval = report_interval
+        self.difficulty = difficulty
         super().__init__(buf=buf)
         self.float_actions = np.zeros_like(self.actions).astype(np.float32)
-        self.c_state = binding.shared(num_maps=num_maps, max_size=max_size, size=-1)
-        self.c_envs = binding.vec_init(self.observations, self.float_actions,
-            self.rewards, self.terminals, self.truncations, num_envs, seed,
-            state=self.c_state, max_size=max_size, num_maps=num_maps)
+        self.c_state = binding.shared(
+            num_maps=num_maps,
+            max_size=max_size, 
+            difficulty=difficulty,
+            size=-1,
+        )
+        self.c_envs = binding.vec_init(
+            self.observations, 
+            self.float_actions,
+            self.rewards, 
+            self.terminals, 
+            self.truncations, 
+            num_envs, 
+            seed,
+            state=self.c_state, 
+            max_size=max_size, 
+            num_maps=num_maps
+        )
 
     def reset(self, seed=None):
         self.tick = 0
