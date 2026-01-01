@@ -7,11 +7,27 @@ import pufferlib
 from pufferlib.ocean.grid import binding
 
 class Grid(pufferlib.PufferEnv):
-    def __init__(self, render_mode='raylib', vision_range=5,
-            num_envs=4096, num_maps=1000, map_size=-1, max_size=9,
-            report_interval=128, buf=None, seed=0):
-        assert map_size <= max_size
-        self.obs_size = 2*vision_range + 1
+    def __init__(
+        self,
+        render_mode='raylib', 
+        vision=5,
+        num_envs=1024, 
+        num_maps=8192, 
+        max_size=20,
+        horizon=128, 
+        speed=1.0, 
+        discretize=True,
+        report_interval=128, 
+        buf=None,
+        seed=0
+    ):
+        self.max_size = max_size
+        self.vision = vision
+        self.horizon = horizon
+        self.speed = speed
+        self.discretize = discretize
+        
+        self.obs_size = 2*vision + 1
         self.single_observation_space = gymnasium.spaces.Box(low=0, high=255,
             shape=(self.obs_size*self.obs_size,), dtype=np.uint8)
         self.single_action_space = gymnasium.spaces.Discrete(5)
@@ -20,11 +36,10 @@ class Grid(pufferlib.PufferEnv):
         self.report_interval = report_interval
         super().__init__(buf=buf)
         self.float_actions = np.zeros_like(self.actions).astype(np.float32)
-        self.c_state = binding.shared(num_maps=num_maps, max_size=max_size, size=map_size)
+        self.c_state = binding.shared(num_maps=num_maps, max_size=max_size, size=-1)
         self.c_envs = binding.vec_init(self.observations, self.float_actions,
             self.rewards, self.terminals, self.truncations, num_envs, seed,
             state=self.c_state, max_size=max_size, num_maps=num_maps)
-        pass
 
     def reset(self, seed=None):
         self.tick = 0
@@ -48,10 +63,9 @@ class Grid(pufferlib.PufferEnv):
 
     def close(self):
         pass
-        #binding.vec_close(self.c_envs)
 
 def test_performance(timeout=10, atn_cache=1024):
-    env = CGrid(num_envs=1000)
+    env = Grid(num_envs=1000)
     env.reset()
     tick = 0
 
@@ -64,4 +78,4 @@ def test_performance(timeout=10, atn_cache=1024):
         env.step(atn)
         tick += 1
 
-    print(f'SPS: %f', env.num_envs * tick / (time.time() - start))
+    print(f'SPS: {env.num_envs * tick / (time.time() - start)}')
