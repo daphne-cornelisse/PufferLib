@@ -20,7 +20,7 @@ class Grid(pufferlib.PufferEnv):
         difficulty=0.85,
         report_interval=128, 
         buf=None,
-        seed=0
+        seed=0,
     ):
         self.max_size = max_size
         self.vision = vision
@@ -43,6 +43,7 @@ class Grid(pufferlib.PufferEnv):
             max_size=max_size, 
             difficulty=difficulty,
             size=-1,
+            seed=seed,
         )
         self.c_envs = binding.vec_init(
             self.observations, 
