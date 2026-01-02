@@ -13,6 +13,7 @@ class Grid(pufferlib.PufferEnv):
         vision=5,
         num_envs=1024, 
         num_maps=8192, 
+        size=-1,
         max_size=20,
         horizon=128, 
         speed=1.0, 
@@ -27,10 +28,11 @@ class Grid(pufferlib.PufferEnv):
         self.horizon = horizon
         self.speed = speed
         self.discretize = discretize
-        
+        self.size = size    
         self.obs_size = 2*vision + 1
-        self.single_observation_space = gymnasium.spaces.Box(low=0, high=255,
-            shape=(self.obs_size*self.obs_size,), dtype=np.uint8)
+        self.single_observation_space = gymnasium.spaces.Box(
+            low=0, high=255, shape=(self.obs_size*self.obs_size,), dtype=np.uint8
+        )
         self.single_action_space = gymnasium.spaces.Discrete(5)
         self.render_mode = render_mode
         self.num_agents = num_envs
@@ -38,13 +40,15 @@ class Grid(pufferlib.PufferEnv):
         self.difficulty = difficulty
         super().__init__(buf=buf)
         self.float_actions = np.zeros_like(self.actions).astype(np.float32)
+        
         self.c_state = binding.shared(
             num_maps=num_maps,
-            max_size=max_size, 
             difficulty=difficulty,
-            size=-1,
+            max_size=max_size, 
+            size=size,
             seed=seed,
         )
+        
         self.c_envs = binding.vec_init(
             self.observations, 
             self.float_actions,
@@ -57,6 +61,8 @@ class Grid(pufferlib.PufferEnv):
             max_size=max_size, 
             num_maps=num_maps
         )
+        
+        print(f"num_maps: {num_maps}, size: {size}, max_size: {max_size}")
 
     def reset(self, seed=None):
         self.tick = 0

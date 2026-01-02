@@ -98,16 +98,22 @@ int main(int argc, char *argv[]) {
     get_state(env, levels);
     env->num_maps = 1;
     env->levels = levels;
-    
+
     // Load actions
     int* loaded_actions = NULL;
     if (actions_path != NULL) {
         FILE* f = fopen(actions_path, "rb");
         if (f != NULL) {
+            // Get file size to determine the effective horizon
+            fseek(f, 0, SEEK_END);
+            long file_size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            
+            horizon = file_size / sizeof(int);
             loaded_actions = (int*)malloc(horizon * sizeof(int));
-            size_t read_count = fread(loaded_actions, sizeof(int), horizon, f);
+            fread(loaded_actions, sizeof(int), horizon, f);
             fclose(f);
-            printf("Loaded %zu actions\n", read_count);
+            printf("Loaded %d actions\n", horizon);
         }
     }
     
@@ -158,6 +164,11 @@ int main(int argc, char *argv[]) {
         c_render(env);
         if (recording) WriteFrame(&recorder, render_width, render_height);
         frame_count++;
+
+        // Break if goal reached or effective horizon exceeded
+        if (env->terminals[0] || frame_count >= env->horizon) {
+            break;
+        }
     }
     
     printf("Completed %d frames\n", frame_count);
