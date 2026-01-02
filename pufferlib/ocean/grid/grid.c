@@ -12,6 +12,7 @@ const int VISION = 5;
 const int DISCRETIZE = 1;
 const float DIFFICULTY = 0.85;
 const int FPS = 15;
+const int SEED = 0;
 
 typedef struct {
     int pipefd[2];
@@ -66,19 +67,19 @@ void CloseVideo(VideoRecorder *recorder) {
 }
 
 int main(int argc, char *argv[]) {
-    int max_frames = argc >= 2 ? atoi(argv[1]) : HORIZON;
+    int horizon = argc >= 2 ? atoi(argv[1]) : HORIZON;
     char* output_path = argc >= 3 ? argv[2] : NULL;
     int fps = argc >= 4 ? atoi(argv[3]) : FPS;
     char* actions_path = argc >= 5 ? argv[4] : NULL;
-    int seed = argc >= 6 ? atoi(argv[5]) : 0;  // Maze seed
     
     // Environment parameters
-    int max_size = argc >= 7 ? atoi(argv[6]) : MAX_GRID_SIZE;
-    int horizon = argc >= 8 ? atoi(argv[7]) : HORIZON;
+    int seed = argc >= 6 ? atoi(argv[5]) : SEED;
+    int max_size = argc >= 7 ? atoi(argv[6]) : MAX_GRID_SIZE-1;
+    int size = argc >= 8 ? atoi(argv[7]) : MAX_GRID_SIZE-1;
     float speed = argc >= 9 ? atof(argv[8]) : SPEED;
     int vision = argc >= 10 ? atoi(argv[9]) : VISION;
     int discretize = argc >= 11 ? atoi(argv[10]) : DISCRETIZE;
-    float difficulty = argc >= 12 ? atof(argv[11]) : DIFFICULTY;
+    float difficulty = argc >= 12 ? atof(argv[11]) : DIFFICULTY; 
     
     int num_agents = 1;
 
@@ -86,8 +87,13 @@ int main(int argc, char *argv[]) {
     Grid* env = allocate_grid(max_size, num_agents, horizon, vision, speed, discretize);
     
     State* levels = calloc(1, sizeof(State));
+    
+    if (size % 2 == 0) {
+        size -= 1;
+    }
+    
     // Generate maze with same seed as Python (important so that the actions and observations align)
-    create_maze_level(env, max_size-1, max_size-1, difficulty, seed);
+    create_maze_level(env, size, size, difficulty, seed);
     init_state(levels, max_size, num_agents);
     get_state(env, levels);
     env->num_maps = 1;

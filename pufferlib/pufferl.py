@@ -55,7 +55,7 @@ from torch.utils.cpp_extension import (
 ADVANTAGE_CUDA = bool(CUDA_HOME or ROCM_HOME)
 
 class PuffeRL:
-    def __init__(self, config, vecenv, policy, logger=None):
+    def __init__(self, config, full_config, vecenv, policy, logger=None):
         # Backend perf optimization
         torch.set_float32_matmul_precision('high')
         torch.backends.cudnn.deterministic = config['torch_deterministic']
@@ -68,6 +68,7 @@ class PuffeRL:
         #torch.manual_seed(seed)
 
         # Vecenv info
+        self.full_config = full_config
         vecenv.async_reset(seed)
         obs_space = vecenv.single_observation_space
         atn_space = vecenv.single_action_space
@@ -569,7 +570,7 @@ class PuffeRL:
         os.replace(state_path + '.tmp', state_path)
         return model_path
     
-    def record_video(self, policy=None, max_episode_len=300):
+    def record_video(self, policy=None):
         """Record a video of the agent and log to wandb/neptune"""
         import subprocess
         import os
@@ -578,18 +579,23 @@ class PuffeRL:
         os.makedirs(os.path.dirname(video_path), exist_ok=True)
         actions_path = "resources/grid/actions.bin"
         
-        # Create a single eval env using the same method as training
-        eval_args = {
-            'package': 'ocean',
-            'env': self.config.get('env_kwargs', {}),
-            'vec': {'backend': 'Serial', 'num_envs': 1}
-        }
+        # Create eval env with fixed seed
+        maze_seed = self.epoch
         
-        # Use a fixed seed for reproducibility
-        maze_seed = self.epoch  # Use epoch as seed so each video has a different but reproducible maze
+        # Create identical eval env
+        eval_env = load_env(self.config['env'], self.full_config)
+        eval_env.async_reset(maze_seed)
         
-        eval_env = load_env(self.config['env'], eval_args)
-        eval_env.async_reset(maze_seed)  # Reset with specific seed
+        # Get environment parameters
+        driver_env = eval_env.driver_env
+        max_size = driver_env.max_size
+        size = driver_env.size
+        horizon = driver_env.horizon
+        speed = driver_env.speed
+        vision = driver_env.vision
+        discretize = 1 if driver_env.discretize else 0
+        difficulty = driver_env.difficulty
+        
         obs = eval_env.recv()[0]
         
         device = self.config['device']
@@ -600,7 +606,7 @@ class PuffeRL:
             
         actions = []
         with torch.no_grad():
-            for time_step in range(max_episode_len):
+            for time_step in range(horizon):
                 obs = torch.as_tensor(obs).to(device)
                 logits, value = policy.forward_eval(obs, state)
                 action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
@@ -610,15 +616,6 @@ class PuffeRL:
                 
                 eval_env.send(action)
                 obs = eval_env.recv()[0]
-
-        # Get environment parameters
-        driver_env = eval_env.driver_env
-        max_size = driver_env.max_size
-        horizon = driver_env.horizon
-        speed = driver_env.speed
-        vision = driver_env.vision
-        discretize = 1 if driver_env.discretize else 0
-        difficulty = driver_env.difficulty
         
         eval_env.close()
             
@@ -626,36 +623,42 @@ class PuffeRL:
         np.array(actions, dtype=np.int32).tofile(actions_path)
         
         # Render with actions - C will generate same maze with same seed
-        result = subprocess.run([
+        cmd = [
             'xvfb-run', '-s', '-screen 0 1280x720x24',
             './grid', 
-            str(max_episode_len),
+            str(horizon),
             video_path,
             '15',
             actions_path,
-            str(maze_seed),        # Pass the seed
+            str(maze_seed), 
             str(max_size),
-            str(horizon),
+            str(size),
             str(speed),
             str(vision),
             str(discretize),
             str(difficulty)
-        ], timeout=60, cwd=os.getcwd(), 
-        stdout=subprocess.DEVNULL, 
-        stderr=subprocess.DEVNULL)
-        
-        # Cleanup
-        if os.path.exists(actions_path):
-            os.remove(actions_path)
-        
-        if not os.path.exists(video_path):
-            return
+        ]
+
+        result = subprocess.run(
+            cmd, timeout=60, cwd=os.getcwd(), capture_output=True, text=True
+        )
+        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+            print(f'Video saved to {video_path}')
+        else:
+            print(f'Warning: Video generation may have failed (file not found or empty)')
         
         if hasattr(self.logger, "wandb") and self.logger.wandb:
             import wandb
             self.logger.wandb.log({
                 'render/video': wandb.Video(video_path, format="mp4")
             }, step=self.global_step)
+            
+        # Cleanup
+        if os.path.exists(actions_path):
+            os.remove(actions_path)
+        
+        if not os.path.exists(video_path):
+            return
                         
     def print_dashboard(self, clear=False, idx=[0],
             c1='[cyan]', c2='[dim default]', b1='[bright_cyan]', b2='[default]'):
@@ -1026,7 +1029,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
         print(f"rank: {local_rank}, MASTER_ADDR={master_addr}, MASTER_PORT={master_port}")
         torch.cuda.set_device(local_rank)
         os.environ["CUDA_VISIBLE_DEVICES"] = str(local_rank)
-
+        
     vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv, env_name)
 
@@ -1050,7 +1053,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
         logger = WandbLogger(args)
 
     train_config = { **args['train'], 'env': env_name }
-    pufferl = PuffeRL(train_config, vecenv, policy, logger)
+    pufferl = PuffeRL(train_config, args, vecenv, policy, logger)
 
     # Sweep needs data for early stopped runs, so send data when steps > 100M
     logging_threshold = min(0.20*train_config['total_timesteps'], 100_000_000)
@@ -1076,7 +1079,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
             if pufferl.solved_at_step is not None:
                 should_stop_early = True
                 # Log last video at solve time
-                pufferl.record_video(policy=pufferl.uncompiled_policy, max_episode_len=300)
+                pufferl.record_video(policy=pufferl.uncompiled_policy)
 
             if pufferl.global_step > logging_threshold:
                 all_logs.append(logs)
@@ -1290,7 +1293,8 @@ def profile(args=None, env_name=None, vecenv=None, policy=None):
     policy = policy or load_policy(args, vecenv)
 
     train_config = dict(**args['train'], env=args['env_name'], tag=args['tag'])
-    pufferl = PuffeRL(train_config, vecenv, policy, neptune=args['neptune'], wandb=args['wandb'])
+
+    pufferl = PuffeRL(train_config, args, vecenv, policy, neptune=args['neptune'], wandb=args['wandb'])
 
     import torchvision.models as models
     from torch.profiler import profile, record_function, ProfilerActivity

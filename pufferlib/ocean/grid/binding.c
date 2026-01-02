@@ -29,7 +29,8 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         if (size == -1) {
             sz = 5 + (rand() % (max_size-5));
         }
-
+        
+        // Ensure odd size
         if (sz % 2 == 0) {
             sz -= 1;
         }
