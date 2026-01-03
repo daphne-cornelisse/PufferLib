@@ -500,7 +500,7 @@ class PuffeRL:
         score_key = 'score'
         if (self.solved_at_step is None and 
             score_key in self.stats and 
-            self.stats[score_key] >= 0.99):
+            self.stats[score_key] >= 0.9999):
             self.solved_at_step = agent_steps
             print(f'solved at step {self.solved_at_step}!')
         
@@ -520,6 +520,7 @@ class PuffeRL:
         
         if self.solved_at_step is not None:
             logs['metrics/steps_to_solve'] = self.solved_at_step
+            logs['metrics/time_to_solve'] = time.time() - self.start_time
 
         if torch.distributed.is_initialized():
            if torch.distributed.get_rank() != 0:
@@ -650,7 +651,7 @@ class PuffeRL:
         if hasattr(self.logger, "wandb") and self.logger.wandb:
             import wandb
             self.logger.wandb.log({
-                'render/video': wandb.Video(video_path, format="mp4")
+                'metrics/render': wandb.Video(video_path, format="mp4")
             }, step=self.global_step)
             
         # Cleanup

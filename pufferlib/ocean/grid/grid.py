@@ -43,10 +43,10 @@ class Grid(pufferlib.PufferEnv):
         
         self.c_state = binding.shared(
             num_maps=num_maps,
-            difficulty=difficulty,
             max_size=max_size, 
             size=size,
             seed=seed,
+            difficulty=difficulty,
         )
         
         self.c_envs = binding.vec_init(
@@ -61,8 +61,6 @@ class Grid(pufferlib.PufferEnv):
             max_size=max_size, 
             num_maps=num_maps
         )
-        
-        print(f"num_maps: {num_maps}, size: {size}, max_size: {max_size}")
 
     def reset(self, seed=None):
         self.tick = 0
