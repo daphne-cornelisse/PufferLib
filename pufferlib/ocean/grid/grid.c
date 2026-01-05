@@ -88,12 +88,17 @@ int main(int argc, char *argv[]) {
     
     State* levels = calloc(1, sizeof(State));
     
+    if (size == -1) {
+        size = 5 + (rand() % (max_size-5));
+    }
     if (size % 2 == 0) {
         size -= 1;
     }
     
     // Generate maze with same seed as Python (important so that the actions and observations align)
-    create_maze_level(env, size, size, difficulty, seed);
+    srand(seed);
+    int start_seed = rand();
+    create_maze_level(env, size, size, difficulty, start_seed);
     init_state(levels, max_size, num_agents);
     get_state(env, levels);
     env->num_maps = 1;

@@ -38,8 +38,8 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         create_maze_level(&env, sz, sz, difficulty, start_seed + i);
         init_state(&levels[i], max_size, 1);
         get_state(&env, &levels[i]);
-        printf("Generated maze %d/%d of size %dx%d\n", i+1, num_maps, sz, sz);
-        printf("Seed: %d\n", start_seed + i);
+        // printf("Generated maze %d/%d of size %dx%d\n", i+1, num_maps, sz, sz);
+        // printf("Seed: %d\n", start_seed + i);
     }
 
     return PyLong_FromVoidPtr(levels);

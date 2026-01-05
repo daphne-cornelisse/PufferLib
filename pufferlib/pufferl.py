@@ -213,6 +213,7 @@ class PuffeRL:
         self.stats = defaultdict(list)
         self.last_stats = defaultdict(list)
         self.losses = {}
+        self.explore_stats = {'entropy': [], 'advantages': []}
 
         # Dashboard
         self.model_size = sum(p.numel() for p in policy.parameters() if p.requires_grad)
@@ -388,6 +389,7 @@ class PuffeRL:
             )
 
             logits, newvalue = self.policy(mb_obs, state)
+            # TODO: Write out in math
             actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(logits, action=mb_actions)
 
             profile('train_misc', epoch)
@@ -422,14 +424,18 @@ class PuffeRL:
             v_loss_clipped = (v_clipped - mb_returns) ** 2
             v_loss = 0.5*torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
-            entropy_loss = entropy.mean()
+            entropy_loss = entropy.mean() #std()
 
             loss = pg_loss + config['vf_coef']*v_loss - config['ent_coef']*entropy_loss
             self.amp_context.__enter__() # TODO: AMP needs some debugging
 
             # This breaks vloss clipping?
             self.values[idx] = newvalue.detach().float()
-
+            
+            # Relevant stats for exploration research
+            self.explore_stats['entropy'].append(entropy.tolist())
+            self.explore_stats['advantages'].append(mb_advantages.tolist())
+            
             # Logging
             profile('train_misc', epoch)
             losses['policy_loss'] += pg_loss.item() / self.total_minibatches
@@ -466,6 +472,7 @@ class PuffeRL:
         if done_training or self.global_step == 0 or time.time() > self.last_log_time + 0.25:
             logs = self.mean_and_log()
             self.losses = losses
+            self.explore_stats = {'entropy': [], 'advantages': []}
             self.print_dashboard()
             self.stats = defaultdict(list)
             self.last_log_time = time.time()
@@ -477,12 +484,13 @@ class PuffeRL:
             self.msg = f'Checkpoint saved at update {self.epoch}'
             
             # Add video recording on checkpoint intervals
-            if self.epoch % config['video_interval'] == 0 or done_training:
-                self.record_video(policy=self.uncompiled_policy)
+            #if self.epoch % config['video_interval'] == 0 or done_training:
+                #self.record_video(policy=self.uncompiled_policy)
                 
         return logs
 
     def mean_and_log(self):
+        import wandb
         config = self.config
         for k in list(self.stats.keys()):
             v = self.stats[k]
@@ -500,7 +508,7 @@ class PuffeRL:
         score_key = 'score'
         if (self.solved_at_step is None and 
             score_key in self.stats and 
-            self.stats[score_key] >= 0.9999):
+            self.stats[score_key] >= 0.99):
             self.solved_at_step = agent_steps
             print(f'solved at step {self.solved_at_step}!')
         
@@ -517,6 +525,13 @@ class PuffeRL:
             #**{f'losses/{k}': dist_mean(v, device) for k, v in self.losses.items()},
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
+
+        logs['metrics/entropy'] = wandb.Histogram(self.explore_stats['entropy'])
+        logs['metrics/entropy_mean'] = np.mean(self.explore_stats['entropy'])
+        logs['metrics/entropy_std'] = np.std(self.explore_stats['entropy'])
+        logs['metrics/advantages'] = wandb.Histogram(self.explore_stats['advantages'])
+        logs['metrics/advantages_mean'] = np.mean(self.explore_stats['advantages'])
+        logs['metrics/advantages_std'] = np.std(self.explore_stats['advantages'])
         
         if self.solved_at_step is not None:
             logs['metrics/steps_to_solve'] = self.solved_at_step
@@ -580,12 +595,9 @@ class PuffeRL:
         os.makedirs(os.path.dirname(video_path), exist_ok=True)
         actions_path = "resources/grid/actions.bin"
         
-        # Create eval env with fixed seed
-        maze_seed = self.epoch
-        
         # Create identical eval env
         eval_env = load_env(self.config['env'], self.full_config)
-        eval_env.async_reset(maze_seed)
+        eval_env.async_reset(0)
         
         # Get environment parameters
         driver_env = eval_env.driver_env
@@ -631,7 +643,7 @@ class PuffeRL:
             video_path,
             '15',
             actions_path,
-            str(maze_seed), 
+            str(0), 
             str(max_size),
             str(size),
             str(speed),
@@ -982,8 +994,10 @@ class NeptuneLogger:
 class WandbLogger:
     def __init__(self, args, load_id=None, resume='allow'):
         import wandb
+        run_name = args.get('wandb_run_name', None)
         wandb.init(
             id=load_id or wandb.util.generate_id(),
+            name=run_name,
             project=args['wandb_project'],
             group=args['wandb_group'],
             allow_val_change=True,
@@ -1080,7 +1094,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
             if pufferl.solved_at_step is not None:
                 should_stop_early = True
                 # Log last video at solve time
-                pufferl.record_video(policy=pufferl.uncompiled_policy)
+                #pufferl.record_video(policy=pufferl.uncompiled_policy)
 
             if pufferl.global_step > logging_threshold:
                 all_logs.append(logs)
@@ -1146,6 +1160,10 @@ def controlled_exp(env_name, args=None):
             section, param = key.split(".")
             exp_args[section][param] = value
 
+        run_name_parts = [f"{key.split('.')[-1]}={value}" for key, value in zip(keys, combo)]
+        exp_name = "_".join(run_name_parts)
+        exp_args['wandb_run_name'] = f"ent_mean_{exp_name}"
+
         print(f"\nExperiment {i}/{len(combinations)}: {dict(zip(keys, combo))}")
 
         # Train
@@ -1154,7 +1172,7 @@ def controlled_exp(env_name, args=None):
     print(f"\n✓ Completed all {len(combinations)} experiments")
 
 def eval(env_name, args=None, vecenv=None, policy=None):
-    args = args or load_config(env_name)
+    args = args or load_config(env_named)
     backend = args['vec']['backend']
     if backend != 'PufferEnv':
         backend = 'Serial'
