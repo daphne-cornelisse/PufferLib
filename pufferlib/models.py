@@ -8,6 +8,33 @@ import pufferlib.emulation
 import pufferlib.pytorch
 import pufferlib.spaces
 
+class TinyWorldModel(nn.Module):
+    '''A simple feedforward model to predict next observations given
+    current observations and actions.'''
+    def __init__(self, observation_size, action_size, hidden_size=128):
+        super().__init__()
+        
+        self.input_size = observation_size + action_size
+        self.num_actions = action_size
+        
+        self.model = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(self.input_size, hidden_size)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, observation_size)),
+        )
+
+    def forward(self, observations, actions):
+        '''
+        Predict next observations given current observations and actions.
+        '''
+        
+        actions_onehot = torch.nn.functional.one_hot(actions.long(), num_classes=self.num_actions)
+        
+        x = torch.cat([observations.float(), actions_onehot.float()], dim=-1)
+    
+        return self.model(x)
 
 class Default(nn.Module):
     '''Default PyTorch policy. Flattens obs and applies a linear layer.

@@ -15,6 +15,7 @@ import random
 import shutil
 import argparse
 import importlib
+import matplotlib
 import configparser
 from threading import Thread
 from collections import defaultdict, deque
@@ -31,6 +32,7 @@ import pufferlib
 import pufferlib.sweep
 import pufferlib.vector
 import pufferlib.pytorch
+import pufferlib.models
 try:
     from pufferlib import _C
 except ImportError:
@@ -54,8 +56,88 @@ from torch.utils.cpp_extension import (
 # and can find CUDA or HIP in the system
 ADVANTAGE_CUDA = bool(CUDA_HOME or ROCM_HOME)
 
+def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, step, vision=5):
+    
+    import wandb
+    import matplotlib.pyplot as plt
+    from io import BytesIO
+    from PIL import Image
+    
+    # Compute observation size 
+    obs_size = 2 * vision + 1
+       
+    mb_obs_nxt = mb_obs_nxt.detach().cpu().numpy()
+    mb_obs_next_pred = mb_obs_next_pred.detach().cpu().numpy()
+    prediction_error = prediction_error.detach().cpu().numpy()
+    
+    wandb_images = []
+    
+    batch_idx = 0
+    time_idx = 0
+    
+    # Get flattened observations
+    actual_grid = mb_obs_nxt[batch_idx, time_idx].reshape(obs_size, obs_size)
+    predicted_grid = mb_obs_next_pred[batch_idx, time_idx].reshape(obs_size, obs_size)
+    error = prediction_error[batch_idx, time_idx]
+
+    
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5), dpi=150)
+    
+    # Actual observation
+    im0 = axes[0].imshow(actual_grid, vmin=0, vmax=6, interpolation='nearest', cmap='cividis')
+    axes[0].set_title(f'Actual next observation ({obs_size}x{obs_size})')
+    axes[0].set_xlabel('X')
+    axes[0].set_ylabel('Y')
+    axes[0].grid(True, alpha=0.3)
+    plt.colorbar(im0, ax=axes[0], label='Tile Type')
+    
+    # Predicted observation
+    im1 = axes[1].imshow(predicted_grid, vmin=0, vmax=6, interpolation='nearest', cmap='cividis')
+    axes[1].set_title(f'Pred next observation ({obs_size}x{obs_size})')
+    axes[1].set_xlabel('X')
+    axes[1].set_ylabel('Y')
+    axes[1].grid(True, alpha=0.3)
+    plt.colorbar(im1, ax=axes[1], label='Tile Type')
+    
+    # Absolute difference
+    diff_grid = np.abs(actual_grid - predicted_grid)
+    im2 = axes[2].imshow(diff_grid, cmap='Reds', interpolation='nearest', vmin=0, vmax=2)
+    axes[2].set_title(f'Abs Difference\nMSE: {error:.4f}')
+    axes[2].set_xlabel('X')
+    axes[2].set_ylabel('Y')
+    axes[2].grid(True, alpha=0.3)
+    plt.colorbar(im2, ax=axes[2], label='Error')
+    
+    plt.suptitle(f'Batch {batch_idx}, Time {time_idx}', fontsize=14)
+    plt.tight_layout()
+    
+    # Convert figure to image array
+    buf = BytesIO()
+    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+    buf.seek(0)
+    image = Image.open(buf)
+    image_array = np.array(image)
+    buf.close()
+    
+    wandb_images.append(
+        wandb.Image(
+            image_array, 
+            caption=f"Batch {batch_idx}, t={time_idx}, MSE={error:.4f}"
+        )
+    )
+    
+    plt.close(fig)
+    
+    # Log to wandb
+    logger.wandb.log({
+        'world_model/reconstruction': wandb_images,
+        'world_model/mean_reconstruction_error': prediction_error.mean(),
+        'world_model/max_reconstruction_error': prediction_error.max(),
+        'world_model/min_reconstruction_error': prediction_error.min(),
+    }, step=step)
+
 class PuffeRL:
-    def __init__(self, config, full_config, vecenv, policy, logger=None):
+    def __init__(self, config, full_config, vecenv, policy, world_model, logger=None):
         # Backend perf optimization
         torch.set_float32_matmul_precision('high')
         torch.backends.cudnn.deterministic = config['torch_deterministic']
@@ -143,6 +225,7 @@ class PuffeRL:
         # Torch compile
         self.uncompiled_policy = policy
         self.policy = policy
+        self.world_model = world_model.to(device)
         if config['compile']:
             self.policy = torch.compile(policy, mode=config['compile_mode'])
             self.policy.forward_eval = torch.compile(policy, mode=config['compile_mode'])
@@ -179,6 +262,15 @@ class PuffeRL:
             raise ValueError(f'Unknown optimizer: {config["optimizer"]}')
 
         self.optimizer = optimizer
+        
+        # Add separate world model optimizer
+        self.world_model_optimizer = ForeachMuon(
+            self.world_model.parameters(),
+            lr=config['learning_rate'],
+            betas=(config['adam_beta1'], config['adam_beta2']),
+            eps=config['adam_eps'],
+            heavyball_momentum=True,
+        )
 
         # Logging
         self.logger = logger
@@ -213,7 +305,7 @@ class PuffeRL:
         self.stats = defaultdict(list)
         self.last_stats = defaultdict(list)
         self.losses = {}
-        self.explore_stats = {'entropy': [], 'advantages': []}
+        self.explore_stats = {'entropy': [], 'advantages': [], 'intrinsic_reward': []}
 
         # Dashboard
         self.model_size = sum(p.numel() for p in policy.parameters() if p.requires_grad)
@@ -346,6 +438,7 @@ class PuffeRL:
         a = config['prio_alpha']
         clip_coef = config['clip_coef']
         vf_clip = config['vf_clip_coef']
+        wm_clip = config['wm_clip_coef']
         anneal_beta = b0 + (1 - b0)*a*self.epoch/self.total_epochs
         self.ratio[:] = 1
 
@@ -389,9 +482,35 @@ class PuffeRL:
             )
 
             logits, newvalue = self.policy(mb_obs, state)
-            # TODO: Write out in math
             actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(logits, action=mb_actions)
-
+                       
+            mb_obs_cur = mb_obs[:, :-1]
+            mb_obs_nxt = mb_obs[:, 1:] 
+            
+            # Tiny world model predicts next observation given action taken
+            mb_obs_next_pred = self.world_model(mb_obs_cur, mb_actions[:, :-1])
+      
+            # Compute next observation prediction error (do we know what is coming next?)
+            next_obs_pred_error = ((mb_obs_next_pred - mb_obs_nxt)**2).mean(dim=-1)
+            next_obs_pred_error_clipped = torch.clamp(next_obs_pred_error, 0, config['wm_clip_coef'])
+            
+            profile('train_misc', epoch)
+            if mb % 100 == 0 and hasattr(self.logger, 'wandb') and epoch % 50 == 0:
+                show_reconstruction(
+                    mb_obs_nxt, 
+                    mb_obs_next_pred, 
+                    next_obs_pred_error,
+                    self.logger,
+                    self.global_step,
+                    vision=self.full_config['env']['vision'],
+                )
+            
+            # Larger prediction loss means higher intrinsic reward
+            intrinsic_reward = next_obs_pred_error_clipped * config['wm_reward_coef']
+            
+            # Note: we're skipping one element every batch (the last one) to match shapes
+            mb_rewards[:, :-1] += intrinsic_reward
+                
             profile('train_misc', epoch)
             newlogprob = newlogprob.reshape(mb_logprobs.shape)
             logratio = newlogprob - mb_logprobs
@@ -403,14 +522,13 @@ class PuffeRL:
                 approx_kl = ((ratio - 1) - logratio).mean()
                 clipfrac = ((ratio - 1.0).abs() > config['clip_coef']).float().mean()
 
-            # NOTE: Commenting this out since adv is replaced below
-            # adv = advantages[idx]
-            # adv = compute_puff_advantage(mb_values, mb_rewards, mb_terminals,
-            #     ratio, adv, config['gamma'], config['gae_lambda'],
-            #     config['vtrace_rho_clip'], config['vtrace_c_clip'])
+            adv = advantages[idx]
+            adv = compute_puff_advantage(mb_values, mb_rewards, mb_terminals,
+                 ratio, adv, config['gamma'], config['gae_lambda'],
+                 config['vtrace_rho_clip'], config['vtrace_c_clip'])
 
             # Weight advantages by priority and normalize
-            adv = mb_advantages
+            # adv = mb_advantages
             adv = mb_prio * (adv - adv.mean()) / (adv.std() + 1e-8)
 
             # Losses
@@ -423,11 +541,14 @@ class PuffeRL:
             v_loss_unclipped = (newvalue - mb_returns) ** 2
             v_loss_clipped = (v_clipped - mb_returns) ** 2
             v_loss = 0.5*torch.max(v_loss_unclipped, v_loss_clipped).mean()
-
+        
             entropy_loss = entropy.mean() #std()
 
             loss = pg_loss + config['vf_coef']*v_loss - config['ent_coef']*entropy_loss
             self.amp_context.__enter__() # TODO: AMP needs some debugging
+            
+            # Aggregate batch losses
+            wm_loss = next_obs_pred_error_clipped.mean()
 
             # This breaks vloss clipping?
             self.values[idx] = newvalue.detach().float()
@@ -435,6 +556,7 @@ class PuffeRL:
             # Relevant stats for exploration research
             self.explore_stats['entropy'].append(entropy.tolist())
             self.explore_stats['advantages'].append(mb_advantages.tolist())
+            self.explore_stats['intrinsic_reward'].append(intrinsic_reward.tolist())
             
             # Logging
             profile('train_misc', epoch)
@@ -445,6 +567,7 @@ class PuffeRL:
             losses['approx_kl'] += approx_kl.item() / self.total_minibatches
             losses['clipfrac'] += clipfrac.item() / self.total_minibatches
             losses['importance'] += ratio.mean().item() / self.total_minibatches
+            losses['wm_loss'] += wm_loss.item() / self.total_minibatches
 
             # Learn on accumulated minibatches
             profile('learn', epoch)
@@ -453,6 +576,13 @@ class PuffeRL:
                 torch.nn.utils.clip_grad_norm_(self.policy.parameters(), config['max_grad_norm'])
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+                
+            # World model loss backward and step
+            wm_loss.backward()
+            if (mb + 1) % self.accumulate_minibatches == 0:
+                torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), config['max_grad_norm'])
+                self.world_model_optimizer.step()
+                self.world_model_optimizer.zero_grad()
 
         # Reprioritize experience
         profile('train_misc', epoch)
@@ -472,7 +602,7 @@ class PuffeRL:
         if done_training or self.global_step == 0 or time.time() > self.last_log_time + 0.25:
             logs = self.mean_and_log()
             self.losses = losses
-            self.explore_stats = {'entropy': [], 'advantages': []}
+            self.explore_stats = {'entropy': [], 'advantages': [], 'intrinsic_reward': []}
             self.print_dashboard()
             self.stats = defaultdict(list)
             self.last_log_time = time.time()
@@ -508,7 +638,7 @@ class PuffeRL:
         score_key = 'score'
         if (self.solved_at_step is None and 
             score_key in self.stats and 
-            self.stats[score_key] >= 0.99):
+            self.stats[score_key] >= 0.999):
             self.solved_at_step = agent_steps
             print(f'solved at step {self.solved_at_step}!')
         
@@ -532,6 +662,7 @@ class PuffeRL:
         logs['metrics/advantages'] = wandb.Histogram(self.explore_stats['advantages'])
         logs['metrics/advantages_mean'] = np.mean(self.explore_stats['advantages'])
         logs['metrics/advantages_std'] = np.std(self.explore_stats['advantages'])
+        logs['metrics/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
         
         if self.solved_at_step is not None:
             logs['metrics/steps_to_solve'] = self.solved_at_step
@@ -1047,7 +1178,12 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
         
     vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv, env_name)
-
+    
+    world_model = pufferlib.models.TinyWorldModel(
+        observation_size=np.prod(vecenv.single_observation_space.shape),
+        action_size=vecenv.single_action_space.n,
+    )
+    
     if 'LOCAL_RANK' in os.environ:
         args['train']['device'] = torch.cuda.current_device()
         torch.distributed.init_process_group(backend='nccl', world_size=world_size)
@@ -1068,7 +1204,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
         logger = WandbLogger(args)
 
     train_config = { **args['train'], 'env': env_name }
-    pufferl = PuffeRL(train_config, args, vecenv, policy, logger)
+    pufferl = PuffeRL(train_config, args, vecenv, policy, world_model, logger)
 
     # Sweep needs data for early stopped runs, so send data when steps > 100M
     logging_threshold = min(0.20*train_config['total_timesteps'], 100_000_000)
@@ -1162,7 +1298,7 @@ def controlled_exp(env_name, args=None):
 
         run_name_parts = [f"{key.split('.')[-1]}={value}" for key, value in zip(keys, combo)]
         exp_name = "_".join(run_name_parts)
-        exp_args['wandb_run_name'] = f"ent_mean_{exp_name}"
+        exp_args['wandb_run_name'] = f"{exp_name}"
 
         print(f"\nExperiment {i}/{len(combinations)}: {dict(zip(keys, combo))}")
 
@@ -1172,7 +1308,7 @@ def controlled_exp(env_name, args=None):
     print(f"\n✓ Completed all {len(combinations)} experiments")
 
 def eval(env_name, args=None, vecenv=None, policy=None):
-    args = args or load_config(env_named)
+    args = args or load_config(env_name)
     backend = args['vec']['backend']
     if backend != 'PufferEnv':
         backend = 'Serial'
