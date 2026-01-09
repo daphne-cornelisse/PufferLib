@@ -29,7 +29,7 @@ class Grid(pufferlib.PufferEnv):
         self.speed = speed
         self.discretize = discretize
         self.size = size    
-        self.obs_size = 2*vision + 1
+        self.obs_size = 2*vision + 1 # Add 1
         self.single_observation_space = gymnasium.spaces.Box(
             low=0, high=255, shape=(self.obs_size*self.obs_size,), dtype=np.uint8
         )
@@ -59,7 +59,8 @@ class Grid(pufferlib.PufferEnv):
             seed,
             state=self.c_state, 
             max_size=max_size, 
-            num_maps=num_maps
+            num_maps=num_maps,
+            horizon=horizon,
         )
 
     def reset(self, seed=None):

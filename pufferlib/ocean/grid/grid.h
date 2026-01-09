@@ -307,7 +307,8 @@ void get_state(Grid* env, State* state) {
 void set_state(Grid* env, State* state) {
     env->width = state->width;
     env->height = state->height;
-    env->horizon = 2*env->width*env->height;
+    // Read from ini
+    //env->horizon = 2*env->width*env->height; 
     env->num_agents = state->num_agents;
     memcpy(env->agents, state->agents, env->num_agents*sizeof(Agent));
     memcpy(env->grid, state->grid, env->max_size*env->max_size);
@@ -469,6 +470,7 @@ void c_step(Grid* env) {
     if (env->tick >= env->horizon) {
         done = true;
         add_log(env, 0);
+        //printf("Episode timed out at horizon %d\n", env->horizon);
     }
 
     if (done) {

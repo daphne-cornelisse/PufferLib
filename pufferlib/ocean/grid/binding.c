@@ -60,7 +60,7 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         init_state(&levels[i], max_size, 1);
         get_state(&env, &levels[i]);
         //printf("Seed: %d\n", start_seed + i);
-        //printf("Generated maze %d/%d of size %dx%d, traversable tiles: %d\n", i+1, num_maps, sz, sz, env.total_traversable);
+        printf("Generated maze %d/%d of size %dx%d, traversable tiles: %d\n", i+1, num_maps, sz, sz, env.total_traversable);
     }
 
     return PyLong_FromVoidPtr(levels);
@@ -69,6 +69,13 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->max_size = unpack(kwargs, "max_size");
     env->num_maps = unpack(kwargs, "num_maps");
+    int horizon = unpack(kwargs, "horizon");
+    if (horizon > 1) {
+        env->horizon = horizon;
+    } else {
+        env->horizon = 2*env->max_size*env->max_size;
+    }
+    //printf("Initializing Grid env with max_size=%d, num_maps=%d, horizon=%d\n", env->max_size, env->num_maps, env->horizon);
     init_grid(env);
 
     PyObject* handle_obj = PyDict_GetItemString(kwargs, "state");
