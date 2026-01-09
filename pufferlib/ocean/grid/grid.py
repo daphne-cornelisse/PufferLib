@@ -86,17 +86,21 @@ class Grid(pufferlib.PufferEnv):
         pass
 
 def test_performance(timeout=10, atn_cache=1024):
-    env = Grid(num_envs=1000)
-    env.reset()
+    env = Grid(max_size=7, size=-1, num_envs=1, num_maps=1, horizon=1000)
+    env.reset(0)
     tick = 0
 
-    actions = np.random.randint(0, 2, (atn_cache, env.num_envs))
-
+    actions = np.random.randint(0, 5, (atn_cache, 1))
+    
     import time
     start = time.time()
-    while time.time() - start < timeout:
+    while tick < 10:
         atn = actions[tick % atn_cache]
         env.step(atn)
         tick += 1
+        print(f'Tick: {tick}')
 
-    print(f'SPS: {env.num_envs * tick / (time.time() - start)}')
+    #print(f'SPS: {env.num_envs * tick / (time.time() - start)}')
+
+if __name__ == "__main__":
+    test_performance()

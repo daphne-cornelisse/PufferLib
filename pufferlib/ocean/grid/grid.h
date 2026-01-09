@@ -40,6 +40,8 @@ struct Log {
     float episode_return;
     float episode_length;
     float n;
+    float unique_visited;
+    float cum_coverage;
 };
 
 // 8 unique agents
@@ -102,6 +104,8 @@ struct Grid{
     float* actions;
     float* rewards;
     unsigned char* terminals;
+    int total_traversable;
+    int* coverage_counts;
 };
 
 void init_grid(Grid* env) {
@@ -114,6 +118,7 @@ void init_grid(Grid* env) {
     env->grid = calloc(env_mem, sizeof(unsigned char));
     env->counts = calloc(env_mem, sizeof(int));
     env->agents = calloc(env->num_agents, sizeof(Agent));
+    env->coverage_counts = calloc(env_mem, sizeof(int));
 }
 
 Grid* allocate_grid(int max_size, int num_agents, int horizon,
@@ -139,6 +144,7 @@ void c_close(Grid* env) {
     free(env->grid);
     free(env->counts);
     free(env->agents);
+    free(env->coverage_counts);
     free(env);
 }
 
@@ -165,6 +171,20 @@ void add_log(Grid* env, int idx) {
     env->log.episode_return += env->rewards[idx];
     env->log.episode_length += env->tick;
     env->log.n += 1.0;
+
+    // Log coverage
+    int visited_tiles = 0;
+    for (int r = 0; r < env->height; r++) {
+        for (int c = 0; c < env->width; c++) {
+            int adr = grid_offset(env, r, c);
+            if (env->coverage_counts[adr] != 0) {
+                visited_tiles++;
+            }
+        }
+    }
+
+    env->log.unique_visited += (float)visited_tiles; 
+    env->log.cum_coverage += ((float)visited_tiles / (float)env->total_traversable) * 100.0f;
 }
  
 void compute_observations(Grid* env) {
@@ -256,16 +276,22 @@ struct State {
     int num_agents;
     Agent* agents;
     unsigned char* grid;
+    int total_traversable;
+    int* coverage_counts;
 };
 
 void init_state(State* state, int max_size, int num_agents) {
     state->agents = calloc(num_agents, sizeof(Agent));
     state->grid = calloc(max_size*max_size, sizeof(unsigned char));
+    state->total_traversable = 0;
+    // Intialize array for coverage counts
+    state->coverage_counts = calloc(max_size*max_size, sizeof(int));
 }
 
 void free_state(State* state) {
     free(state->agents);
     free(state->grid);
+    free(state->coverage_counts);
     free(state);
 }
 
@@ -275,6 +301,7 @@ void get_state(Grid* env, State* state) {
     state->num_agents = env->num_agents;
     memcpy(state->agents, env->agents, env->num_agents*sizeof(Agent));
     memcpy(state->grid, env->grid, env->max_size*env->max_size);
+    state->total_traversable = env->total_traversable;
 }
 
 void set_state(Grid* env, State* state) {
@@ -284,6 +311,9 @@ void set_state(Grid* env, State* state) {
     env->num_agents = state->num_agents;
     memcpy(env->agents, state->agents, env->num_agents*sizeof(Agent));
     memcpy(env->grid, state->grid, env->max_size*env->max_size);
+    // Ensure this is not reset in between episodes
+    env->coverage_counts = state->coverage_counts;
+    env->total_traversable = state->total_traversable;
 }
 
 void c_reset(Grid* env) {
@@ -397,8 +427,22 @@ bool step_agent(Grid* env, int idx) {
 
     int x_int = agent->x;
     int y_int = agent->y;
-    int adr = grid_offset(env, y_int, x_int);
+    int adr = grid_offset(env, round(y), round(x));
     env->counts[adr]++;
+    env->coverage_counts[adr]++;
+
+    // int total_visited = 0;
+    // for (int r = 0; r < env->height; r++) {
+    //     for (int c = 0; c < env->width; c++) {
+    //         int adr = grid_offset(env, r, c);
+    //         if (env->coverage_counts[adr] > 0) {
+    //             total_visited++;
+    //         }
+    //     }
+    // }
+    // printf("Total unique visited cells: %d\n", total_visited);
+    // printf("Total traversable cells: %d\n", env->total_traversable);
+
     //env->rewards[idx] += 0.01 / (float)env->counts[adr];
     //env->log.episode_return += 0.01 / (float)env->counts[adr];
     return true;
