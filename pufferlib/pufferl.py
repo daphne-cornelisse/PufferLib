@@ -65,7 +65,6 @@ def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, 
     
     # Compute observation size 
     obs_size = 2 * vision + 1
-       
     mb_obs_nxt = mb_obs_nxt.detach().cpu().numpy()
     mb_obs_next_pred = mb_obs_next_pred.detach().cpu().numpy()
     prediction_error = prediction_error.detach().cpu().numpy()
@@ -75,9 +74,10 @@ def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, 
     batch_idx = 0
     time_idx = 0
     
-    # Get flattened observations
-    actual_grid = mb_obs_nxt[batch_idx, time_idx].reshape(obs_size, obs_size)
-    predicted_grid = mb_obs_next_pred[batch_idx, time_idx].reshape(obs_size, obs_size)
+    # Get flattened observations. Exclude last element for visualization purposes, since
+    # we want to show the grid.
+    actual_grid = mb_obs_nxt[batch_idx, time_idx, :-1].reshape(obs_size, obs_size)
+    predicted_grid = mb_obs_next_pred[batch_idx, time_idx, :-1].reshape(obs_size, obs_size)
     error = prediction_error[batch_idx, time_idx]
 
     

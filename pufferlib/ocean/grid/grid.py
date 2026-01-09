@@ -29,9 +29,9 @@ class Grid(pufferlib.PufferEnv):
         self.speed = speed
         self.discretize = discretize
         self.size = size    
-        self.obs_size = 2*vision + 1 # Add 1
+        self.obs_size = 2*vision + 1
         self.single_observation_space = gymnasium.spaces.Box(
-            low=0, high=255, shape=(self.obs_size*self.obs_size,), dtype=np.uint8
+            low=-1, high=255, shape=(self.obs_size*self.obs_size + 1,), dtype=np.float32
         )
         self.single_action_space = gymnasium.spaces.Discrete(5)
         self.render_mode = render_mode
@@ -95,12 +95,15 @@ def test_performance(timeout=10, atn_cache=1024):
     
     import time
     start = time.time()
-    while tick < 10:
+    while tick < 100:
         atn = actions[tick % atn_cache]
         env.step(atn)
         tick += 1
         print(f'Tick: {tick}')
-
+            
+    print(env.observations.shape)
+    print(env.observations[:, -1])
+    
     #print(f'SPS: {env.num_envs * tick / (time.time() - start)}')
 
 if __name__ == "__main__":

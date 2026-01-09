@@ -100,7 +100,7 @@ struct Grid{
     Agent* agents;
     unsigned char* grid;
     int* counts;
-    unsigned char* observations;
+    float* observations;
     float* actions;
     float* rewards;
     unsigned char* terminals;
@@ -121,8 +121,7 @@ void init_grid(Grid* env) {
     env->coverage_counts = calloc(env_mem, sizeof(int));
 }
 
-Grid* allocate_grid(int max_size, int num_agents, int horizon,
-        int vision, float speed, bool discretize) {
+Grid* allocate_grid(int max_size, int num_agents, int horizon, int vision, float speed, bool discretize) {
     Grid* env = (Grid*)calloc(1, sizeof(Grid));
     env->max_size = max_size;
     env->num_agents = num_agents;
@@ -131,8 +130,7 @@ Grid* allocate_grid(int max_size, int num_agents, int horizon,
     env->speed = speed;
     env->discretize = discretize;
     int obs_size = 2*vision + 1;
-    env->observations = calloc(
-        num_agents*obs_size*obs_size, sizeof(unsigned char));
+    env->observations = calloc(num_agents*(obs_size*obs_size + 1), sizeof(float));
     env->actions = calloc(num_agents, sizeof(float));
     env->rewards = calloc(num_agents, sizeof(float));
     env->terminals = calloc(num_agents, sizeof(unsigned char));
@@ -188,7 +186,7 @@ void add_log(Grid* env, int idx) {
 }
  
 void compute_observations(Grid* env) {
-    memset(env->observations, 0, env->obs_size*env->obs_size*env->num_agents);
+    memset(env->observations, 0, (env->obs_size*env->obs_size + 1)*env->num_agents);
     for (int agent_idx = 0; agent_idx < env->num_agents; agent_idx++) {
         Agent* agent = &env->agents[agent_idx];
         float y = agent->y;
@@ -223,6 +221,11 @@ void compute_observations(Grid* env) {
                 env->observations[obs_adr] = env->grid[adr];
             }
         }
+        
+        // Add direction at the end of the observation
+        int direction_idx = obs_offset + env->obs_size*env->obs_size;
+        env->observations[direction_idx] = agent->direction / 10;
+        
         /*
         int obs_adr = 0;
         for (int r = 0; r < env->obs_size; r++) {
