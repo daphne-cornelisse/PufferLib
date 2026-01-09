@@ -655,15 +655,18 @@ class PuffeRL:
             #**{f'losses/{k}': dist_mean(v, device) for k, v in self.losses.items()},
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
-
-        logs['metrics/entropy'] = wandb.Histogram(self.explore_stats['entropy'])
-        logs['metrics/entropy_mean'] = np.mean(self.explore_stats['entropy'])
-        logs['metrics/entropy_std'] = np.std(self.explore_stats['entropy'])
-        logs['metrics/advantages'] = wandb.Histogram(self.explore_stats['advantages'])
-        logs['metrics/advantages_mean'] = np.mean(self.explore_stats['advantages'])
-        logs['metrics/advantages_std'] = np.std(self.explore_stats['advantages'])
-        logs['metrics/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
+        if len(self.explore_stats['entropy']) > 0:
+            logs['metrics/entropy'] = wandb.Histogram(self.explore_stats['entropy'])
+            logs['metrics/entropy_mean'] = np.mean(self.explore_stats['entropy'])
+            logs['metrics/entropy_std'] = np.std(self.explore_stats['entropy'])
+        if len(self.explore_stats['advantages']) > 0:
+            logs['metrics/advantages'] = wandb.Histogram(self.explore_stats['advantages'])
+            logs['metrics/advantages_mean'] = np.mean(self.explore_stats['advantages'])
+            logs['metrics/advantages_std'] = np.std(self.explore_stats['advantages'])
         
+        if len(self.explore_stats['intrinsic_reward']) > 0:
+            logs['metrics/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
+    
         if self.solved_at_step is not None:
             logs['metrics/steps_to_solve'] = self.solved_at_step
             logs['metrics/time_to_solve'] = time.time() - self.start_time
