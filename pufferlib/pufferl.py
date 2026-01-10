@@ -158,6 +158,7 @@ class PuffeRL:
         self.total_agents = total_agents
         
         self.solved_at_step = None
+        self.solved_maze_estimate = 0
 
         # Experience
         if config['batch_size'] == 'auto' and config['bptt_horizon'] == 'auto':
@@ -387,7 +388,7 @@ class PuffeRL:
 
                 self.actions[batch_rows, l] = action
                 self.logprobs[batch_rows, l] = logprob
-                self.rewards[batch_rows, l] = r
+                self.rewards[batch_rows, l] = r            
                 self.terminals[batch_rows, l] = d.float()
                 self.values[batch_rows, l] = value.flatten()
 
@@ -441,6 +442,10 @@ class PuffeRL:
         wm_clip = config['wm_clip_coef']
         anneal_beta = b0 + (1 - b0)*a*self.epoch/self.total_epochs
         self.ratio[:] = 1
+    
+        # Check if one of the episodes has solved the task
+        if self.rewards.max() > 0.0:
+            self.solved_maze_estimate += 1
 
         for mb in range(self.total_minibatches):
             profile('train_misc', epoch)
@@ -642,7 +647,7 @@ class PuffeRL:
             self.stats[score_key] >= 0.999):
             self.solved_at_step = agent_steps
             print(f'solved at step {self.solved_at_step}!')
-        
+            
         logs = {
             'SPS': dist_sum(self.sps, device),
             'agent_steps': agent_steps,
@@ -659,19 +664,21 @@ class PuffeRL:
         
         if self.config['detailed_logs']:
             if len(self.explore_stats['entropy']) > 0:
-                logs['metrics/entropy'] = wandb.Histogram(self.explore_stats['entropy'])
-                logs['metrics/entropy_mean'] = np.mean(self.explore_stats['entropy'])
-                logs['metrics/entropy_std'] = np.std(self.explore_stats['entropy'])
+                logs['environment/entropy'] = wandb.Histogram(self.explore_stats['entropy'])
+                logs['environment/entropy_mean'] = np.mean(self.explore_stats['entropy'])
+                logs['environment/entropy_std'] = np.std(self.explore_stats['entropy'])
             if len(self.explore_stats['advantages']) > 0:
-                logs['metrics/advantages'] = wandb.Histogram(self.explore_stats['advantages'])
-                logs['metrics/advantages_mean'] = np.mean(self.explore_stats['advantages'])
-                logs['metrics/advantages_std'] = np.std(self.explore_stats['advantages'])
+                logs['environment/advantages'] = wandb.Histogram(self.explore_stats['advantages'])
+                logs['environment/advantages_mean'] = np.mean(self.explore_stats['advantages'])
+                logs['environment/advantages_std'] = np.std(self.explore_stats['advantages'])
             if len(self.explore_stats['intrinsic_reward']) > 0:
-                logs['metrics/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
-    
+                logs['environment/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
+
+        if self.solved_maze_estimate > 0:
+            logs['environment/solved_count_estimate'] = self.solved_maze_estimate
         if self.solved_at_step is not None:
-            logs['metrics/steps_to_solve'] = self.solved_at_step
-            logs['metrics/time_to_solve'] = time.time() - self.start_time
+            logs['environment/steps_to_solve'] = self.solved_at_step
+            logs['environment/time_to_solve'] = time.time() - self.start_time
 
         if torch.distributed.is_initialized():
            if torch.distributed.get_rank() != 0:
@@ -799,7 +806,7 @@ class PuffeRL:
         if hasattr(self.logger, "wandb") and self.logger.wandb:
             import wandb
             self.logger.wandb.log({
-                'metrics/render': wandb.Video(video_path, format="mp4")
+                'render': wandb.Video(video_path, format="mp4")
             }, step=self.global_step)
             
         # Cleanup
