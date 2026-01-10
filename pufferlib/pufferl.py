@@ -495,7 +495,7 @@ class PuffeRL:
             next_obs_pred_error_clipped = torch.clamp(next_obs_pred_error, 0, config['wm_clip_coef'])
             
             profile('train_misc', epoch)
-            if mb % 100 == 0 and hasattr(self.logger, 'wandb') and epoch % 50 == 0:
+            if mb % 100 == 0 and hasattr(self.logger, 'wandb') and epoch % 100 == 0:
                 show_reconstruction(
                     mb_obs_nxt, 
                     mb_obs_next_pred, 
@@ -554,9 +554,10 @@ class PuffeRL:
             self.values[idx] = newvalue.detach().float()
             
             # Relevant stats for exploration research
-            self.explore_stats['entropy'].append(entropy.tolist())
-            self.explore_stats['advantages'].append(mb_advantages.tolist())
-            self.explore_stats['intrinsic_reward'].append(intrinsic_reward.tolist())
+            if self.config['detailed_logs']:
+                self.explore_stats['entropy'].append(entropy.tolist())
+                self.explore_stats['advantages'].append(mb_advantages.tolist())
+                self.explore_stats['intrinsic_reward'].append(intrinsic_reward.tolist())
             
             # Logging
             profile('train_misc', epoch)
@@ -655,17 +656,18 @@ class PuffeRL:
             #**{f'losses/{k}': dist_mean(v, device) for k, v in self.losses.items()},
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
-        if len(self.explore_stats['entropy']) > 0:
-            logs['metrics/entropy'] = wandb.Histogram(self.explore_stats['entropy'])
-            logs['metrics/entropy_mean'] = np.mean(self.explore_stats['entropy'])
-            logs['metrics/entropy_std'] = np.std(self.explore_stats['entropy'])
-        if len(self.explore_stats['advantages']) > 0:
-            logs['metrics/advantages'] = wandb.Histogram(self.explore_stats['advantages'])
-            logs['metrics/advantages_mean'] = np.mean(self.explore_stats['advantages'])
-            logs['metrics/advantages_std'] = np.std(self.explore_stats['advantages'])
         
-        if len(self.explore_stats['intrinsic_reward']) > 0:
-            logs['metrics/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
+        if self.config['detailed_logs']:
+            if len(self.explore_stats['entropy']) > 0:
+                logs['metrics/entropy'] = wandb.Histogram(self.explore_stats['entropy'])
+                logs['metrics/entropy_mean'] = np.mean(self.explore_stats['entropy'])
+                logs['metrics/entropy_std'] = np.std(self.explore_stats['entropy'])
+            if len(self.explore_stats['advantages']) > 0:
+                logs['metrics/advantages'] = wandb.Histogram(self.explore_stats['advantages'])
+                logs['metrics/advantages_mean'] = np.mean(self.explore_stats['advantages'])
+                logs['metrics/advantages_std'] = np.std(self.explore_stats['advantages'])
+            if len(self.explore_stats['intrinsic_reward']) > 0:
+                logs['metrics/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
     
         if self.solved_at_step is not None:
             logs['metrics/steps_to_solve'] = self.solved_at_step
