@@ -493,11 +493,40 @@ class PuffeRL:
             mb_obs_nxt = mb_obs[:, 1:] 
             
             # Tiny world model predicts next observation given action taken
-            mb_obs_next_pred = self.world_model(mb_obs_cur, mb_actions[:, :-1])
-      
-            # Compute next observation prediction error (do we know what is coming next?)
-            next_obs_pred_error = ((mb_obs_next_pred - mb_obs_nxt)**2).mean(dim=-1)
+            categorical_logits, continuous_pred = self.world_model(mb_obs_cur, mb_actions[:, :-1])
+
+            # Split target observations
+            mb_obs_nxt_cat = mb_obs_nxt[:, :, :self.world_model.cat_obs_size].long()
+            mb_obs_nxt_cont = mb_obs_nxt[:, :, self.world_model.cat_obs_size:]
+
+            batch_size, seq_len, num_positions = mb_obs_nxt_cat.shape
+
+            # Categorical loss (cross-entropy)
+            categorical_loss = torch.nn.functional.cross_entropy(
+                categorical_logits.reshape(-1, self.world_model.num_tile_types),  # [B*S*P, 10]
+                mb_obs_nxt_cat.reshape(-1),                                # [B*S*P]
+                reduction='none'
+            )  # [B*S*P]
+
+            # Reshape back and average over positions
+            cat_loss = categorical_loss.reshape(batch_size, seq_len, num_positions).mean(dim=-1)  # [B, S]
+
+            # Continuous loss (MSE for direction)
+            cont_loss = ((continuous_pred - mb_obs_nxt_cont)**2).mean(dim=-1)
+
+            # Combined loss
+            next_obs_pred_error = cat_loss + cont_loss
             next_obs_pred_error_clipped = torch.clamp(next_obs_pred_error, 0, config['wm_clip_coef'])
+
+            # Reconstruct predictions for visualization
+            # Convert logits to predicted classes
+            categorical_pred = categorical_logits.argmax(dim=-1)  # Shape: (batch, seq, categorical_obs_size)
+
+            # Concatenate categorical predictions with continuous predictions
+            mb_obs_next_pred = torch.cat([
+                categorical_pred.float(),
+                continuous_pred
+            ], dim=-1)
             
             profile('train_misc', epoch)
             if mb % 100 == 0 and hasattr(self.logger, 'wandb') and epoch % 100 == 0:

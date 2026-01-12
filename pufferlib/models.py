@@ -9,22 +9,31 @@ import pufferlib.pytorch
 import pufferlib.spaces
 
 class TinyWorldModel(nn.Module):
-    '''A simple feedforward model to predict next observations given
-    current observations and actions.'''
     def __init__(self, observation_size, action_size, hidden_size=128):
         super().__init__()
         
-        self.categorical_obs_size = observation_size - 1 # Last element is agent direction
+        self.cat_obs_size = observation_size - 1 # Grid elements are classes
+        self.cont_obs_size = 1   # Agent direction is continuous
         self.num_tile_types = 10  # EMPTY through WALL_4 (0-9)
-        self.input_size = self.categorical_obs_size * self.num_tile_types + 1 + action_size
+        self.input_size = self.cat_obs_size * self.num_tile_types + self.cont_obs_size + action_size
         self.num_actions = action_size
         
-        self.model = nn.Sequential(
+        # Separate heads for categorical and continuous predictions
+        self.shared = nn.Sequential(
             pufferlib.pytorch.layer_init(nn.Linear(self.input_size, hidden_size)),
             nn.ReLU(),
             pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size)),
             nn.ReLU(),
-            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, observation_size)),
+        )
+        
+        # Output logits for each categorical position
+        self.categorical_head = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, self.cat_obs_size * self.num_tile_types)
+        )
+        
+        # Output continuous values (agent direction)
+        self.continuous_head = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, 1)
         )
 
     def forward(self, observations, actions):
@@ -32,8 +41,8 @@ class TinyWorldModel(nn.Module):
         Predict next observations given current observations and actions.
         '''
         
-        categorical_obs = observations[:, :, :self.categorical_obs_size]
-        continuous_obs = observations[:, :, self.categorical_obs_size:]
+        categorical_obs = observations[:, :, :self.cat_obs_size]
+        continuous_obs = observations[:, :, self.cat_obs_size:]
         
         categorical_obs_onehot = torch.nn.functional.one_hot(
             categorical_obs.long(), 
@@ -44,8 +53,15 @@ class TinyWorldModel(nn.Module):
         actions_onehot = torch.nn.functional.one_hot(actions.long(), num_classes=self.num_actions)
         
         x = torch.cat([categorical_obs_flat, continuous_obs, actions_onehot], dim=-1)
-
-        return self.model(x)
+        features = self.shared(x)
+        
+        # Reshape categorical logits: (batch, seq, positions, classes)
+        categorical_logits = self.categorical_head(features).reshape(
+            -1, observations.shape[1], self.cat_obs_size, self.num_tile_types
+        )
+        continuous_pred = self.continuous_head(features)
+        
+        return categorical_logits, continuous_pred
 
 class Default(nn.Module):
     '''Default PyTorch policy. Flattens obs and applies a linear layer.
@@ -76,7 +92,7 @@ class Default(nn.Module):
             input_size = int(sum(np.prod(v.shape) for v in env.env.observation_space.values()))
             self.encoder = nn.Linear(input_size, self.hidden_size)
         else:
-            num_obs = np.prod(env.single_observation_space.shape)
+            num_obs = np.prod(env.single_observation_space.shape) #1211
             self.encoder = torch.nn.Sequential(
                 pufferlib.pytorch.layer_init(nn.Linear(num_obs, hidden_size)),
                 nn.GELU(),
@@ -117,6 +133,20 @@ class Default(nn.Module):
             observations = torch.cat([v.view(batch_size, -1) for v in observations.values()], dim=1)
         else: 
             observations = observations.view(batch_size, -1)
+
+            # # Note: temp for grid env only
+            # categorical_obs = observations[:, :121]
+            # continuous_obs = observations[:, 121:]
+            
+            # categorical_obs_onehot = torch.nn.functional.one_hot(
+            #     categorical_obs.long(), 
+            #     num_classes=10,
+            # ) 
+            
+            # categorical_obs_flat = categorical_obs_onehot.flatten(start_dim=-2) 
+            
+            # observations = torch.cat([categorical_obs_flat, continuous_obs], dim=-1).view(batch_size, -1)
+            
         return self.encoder(observations.float())
 
     def decode_actions(self, hidden):
