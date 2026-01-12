@@ -82,6 +82,10 @@ class Grid(pufferlib.PufferEnv):
 
     def render(self, overlay=0):
         binding.vec_render(self.c_envs, overlay)
+        
+    def get_coverage_counts(self):
+        """Get the cumulative state visitation counts as a 2D numpy array"""
+        return binding.vec_get_coverage_counts(self.c_envs)
 
     def close(self):
         pass
@@ -100,7 +104,8 @@ def test_performance(timeout=10, atn_cache=1024):
         env.step(atn)
         tick += 1
         print(f'Tick: {tick}')
-            
+        print(env.get_coverage_counts())
+                    
     print(env.observations.shape)
     print(env.observations[:, -1])
     

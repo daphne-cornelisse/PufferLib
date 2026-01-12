@@ -559,7 +559,7 @@ class PuffeRL:
             self.values[idx] = newvalue.detach().float()
             
             # Relevant stats for exploration research
-            if self.config['detailed_logs']:
+            if self.config['log_detailed_stats']:
                 self.explore_stats['entropy'].append(entropy.tolist())
                 self.explore_stats['advantages'].append(mb_advantages.tolist())
                 self.explore_stats['intrinsic_reward'].append(intrinsic_reward.tolist())
@@ -636,7 +636,7 @@ class PuffeRL:
                 del self.stats[k]
 
             self.stats[k] = v
-
+    
         device = config['device']
         agent_steps = int(dist_sum(self.global_step, device))
         
@@ -662,7 +662,16 @@ class PuffeRL:
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
         
-        if self.config['detailed_logs']:
+        if self.config['log_coverage_grid'] and self.epoch % 100 == 0:
+            # Note: This only works when backend is Serial
+            coverage_grid = self.vecenv.driver_env.get_coverage_counts()
+            if coverage_grid.size > 0:
+                logs['environment/state_visitation'] = wandb.Image(
+                    coverage_grid,
+                    caption=f"Epoch {self.epoch}"
+                )
+        
+        if self.config['log_detailed_stats']:
             if len(self.explore_stats['entropy']) > 0:
                 logs['environment/entropy'] = wandb.Histogram(self.explore_stats['entropy'])
                 logs['environment/entropy_mean'] = np.mean(self.explore_stats['entropy'])

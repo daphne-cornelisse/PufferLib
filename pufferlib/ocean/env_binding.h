@@ -640,6 +640,23 @@ static double unpack(PyObject* kwargs, char* key) {
     return 1;
 }
 
+// Forward declaration for coverage counts functions
+static PyObject* get_coverage_counts(PyObject* self, PyObject* args);
+#ifndef MY_GET_COVERAGE_COUNTS
+static PyObject* get_coverage_counts(PyObject* self, PyObject* args) {
+    PyErr_SetString(PyExc_NotImplementedError, "get_coverage_counts not implemented for this environment");
+    return NULL;
+}
+#endif
+
+static PyObject* vec_get_coverage_counts(PyObject* self, PyObject* args);
+#ifndef MY_VEC_GET_COVERAGE_COUNTS
+static PyObject* vec_get_coverage_counts(PyObject* self, PyObject* args) {
+    PyErr_SetString(PyExc_NotImplementedError, "vec_get_coverage_counts not implemented for this environment");
+    return NULL;
+}
+#endif
+
 // Method table
 static PyMethodDef methods[] = {
     {"env_init", (PyCFunction)env_init, METH_VARARGS | METH_KEYWORDS, "Init environment with observation, action, reward, terminal, truncation arrays"},
@@ -657,6 +674,8 @@ static PyMethodDef methods[] = {
     {"vec_render", vec_render, METH_VARARGS, "Render the vector of environments"},
     {"vec_close", vec_close, METH_VARARGS, "Close the vector of environments"},
     {"shared", (PyCFunction)my_shared, METH_VARARGS | METH_KEYWORDS, "Shared state"},
+    {"get_coverage_counts", get_coverage_counts, METH_VARARGS, "Get coverage counts array"},
+    {"vec_get_coverage_counts", vec_get_coverage_counts, METH_VARARGS, "Get cumulative coverage counts for vectorized envs"},
     MY_METHODS,
     {NULL, NULL, 0, NULL}
 };

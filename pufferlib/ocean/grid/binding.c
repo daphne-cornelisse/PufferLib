@@ -2,6 +2,8 @@
 
 #define Env Grid 
 #define MY_SHARED
+#define MY_GET_COVERAGE_COUNTS
+#define MY_VEC_GET_COVERAGE_COUNTS
 #include "../env_binding.h"
 
 static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
@@ -91,6 +93,63 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
 
     env->levels = levels;
     return 0;
+}
+
+static PyObject* get_coverage_counts(PyObject* self, PyObject* args) {
+    // Unpack the environment handle from args
+    Env* env = unpack_env(args);
+    if (!env) {
+        return NULL;
+    }
+    
+    // Create 2D numpy array
+    npy_intp dims[2] = {env->height, env->width};
+    PyObject* array = PyArray_SimpleNew(2, dims, NPY_INT32);
+    
+    if (!array) {
+        return NULL;
+    }
+    
+    // Copy data from C array to numpy array
+    int* data = (int*)PyArray_DATA((PyArrayObject*)array);
+    for (int r = 0; r < env->height; r++) {
+        for (int c = 0; c < env->width; c++) {
+            int adr = grid_offset(env, r, c);
+            data[r * env->width + c] = env->coverage_counts[adr];
+        }
+    }
+    
+    return array;
+}
+
+static PyObject* vec_get_coverage_counts(PyObject* self, PyObject* args) {
+    // Unpack the vecenv handle
+    VecEnv* vec = unpack_vecenv(args);
+    if (!vec) {
+        return NULL;
+    }
+    
+    // Get the first environment
+    Env* env = vec->envs[0];
+    
+    // Create 2D numpy array
+    npy_intp dims[2] = {env->height, env->width};
+    PyObject* array = PyArray_SimpleNew(2, dims, NPY_INT32);
+    
+    if (!array) {
+        return NULL;
+    }
+    
+    // Copy data from C array to numpy array
+    int* data = (int*)PyArray_DATA((PyArrayObject*)array);
+    for (int r = 0; r < env->height; r++) {
+        for (int c = 0; c < env->width; c++) {
+            int adr = grid_offset(env, r, c);
+            data[r * env->width + c] = env->coverage_counts[adr];
+        }
+    }
+    
+    return array;
 }
 
 static int my_log(PyObject* dict, Log* log) {
