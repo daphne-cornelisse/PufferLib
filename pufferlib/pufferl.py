@@ -662,13 +662,13 @@ class PuffeRL:
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
         
-        if self.config['log_coverage_grid'] and self.epoch % 100 == 0:
+        if self.config['log_coverage_grid'] and (self.epoch - 1) % 100 == 0:
             # Note: This only works when backend is Serial
             coverage_grid = self.vecenv.driver_env.get_coverage_counts()
             if coverage_grid.size > 0:
                 logs['environment/state_visitation'] = wandb.Image(
                     coverage_grid,
-                    caption=f"Epoch {self.epoch}"
+                    caption=f"Epoch {self.epoch}",
                 )
         
         if self.config['log_detailed_stats']:
