@@ -122,7 +122,9 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    int render_width = 512, render_height = 512;
+    int cell_size = (max_size <= 32) ? 16 : 512 / max_size;
+    int render_width = max_size * cell_size;
+    int render_height = max_size * cell_size;
     
     c_render(env);
     VideoRecorder recorder = {0};

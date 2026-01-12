@@ -27,6 +27,9 @@
 #define REWARD 4
 #define OBJECT 5
 #define AGENT 6
+#define WALL_2 7
+#define WALL_3 8
+#define WALL_4 9
 #define KEY 14
 #define DOOR_LOCKED 20
 #define DOOR_OPEN 26
@@ -64,6 +67,9 @@ bool is_open_door(int idx) {
 }
 bool is_correct_key(int key, int door) {
     return key == door - 6;
+}
+bool is_wall(int idx) {
+    return idx == WALL || idx == WALL_2 || idx == WALL_3 || idx == WALL_4;
 }
 
 typedef struct Agent Agent;
@@ -114,7 +120,7 @@ void init_grid(Grid* env) {
     env->speed = 1;
     env->discretize = true;
     env->obs_size = 2*env->vision + 1;
-    int env_mem= env->max_size * env->max_size;
+    int env_mem = env->max_size * env->max_size;
     env->grid = calloc(env_mem, sizeof(unsigned char));
     env->counts = calloc(env_mem, sizeof(int));
     env->agents = calloc(env->num_agents, sizeof(Agent));
@@ -337,7 +343,7 @@ int move_to(Grid* env, int agent_idx, float y, float x) {
 
     int adr = grid_offset(env, round(y), round(x));
     int dest = env->grid[adr];
-    if (dest == WALL) {
+    if (is_wall(dest)) {  
         return 1;
     } else if (dest == REWARD || dest == GOAL) {
         env->rewards[agent_idx] = 1.0;
@@ -588,8 +594,17 @@ void c_render(Grid* env) {
             }
 
             Color color;
+
             if (tile == WALL) {
                 color = (Color){128, 128, 128, 255};
+            } else if (tile == WALL_2) {
+                color = (Color){100, 100, 150, 255};  // Bluish gray
+            } else if (tile == WALL_3) {
+                color = (Color){150, 100, 100, 255};  // Reddish gray
+            } else if (tile == WALL_4) {
+                color = (Color){100, 150, 100, 255};  // Greenish gray
+            } else if (tile == GOAL) {
+                color = GREEN;
             } else if (tile == GOAL) {
                 color = GREEN;
             } else if (is_locked_door(tile)) {
@@ -696,12 +711,26 @@ void generate_growing_tree_maze(unsigned char* grid,
     bool visited[width*height];
     memset(visited, false, width*height);
 
+    // Initialize with walls assign colors based on quadrants
     memset(grid, WALL, max_size*height);
     for (int r = 0; r < height; r++) {
         for (int c = 0; c < width; c++) {
             int adr = r*max_size + c;
             if (r % 2 == 1 && c % 2 == 1) {
                 grid[adr] = EMPTY;
+            } else {
+                // Assign wall color based on quadrant
+                int wall_type;
+                if (r < height/2 && c < width/2) {
+                    wall_type = WALL;
+                } else if (r < height/2 && c >= width/2) {
+                    wall_type = WALL_2;
+                } else if (r >= height/2 && c < width/2) {
+                    wall_type = WALL_3;
+                } else {
+                    wall_type = WALL_4;
+                }
+                grid[adr] = wall_type;
             }
         }
     }

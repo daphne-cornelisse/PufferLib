@@ -45,8 +45,7 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
         for (int r = 0; r < env.height; r++) {
             for (int c = 0; c < env.width; c++) {
                 int adr = grid_offset(&env, r, c);
-                //if (env.grid[adr] == EMPTY || env.grid[adr] == GOAL || env.grid[adr] == AGENT) {
-                if (env.grid[adr] != WALL) {
+                if (env.grid[adr] == EMPTY || env.grid[adr] == GOAL || env.grid[adr] == AGENT) {
                     env.total_traversable++;
                     //printf("%3d ", 1);
                 }

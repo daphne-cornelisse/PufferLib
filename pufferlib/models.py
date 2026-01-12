@@ -14,7 +14,9 @@ class TinyWorldModel(nn.Module):
     def __init__(self, observation_size, action_size, hidden_size=128):
         super().__init__()
         
-        self.input_size = observation_size + action_size
+        self.categorical_obs_size = observation_size - 1 # Last element is agent direction
+        self.num_tile_types = 10  # EMPTY through WALL_4 (0-9)
+        self.input_size = self.categorical_obs_size * self.num_tile_types + 1 + action_size
         self.num_actions = action_size
         
         self.model = nn.Sequential(
@@ -30,10 +32,19 @@ class TinyWorldModel(nn.Module):
         Predict next observations given current observations and actions.
         '''
         
+        categorical_obs = observations[:, :, :self.categorical_obs_size]
+        continuous_obs = observations[:, :, self.categorical_obs_size:]
+        
+        categorical_obs_onehot = torch.nn.functional.one_hot(
+            categorical_obs.long(), 
+            num_classes=self.num_tile_types
+        ) 
+        
+        categorical_obs_flat = categorical_obs_onehot.flatten(start_dim=-2) 
         actions_onehot = torch.nn.functional.one_hot(actions.long(), num_classes=self.num_actions)
         
-        x = torch.cat([observations.float(), actions_onehot.float()], dim=-1)
-    
+        x = torch.cat([categorical_obs_flat, continuous_obs, actions_onehot], dim=-1)
+
         return self.model(x)
 
 class Default(nn.Module):

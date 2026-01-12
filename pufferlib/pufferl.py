@@ -84,7 +84,7 @@ def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5), dpi=150)
     
     # Actual observation
-    im0 = axes[0].imshow(actual_grid, vmin=0, vmax=6, interpolation='nearest', cmap='cividis')
+    im0 = axes[0].imshow(actual_grid, vmin=0, vmax=9, interpolation='nearest', cmap='cividis')
     axes[0].set_title(f'Actual next observation ({obs_size}x{obs_size})')
     axes[0].set_xlabel('X')
     axes[0].set_ylabel('Y')
@@ -92,7 +92,7 @@ def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, 
     plt.colorbar(im0, ax=axes[0], label='Tile Type')
     
     # Predicted observation
-    im1 = axes[1].imshow(predicted_grid, vmin=0, vmax=6, interpolation='nearest', cmap='cividis')
+    im1 = axes[1].imshow(predicted_grid, vmin=0, vmax=9, interpolation='nearest', cmap='cividis')
     axes[1].set_title(f'Pred next observation ({obs_size}x{obs_size})')
     axes[1].set_xlabel('X')
     axes[1].set_ylabel('Y')
@@ -674,8 +674,7 @@ class PuffeRL:
             if len(self.explore_stats['intrinsic_reward']) > 0:
                 logs['environment/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
 
-        if self.solved_maze_estimate > 0:
-            logs['environment/solved_count_estimate'] = self.solved_maze_estimate
+        logs['environment/solved_count_estimate'] = self.solved_maze_estimate
         if self.solved_at_step is not None:
             logs['environment/steps_to_solve'] = self.solved_at_step
             logs['environment/time_to_solve'] = time.time() - self.start_time
