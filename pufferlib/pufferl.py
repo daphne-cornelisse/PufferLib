@@ -718,8 +718,7 @@ class PuffeRL:
                 logs['environment/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
 
         logs['environment/solved_count_estimate'] = self.solved_maze_estimate
-        if self.solved_maze_estimate > 0:
-            self.solved_at_step = agent_steps
+        if self.solved_at_step is not None:
             logs['environment/steps_to_solve'] = self.solved_at_step
             logs['environment/time_to_solve'] = time.time() - self.start_time
 
