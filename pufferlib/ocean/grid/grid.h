@@ -711,7 +711,13 @@ void generate_growing_tree_maze(unsigned char* grid,
     bool visited[width*height];
     memset(visited, false, width*height);
 
-    // Initialize with walls assign colors based on quadrants
+    // Create a fixed random pattern for wall colors
+    unsigned char wall_types[4] = {WALL, WALL_2, WALL_3, WALL_4};
+    unsigned char wall_pattern[width * height];
+    for (int i = 0; i < width * height; i++) {
+        wall_pattern[i] = wall_types[rand() % 4];
+    }
+    
     memset(grid, WALL, max_size*height);
     for (int r = 0; r < height; r++) {
         for (int c = 0; c < width; c++) {
@@ -719,18 +725,8 @@ void generate_growing_tree_maze(unsigned char* grid,
             if (r % 2 == 1 && c % 2 == 1) {
                 grid[adr] = EMPTY;
             } else {
-                // Assign wall color based on quadrant
-                int wall_type;
-                if (r < height/2 && c < width/2) {
-                    wall_type = WALL;
-                } else if (r < height/2 && c >= width/2) {
-                    wall_type = WALL_2;
-                } else if (r >= height/2 && c < width/2) {
-                    wall_type = WALL_3;
-                } else {
-                    wall_type = WALL_4;
-                }
-                grid[adr] = wall_type;
+                int pattern_idx = r * width + c;
+                grid[adr] = wall_pattern[pattern_idx];
             }
         }
     }
