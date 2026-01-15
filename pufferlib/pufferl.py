@@ -634,6 +634,11 @@ class PuffeRL:
         logs = None
         self.epoch += 1
         done_training = self.global_step >= config['total_timesteps']
+        
+        if done_training and self.solved_at_step is None:
+            self.solved_at_step = self.global_step
+            print(f'Env not solved, marking solved at final step {self.solved_at_step}.')
+        
         if done_training or self.global_step == 0 or time.time() > self.last_log_time + 0.25:
             logs = self.mean_and_log()
             self.losses = losses
@@ -713,7 +718,8 @@ class PuffeRL:
                 logs['environment/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
 
         logs['environment/solved_count_estimate'] = self.solved_maze_estimate
-        if self.solved_at_step is not None:
+        if self.solved_maze_estimate > 0:
+            self.solved_at_step = agent_steps
             logs['environment/steps_to_solve'] = self.solved_at_step
             logs['environment/time_to_solve'] = time.time() - self.start_time
 
