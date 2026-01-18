@@ -158,7 +158,6 @@ class PuffeRL:
         self.total_agents = total_agents
         
         self.solved_at_step = None
-        self.solved_maze_estimate = 0
 
         # Experience
         if config['batch_size'] == 'auto' and config['bptt_horizon'] == 'auto':
@@ -442,10 +441,6 @@ class PuffeRL:
         wm_clip = config['wm_clip_coef']
         anneal_beta = b0 + (1 - b0)*a*self.epoch/self.total_epochs
         self.ratio[:] = 1
-    
-        # Check if one of the episodes has solved the task
-        if self.rewards.max() > 0.0:
-            self.solved_maze_estimate += 1
 
         for mb in range(self.total_minibatches):
             profile('train_misc', epoch)
@@ -588,7 +583,7 @@ class PuffeRL:
             self.values[idx] = newvalue.detach().float()
             
             # Relevant stats for exploration research
-            if self.config['log_detailed_stats']:
+            if self.config['log_detailed_stats'] and epoch % 100 == 0:
                 self.explore_stats['entropy'].append(entropy.tolist())
                 self.explore_stats['advantages'].append(mb_advantages.tolist())
                 self.explore_stats['intrinsic_reward'].append(intrinsic_reward.tolist())
@@ -717,7 +712,6 @@ class PuffeRL:
             if len(self.explore_stats['intrinsic_reward']) > 0:
                 logs['environment/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
 
-        logs['environment/solved_count_estimate'] = self.solved_maze_estimate
         if self.solved_at_step is not None:
             logs['environment/steps_to_solve'] = self.solved_at_step
             logs['environment/time_to_solve'] = time.time() - self.start_time

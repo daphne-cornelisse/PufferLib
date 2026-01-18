@@ -102,6 +102,7 @@ struct Grid{
     int obs_size;
     int max_size;
     bool discretize;
+    float count_based_reward_coef;
     Log log;
     Agent* agents;
     unsigned char* grid;
@@ -127,7 +128,7 @@ void init_grid(Grid* env) {
     env->coverage_counts = calloc(env_mem, sizeof(int));
 }
 
-Grid* allocate_grid(int max_size, int num_agents, int horizon, int vision, float speed, bool discretize) {
+Grid* allocate_grid(int max_size, int num_agents, int horizon, int vision, float speed, bool discretize, float count_based_reward_coef) {
     Grid* env = (Grid*)calloc(1, sizeof(Grid));
     env->max_size = max_size;
     env->num_agents = num_agents;
@@ -135,6 +136,7 @@ Grid* allocate_grid(int max_size, int num_agents, int horizon, int vision, float
     env->vision = vision;
     env->speed = speed;
     env->discretize = discretize;
+    env->count_based_reward_coef = count_based_reward_coef;
     int obs_size = 2*vision + 1;
     env->observations = calloc(num_agents*(obs_size*obs_size + 1), sizeof(float));
     env->actions = calloc(num_agents, sizeof(float));
@@ -293,7 +295,7 @@ void init_state(State* state, int max_size, int num_agents) {
     state->agents = calloc(num_agents, sizeof(Agent));
     state->grid = calloc(max_size*max_size, sizeof(unsigned char));
     state->total_traversable = 0;
-    // Intialize array for coverage counts
+    // Intialize array for cumulative coverage counts (across episodes)
     state->coverage_counts = calloc(max_size*max_size, sizeof(int));
 }
 
@@ -328,7 +330,7 @@ void set_state(Grid* env, State* state) {
 
 void c_reset(Grid* env) {
     memset(env->grid, 0, env->max_size*env->max_size);
-    memset(env->counts, 0, env->max_size*env->max_size*sizeof(int));
+    //memset(env->counts, 0, env->max_size*env->max_size*sizeof(int)); Do not reset between episodes
     env->tick = 0;
     int idx = rand() % env->num_maps;
     set_state(env, &env->levels[idx]);
@@ -438,23 +440,12 @@ bool step_agent(Grid* env, int idx) {
     int x_int = agent->x;
     int y_int = agent->y;
     int adr = grid_offset(env, round(y), round(x));
+
+    // Increment visit counts
     env->counts[adr]++;
     env->coverage_counts[adr]++;
 
-    // int total_visited = 0;
-    // for (int r = 0; r < env->height; r++) {
-    //     for (int c = 0; c < env->width; c++) {
-    //         int adr = grid_offset(env, r, c);
-    //         if (env->coverage_counts[adr] > 0) {
-    //             total_visited++;
-    //         }
-    //     }
-    // }
-    // printf("Total unique visited cells: %d\n", total_visited);
-    // printf("Total traversable cells: %d\n", env->total_traversable);
-
-    //env->rewards[idx] += 0.01 / (float)env->counts[adr];
-    //env->log.episode_return += 0.01 / (float)env->counts[adr];
+    env->rewards[idx] +=  env->count_based_reward_coef * 0.1 / (float)env->counts[adr]; 
     return true;
 }
 
