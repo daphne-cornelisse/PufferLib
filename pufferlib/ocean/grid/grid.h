@@ -445,7 +445,9 @@ bool step_agent(Grid* env, int idx) {
     env->counts[adr]++;
     env->coverage_counts[adr]++;
 
-    env->rewards[idx] +=  env->count_based_reward_coef * 0.1 / (float)env->counts[adr]; 
+    env->rewards[idx] +=  env->count_based_reward_coef * (0.1 / (float)env->counts[adr]);
+    //printf("Count based reward coef: %f\n", env->count_based_reward_coef);
+    //printf("Agent %d reward: %f (count %d)\n", idx, env->rewards[idx], env->counts[adr]);
     return true;
 }
 

@@ -21,19 +21,24 @@ class TinyWorldModel(nn.Module):
         # Separate heads for categorical and continuous predictions
         self.shared = nn.Sequential(
             pufferlib.pytorch.layer_init(nn.Linear(self.input_size, hidden_size)),
+            nn.LayerNorm(hidden_size), 
             nn.ReLU(),
             pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size)),
+            nn.LayerNorm(hidden_size), 
             nn.ReLU(),
         )
         
         # Output logits for each categorical position
-        self.categorical_head = pufferlib.pytorch.layer_init(
-            nn.Linear(hidden_size, self.cat_obs_size * self.num_tile_types)
+        self.categorical_head = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size // 2)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size // 2, self.cat_obs_size * self.num_tile_types))
         )
         
-        # Output continuous values (agent direction)
-        self.continuous_head = pufferlib.pytorch.layer_init(
-            nn.Linear(hidden_size, 1)
+        self.continuous_head = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size // 2)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size // 2, 1))
         )
 
     def forward(self, observations, actions):
