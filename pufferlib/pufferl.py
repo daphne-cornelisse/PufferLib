@@ -533,9 +533,15 @@ class PuffeRL:
                     self.global_step,
                     vision=self.full_config['env']['vision'],
                 )
+                
+            error_mean = next_obs_pred_error_clipped.mean()
+            error_std = next_obs_pred_error_clipped.std() + 1e-8
+    
+            # z-score normalize, then apply ReLU to only reward above-average errors in a batch
+            normalized_error = (next_obs_pred_error_clipped - error_mean) / error_std
+            intrinsic_reward = torch.relu(normalized_error) ** 2 * config['wm_reward_coef']
             
-            # Larger prediction loss means higher intrinsic reward
-            intrinsic_reward = next_obs_pred_error_clipped * config['wm_reward_coef']
+            #print(f'Intrinsic reward stats - mean: {error_mean.item():.6f}, std: {error_std.item():.6f}')
             
             # Note: we're skipping one element every batch (the last one) to match shapes
             mb_rewards[:, :-1] += intrinsic_reward
