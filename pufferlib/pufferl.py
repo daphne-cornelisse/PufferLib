@@ -56,15 +56,19 @@ from torch.utils.cpp_extension import (
 # and can find CUDA or HIP in the system
 ADVANTAGE_CUDA = bool(CUDA_HOME or ROCM_HOME)
 
-def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, step, vision=5):
+def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, step,
+                        vision=5, cont_obs_size=1, num_tile_types=10):
     
     import wandb
     import matplotlib.pyplot as plt
     from io import BytesIO
     from PIL import Image
     
-    # Compute observation size 
-    obs_size = 2 * vision + 1
+    # Compute observation size (vision is configured as N x N).
+    obs_size = vision
+    if obs_size % 2 == 0:
+        obs_size += 1
+    grid_size = obs_size * obs_size
     mb_obs_nxt = mb_obs_nxt.detach().cpu().numpy()
     mb_obs_next_pred = mb_obs_next_pred.detach().cpu().numpy()
     prediction_error = prediction_error.detach().cpu().numpy()
@@ -74,17 +78,17 @@ def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, 
     batch_idx = 0
     time_idx = 0
     
-    # Get flattened observations. Exclude last element for visualization purposes, since
-    # we want to show the grid.
-    actual_grid = mb_obs_nxt[batch_idx, time_idx, :-1].reshape(obs_size, obs_size)
-    predicted_grid = mb_obs_next_pred[batch_idx, time_idx, :-1].reshape(obs_size, obs_size)
+    # Get flattened observations. Slice off any continuous features.
+    actual_grid = mb_obs_nxt[batch_idx, time_idx, :grid_size].reshape(obs_size, obs_size)
+    predicted_grid = mb_obs_next_pred[batch_idx, time_idx, :grid_size].reshape(obs_size, obs_size)
     error = prediction_error[batch_idx, time_idx]
 
     
     fig, axes = plt.subplots(1, 3, figsize=(15, 5), dpi=150)
     
     # Actual observation
-    im0 = axes[0].imshow(actual_grid, vmin=0, vmax=9, interpolation='nearest', cmap='cividis')
+    im0 = axes[0].imshow(actual_grid, vmin=0, vmax=num_tile_types - 1,
+                         interpolation='nearest', cmap='cividis')
     axes[0].set_title(f'Actual next observation ({obs_size}x{obs_size})')
     axes[0].set_xlabel('X')
     axes[0].set_ylabel('Y')
@@ -92,7 +96,8 @@ def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, 
     plt.colorbar(im0, ax=axes[0], label='Tile Type')
     
     # Predicted observation
-    im1 = axes[1].imshow(predicted_grid, vmin=0, vmax=9, interpolation='nearest', cmap='cividis')
+    im1 = axes[1].imshow(predicted_grid, vmin=0, vmax=num_tile_types - 1,
+                         interpolation='nearest', cmap='cividis')
     axes[1].set_title(f'Pred next observation ({obs_size}x{obs_size})')
     axes[1].set_xlabel('X')
     axes[1].set_ylabel('Y')
@@ -159,6 +164,13 @@ class PuffeRL:
         
         self.solved_at_step = None
         self.solved_maze_estimate = 0
+        self.last_gif_step = 0
+        self.last_map_eval_step = 0
+        self.last_coverage_step = 0
+        self.cumulative_solved = 0
+        self.map_eval_env = None
+        self.map_eval_env_test = None
+        self.coverage_env = None
 
         # Experience
         if config['batch_size'] == 'auto' and config['bptt_horizon'] == 'auto':
@@ -232,46 +244,38 @@ class PuffeRL:
             self.policy.forward_eval = torch.compile(policy, mode=config['compile_mode'])
             pufferlib.pytorch.sample_logits = torch.compile(pufferlib.pytorch.sample_logits, mode=config['compile_mode'])
 
-        # Optimizer
-        if config['optimizer'] == 'adam':
-            optimizer = torch.optim.Adam(
-                self.policy.parameters(),
-                lr=config['learning_rate'],
-                betas=(config['adam_beta1'], config['adam_beta2']),
-                eps=config['adam_eps'],
-            )
-        elif config['optimizer'] == 'muon':
-            import heavyball
-            from heavyball import ForeachMuon
-            warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
-            heavyball.utils.compile_mode = "default"
+        # Optimizers
+        def build_optimizer(params):
+            if config['optimizer'] == 'adam':
+                return torch.optim.Adam(
+                    params,
+                    lr=config['learning_rate'],
+                    betas=(config['adam_beta1'], config['adam_beta2']),
+                    eps=config['adam_eps'],
+                )
+            if config['optimizer'] == 'muon':
+                import heavyball
+                from heavyball import ForeachMuon
+                warnings.filterwarnings(action='ignore', category=UserWarning, module=r'heavyball.*')
+                heavyball.utils.compile_mode = "default"
 
-            # # optionally a little bit better/faster alternative to newtonschulz iteration
-            # import heavyball.utils
-            # heavyball.utils.zeroth_power_mode = 'thinky_polar_express'
+                # # optionally a little bit better/faster alternative to newtonschulz iteration
+                # import heavyball.utils
+                # heavyball.utils.zeroth_power_mode = 'thinky_polar_express'
 
-            # heavyball_momentum=True introduced in heavyball 2.1.1
-            # recovers heavyball-1.7.2 behaviour - previously swept hyperparameters work well
-            optimizer = ForeachMuon(
-                self.policy.parameters(),
-                lr=config['learning_rate'],
-                betas=(config['adam_beta1'], config['adam_beta2']),
-                eps=config['adam_eps'],
-                heavyball_momentum=True,
-            )
-        else:
+                # heavyball_momentum=True introduced in heavyball 2.1.1
+                # recovers heavyball-1.7.2 behaviour - previously swept hyperparameters work well
+                return ForeachMuon(
+                    params,
+                    lr=config['learning_rate'],
+                    betas=(config['adam_beta1'], config['adam_beta2']),
+                    eps=config['adam_eps'],
+                    heavyball_momentum=True,
+                )
             raise ValueError(f'Unknown optimizer: {config["optimizer"]}')
 
-        self.optimizer = optimizer
-        
-        # Add separate world model optimizer
-        self.world_model_optimizer = ForeachMuon(
-            self.world_model.parameters(),
-            lr=config['learning_rate'],
-            betas=(config['adam_beta1'], config['adam_beta2']),
-            eps=config['adam_eps'],
-            heavyball_momentum=True,
-        )
+        self.optimizer = build_optimizer(self.policy.parameters())
+        self.world_model_optimizer = build_optimizer(self.world_model.parameters())
 
         # Logging
         self.logger = logger
@@ -282,7 +286,7 @@ class PuffeRL:
         epochs = config['total_timesteps'] // config['batch_size']
         eta_min = config['learning_rate'] * config['min_lr_ratio']
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=epochs, eta_min=eta_min)
+            self.optimizer, T_max=epochs, eta_min=eta_min)
         self.total_epochs = epochs
 
         # Automatic mixed precision
@@ -442,6 +446,9 @@ class PuffeRL:
         wm_clip = config['wm_clip_coef']
         anneal_beta = b0 + (1 - b0)*a*self.epoch/self.total_epochs
         self.ratio[:] = 1
+
+        wm_pred_error_mean = 0.0
+        wm_intrinsic_mean = 0.0
     
         # Check if one of the episodes has solved the task
         if self.rewards.max() > 0.0:
@@ -511,22 +518,27 @@ class PuffeRL:
             # Reshape back and average over positions
             cat_loss = categorical_loss.reshape(batch_size, seq_len, num_positions).mean(dim=-1)  # [B, S]
 
-            # Continuous loss (MSE for direction)
-            cont_loss = ((continuous_pred - mb_obs_nxt_cont)**2).mean(dim=-1)
-
-            # Combined loss
-            next_obs_pred_error = cat_loss + cont_loss
+            # Continuous loss (optional)
+            if self.world_model.cont_obs_size > 0:
+                cont_loss = ((continuous_pred - mb_obs_nxt_cont)**2).mean(dim=-1)
+                next_obs_pred_error = cat_loss + cont_loss
+            else:
+                next_obs_pred_error = cat_loss
             next_obs_pred_error_clipped = torch.clamp(next_obs_pred_error, 0, config['wm_clip_coef'])
+            wm_pred_error_mean += next_obs_pred_error.mean().item() / self.total_minibatches
 
             # Reconstruct predictions for visualization
             # Convert logits to predicted classes
             categorical_pred = categorical_logits.argmax(dim=-1)  # Shape: (batch, seq, categorical_obs_size)
 
             # Concatenate categorical predictions with continuous predictions
-            mb_obs_next_pred = torch.cat([
-                categorical_pred.float(),
-                continuous_pred
-            ], dim=-1)
+            if self.world_model.cont_obs_size > 0:
+                mb_obs_next_pred = torch.cat([
+                    categorical_pred.float(),
+                    continuous_pred
+                ], dim=-1)
+            else:
+                mb_obs_next_pred = categorical_pred.float()
             
             profile('train_misc', epoch)
             if mb % 100 == 0 and hasattr(self.logger, 'wandb') and epoch % 100 == 0:
@@ -537,10 +549,18 @@ class PuffeRL:
                     self.logger,
                     self.global_step,
                     vision=self.full_config['env']['vision'],
+                    cont_obs_size=self.world_model.cont_obs_size,
+                    num_tile_types=self.world_model.num_tile_types,
                 )
             
-            # Larger prediction loss means higher intrinsic reward
-            intrinsic_reward = next_obs_pred_error_clipped * config['wm_reward_coef']
+            # Normalize prediction error and reward above-average errors.
+            error_mean = next_obs_pred_error_clipped.mean()
+            error_std = next_obs_pred_error_clipped.std(unbiased=False)
+            error_std = error_std + 1e-8
+            normalized_error = (next_obs_pred_error_clipped - error_mean) / error_std
+            normalized_error = torch.relu(normalized_error)
+            intrinsic_reward = normalized_error.pow(2) * config['wm_reward_coef']
+            wm_intrinsic_mean += intrinsic_reward.mean().item() / self.total_minibatches
             
             # Note: we're skipping one element every batch (the last one) to match shapes
             mb_rewards[:, :-1] += intrinsic_reward
@@ -629,6 +649,8 @@ class PuffeRL:
         var_y = y_true.var()
         explained_var = torch.nan if var_y == 0 else (1 - (y_true - y_pred).var() / var_y).item()
         losses['explained_variance'] = explained_var
+        self.wm_pred_error_mean = wm_pred_error_mean
+        self.wm_intrinsic_mean = wm_intrinsic_mean
 
         profile.end()
         logs = None
@@ -649,19 +671,50 @@ class PuffeRL:
             self.last_log_step = self.global_step
             profile.clear()
 
+        gif_interval_steps = config.get('gif_interval_steps', 0)
+        gif_interval_epochs = config.get('gif_interval', 0)
+        if gif_interval_steps:
+            if (self.global_step - self.last_gif_step) >= gif_interval_steps or done_training:
+                self.record_gif(policy=self.uncompiled_policy)
+                self.last_gif_step = self.global_step
+        elif gif_interval_epochs and (self.epoch % gif_interval_epochs == 0 or done_training):
+            self.record_gif(policy=self.uncompiled_policy)
+
         if self.epoch % config['checkpoint_interval'] == 0 or done_training:
             self.save_checkpoint()
             self.msg = f'Checkpoint saved at update {self.epoch}'
-            
-            # Add video recording on checkpoint intervals
-            #if self.epoch % config['video_interval'] == 0 or done_training:
-                #self.record_video(policy=self.uncompiled_policy)
                 
         return logs
 
     def mean_and_log(self):
         import wandb
         config = self.config
+        weighted_stats = {}
+        weights = np.asarray(self.stats.get('n', []), dtype=np.float32)
+        total_weight = float(weights.sum()) if weights.size else 0.0
+        if total_weight > 0.0:
+            def weighted_mean(key):
+                vals = np.asarray(self.stats.get(key, []), dtype=np.float32)
+                if vals.size != weights.size:
+                    return None
+                return float(np.sum(vals * weights) / total_weight)
+
+            for key in (
+                'perf',
+                'score',
+                'solved',
+                'episode_return',
+                'episode_length',
+            ):
+                value = weighted_mean(key)
+                if value is not None:
+                    weighted_stats[key] = value
+
+            weighted_stats['episodes'] = total_weight
+            solved_vals = np.asarray(self.stats.get('solved', []), dtype=np.float32)
+            if solved_vals.size == weights.size:
+                weighted_stats['solved_episodes'] = float(np.sum(solved_vals * weights))
+
         for k in list(self.stats.keys()):
             v = self.stats[k]
             try:
@@ -670,6 +723,9 @@ class PuffeRL:
                 del self.stats[k]
 
             self.stats[k] = v
+
+        if weighted_stats:
+            self.stats.update(weighted_stats)
     
         device = config['device']
         agent_steps = int(dist_sum(self.global_step, device))
@@ -695,8 +751,25 @@ class PuffeRL:
             #**{f'losses/{k}': dist_mean(v, device) for k, v in self.losses.items()},
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
-        
-        if self.config['log_coverage_grid'] and (self.epoch - 1) % 100 == 0:
+
+        episode_length = self.stats.get('episode_length', 0.0)
+        episode_return = self.stats.get('episode_return', 0.0)
+        if episode_length > 0:
+            logs['environment/return_per_step'] = episode_return / episode_length
+
+        if 'solved' in self.stats:
+            logs['environment/solve_rate'] = self.stats['solved']
+
+        logs['world_model/pred_error_mean'] = self.wm_pred_error_mean
+        logs['world_model/intrinsic_reward_mean'] = self.wm_intrinsic_mean
+
+        if 'pushworld' in config['env']:
+            solved_eps = self.stats.get('solved_episodes', None)
+            if solved_eps is not None:
+                self.cumulative_solved += float(solved_eps)
+                logs['environment/cumulative_solved'] = self.cumulative_solved
+
+        if self.config.get('log_coverage_grid', False) and (self.epoch - 1) % 100 == 0:
             # Note: This only works when backend is Serial
             coverage_grid = self.vecenv.driver_env.get_coverage_counts()
             if coverage_grid.size > 0:
@@ -717,10 +790,15 @@ class PuffeRL:
             if len(self.explore_stats['intrinsic_reward']) > 0:
                 logs['environment/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
 
-        logs['environment/solved_count_estimate'] = self.solved_maze_estimate
-        if self.solved_at_step is not None:
-            logs['environment/steps_to_solve'] = self.solved_at_step
-            logs['environment/time_to_solve'] = time.time() - self.start_time
+        # Keep solved_at_step for early stop, but avoid noisy charts.
+
+        map_eval_logs = self.evaluate_maps(policy=self.uncompiled_policy)
+        if map_eval_logs:
+            logs.update(map_eval_logs)
+
+        coverage_logs = self.evaluate_coverage(policy=self.uncompiled_policy)
+        if coverage_logs:
+            logs.update(coverage_logs)
 
         if torch.distributed.is_initialized():
            if torch.distributed.get_rank() != 0:
@@ -730,6 +808,254 @@ class PuffeRL:
                return None
 
         self.logger.log(logs, agent_steps)
+        return logs
+
+    def evaluate_coverage(self, policy=None):
+        config = self.config
+        interval_steps = int(config.get('coverage_interval_steps', 0))
+        if interval_steps <= 0:
+            return {}
+        if (self.global_step - self.last_coverage_step) < interval_steps:
+            return {}
+
+        env_name = self.config.get('env', '')
+        if 'pushworld' not in env_name:
+            return {}
+
+        if isinstance(self.vecenv, pufferlib.PufferEnv):
+            logs = self._coverage_from_live_env()
+        else:
+            logs = self._coverage_from_probe_env(policy)
+
+        if not logs:
+            return {}
+
+        coverage_dir = config.get('coverage_dir', 'experiments/coverage')
+        if coverage_dir:
+            os.makedirs(coverage_dir, exist_ok=True)
+            from PIL import Image
+            Image.fromarray(logs['__img_goal']).save(
+                os.path.join(coverage_dir, f'coverage_goal_step{self.global_step:09d}.png')
+            )
+            Image.fromarray(logs['__img_agent']).save(
+                os.path.join(coverage_dir, f'coverage_agent_step{self.global_step:09d}.png')
+            )
+
+        if hasattr(self.logger, "wandb") and self.logger.wandb:
+            import wandb
+            logs['environment/coverage_heatmap'] = wandb.Image(
+                logs['__img_goal'],
+                caption=f"goal coverage @ {self.global_step} steps",
+            )
+            logs['environment/coverage_agent_heatmap'] = wandb.Image(
+                logs['__img_agent'],
+                caption=f"agent coverage @ {self.global_step} steps",
+            )
+
+        logs.pop('__img_goal', None)
+        logs.pop('__img_agent', None)
+
+        self.last_coverage_step = self.global_step
+        return logs
+
+    def _coverage_from_live_env(self):
+        from pufferlib.ocean.pushworld import binding as pw_binding
+
+        env = self.vecenv.driver_env
+        full_map = np.asarray(pw_binding.vec_full_map(env.c_envs, 0))
+        goal_visits = np.asarray(pw_binding.vec_get_coverage_goal(env.c_envs, 0))
+        agent_visits = np.asarray(pw_binding.vec_get_coverage_agent(env.c_envs, 0))
+
+        base_map = self._coverage_base_map(full_map)
+        img_goal, img_agent = self._render_coverage(base_map, goal_visits, agent_visits)
+
+        if not self.config.get('coverage_accumulate', False):
+            pw_binding.vec_clear_coverage(env.c_envs, 0)
+
+        return {
+            '__img_goal': img_goal,
+            '__img_agent': img_agent,
+        }
+
+    def _coverage_from_probe_env(self, policy=None):
+        from copy import deepcopy
+        from pufferlib.ocean.pushworld import binding as pw_binding
+
+        coverage_steps = int(self.config.get('coverage_steps', 0))
+        if coverage_steps <= 0:
+            return {}
+
+        coverage_batch = int(self.config.get('coverage_batch', 1))
+        coverage_batch = max(1, coverage_batch)
+
+        puzzle_dir = os.path.expanduser(self.full_config.get('env', {}).get('puzzle_dir', ''))
+        map_idx = int(self.config.get('coverage_map_idx', -1))
+        map_path = self.config.get('coverage_map', None)
+        if isinstance(map_path, str) and map_path.strip() == "":
+            map_path = None
+
+        def _collect_puzzle_paths(root_dir):
+            files = []
+            for dirpath, _, filenames in os.walk(root_dir):
+                for fname in filenames:
+                    if fname.endswith('.pwp'):
+                        files.append(os.path.join(dirpath, fname))
+            files.sort()
+            return files
+
+        if map_idx < 0 and map_path is not None and puzzle_dir:
+            norm_target = os.path.normpath(map_path)
+            candidates = {
+                norm_target,
+                os.path.normpath(os.path.join(puzzle_dir, map_path)),
+                os.path.basename(norm_target),
+            }
+            paths = _collect_puzzle_paths(puzzle_dir)
+            for idx, path in enumerate(paths):
+                if os.path.normpath(path) in candidates or os.path.basename(path) in candidates:
+                    map_idx = idx
+                    break
+
+        def build_eval_env():
+            eval_args = deepcopy(self.full_config)
+            eval_args['vec'] = dict(backend='PufferEnv', num_envs=1)
+            eval_args['env'] = dict(eval_args['env'])
+            eval_args['env']['num_envs'] = coverage_batch
+            eval_args['env']['render_mode'] = 'None'
+            eval_args['env']['render_full_map'] = False
+            return load_env(self.config.get('env', ''), eval_args)
+
+        if self.coverage_env is None or self.coverage_env.num_agents != coverage_batch:
+            self.coverage_env = build_eval_env()
+
+        eval_env = self.coverage_env
+        num_puzzles = int(pw_binding.vec_num_puzzles(eval_env.c_envs))
+        if num_puzzles <= 0:
+            return {}
+        if map_idx < 0:
+            map_idx = 0
+        if map_idx >= num_puzzles:
+            map_idx = num_puzzles - 1
+
+        pw_binding.vec_set_puzzle_indices(eval_env.c_envs, [map_idx] * eval_env.num_agents)
+        obs, _ = eval_env.reset()
+
+        policy = policy or self.uncompiled_policy
+        device = self.config['device']
+        state = {}
+        if self.config.get('use_rnn', False):
+            state = dict(
+                lstm_h=torch.zeros(eval_env.num_agents, policy.hidden_size, device=device),
+                lstm_c=torch.zeros(eval_env.num_agents, policy.hidden_size, device=device),
+            )
+
+        full_map = np.asarray(pw_binding.vec_full_map(eval_env.c_envs, 0))
+        base_map = self._coverage_base_map(full_map)
+        height, width = base_map.shape
+        goal_visits = np.zeros((height, width), dtype=np.int32)
+        agent_visits = np.zeros((height, width), dtype=np.int32)
+
+        was_training = policy.training
+        policy.eval()
+        with torch.no_grad():
+            for _ in range(coverage_steps):
+                obs_t = torch.as_tensor(obs).to(device)
+                if self.config.get('use_rnn', False):
+                    logits, _ = policy.forward_eval(obs_t, state)
+                else:
+                    logits, _ = policy.forward_eval(obs_t)
+                action, _, _ = pufferlib.pytorch.sample_logits(logits)
+                action = action.cpu().numpy().reshape(eval_env.action_space.shape)
+                if isinstance(logits, torch.distributions.Normal):
+                    action = np.clip(action, eval_env.action_space.low, eval_env.action_space.high)
+
+                obs, _, terminals, truncations, _ = eval_env.step(action)
+                terminals = np.asarray(terminals) | np.asarray(truncations)
+
+                full_map = np.asarray(pw_binding.vec_full_map(eval_env.c_envs, 0))
+                goal_visits += (full_map == 6)
+                agent_visits += (full_map == 4)
+
+                if terminals.any():
+                    obs, _ = eval_env.reset()
+                    if self.config.get('use_rnn', False):
+                        done_idx = np.where(terminals)[0]
+                        if done_idx.size:
+                            state['lstm_h'][done_idx] = 0
+                            state['lstm_c'][done_idx] = 0
+
+        if was_training:
+            policy.train()
+
+        img_goal, img_agent = self._render_coverage(base_map, goal_visits, agent_visits)
+        return {
+            '__img_goal': img_goal,
+            '__img_agent': img_agent,
+        }
+
+    @staticmethod
+    def _coverage_base_map(full_map):
+        base_map = np.zeros_like(full_map)
+        base_map[full_map == 1] = 1
+        base_map[full_map == 2] = 2
+        base_map[(full_map == 3) | (full_map == 6)] = 3
+        return base_map
+
+    @staticmethod
+    def _render_coverage(base_map, goal_visits, agent_visits):
+        height, width = base_map.shape
+
+        def _normalize(counts):
+            counts = counts.astype(np.float32)
+            maxv = float(np.max(counts)) if counts.size else 0.0
+            if maxv <= 0:
+                return np.zeros_like(counts, dtype=np.float32)
+            norm = np.log1p(counts) / np.log1p(maxv)
+            norm = np.where(counts > 0, 0.2 + 0.8 * norm, 0.0)
+            return norm
+
+        def _render_heatmap(overlay_norm, color):
+            img = np.zeros((height, width, 3), dtype=np.float32)
+            img[:] = 0.05
+            wall = base_map == 1
+            agent_wall = base_map == 2
+            goal = base_map == 3
+            img[wall] = [0.12, 0.12, 0.12]
+            img[agent_wall] = [0.22, 0.22, 0.22]
+            img[goal] = [0.1, 0.35, 0.1]
+            img[..., 0] = np.clip(img[..., 0] + overlay_norm * color[0], 0.0, 1.0)
+            img[..., 1] = np.clip(img[..., 1] + overlay_norm * color[1], 0.0, 1.0)
+            img[..., 2] = np.clip(img[..., 2] + overlay_norm * color[2], 0.0, 1.0)
+            return (img * 255.0).astype(np.uint8)
+
+        goal_norm = _normalize(goal_visits)
+        agent_norm = _normalize(agent_visits)
+        img_goal = _render_heatmap(goal_norm, (0.95, 0.0, 0.0))
+        img_agent = _render_heatmap(agent_norm, (0.0, 0.4, 0.95))
+        return img_goal, img_agent
+        coverage_dir = config.get('coverage_dir', 'experiments/coverage')
+        if coverage_dir:
+            os.makedirs(coverage_dir, exist_ok=True)
+            from PIL import Image
+            Image.fromarray(img_goal).save(
+                os.path.join(coverage_dir, f'coverage_goal_step{self.global_step:09d}.png')
+            )
+            Image.fromarray(img_agent).save(
+                os.path.join(coverage_dir, f'coverage_agent_step{self.global_step:09d}.png')
+            )
+
+        if hasattr(self.logger, "wandb") and self.logger.wandb:
+            import wandb
+            logs['environment/coverage_heatmap'] = wandb.Image(
+                img_goal,
+                caption=f"goal coverage @ {self.global_step} steps",
+            )
+            logs['environment/coverage_agent_heatmap'] = wandb.Image(
+                img_agent,
+                caption=f"agent coverage @ {self.global_step} steps",
+            )
+
+        self.last_coverage_step = self.global_step
         return logs
 
     def close(self):
@@ -770,7 +1096,143 @@ class PuffeRL:
         torch.save(state, state_path + '.tmp')
         os.replace(state_path + '.tmp', state_path)
         return model_path
-    
+
+    def record_gif(self, policy=None):
+        config = self.config
+        gif_frames = int(config.get('gif_frames', 0))
+        if gif_frames <= 0:
+            return
+        if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+            return
+
+        gif_fps = float(config.get('gif_fps', 12))
+        gif_dir = config.get('gif_dir', os.path.join(config['data_dir'], 'gifs'))
+        gif_tile_size = int(config.get('gif_tile_size', 16))
+        os.makedirs(gif_dir, exist_ok=True)
+
+        from copy import deepcopy
+        eval_args = deepcopy(self.full_config)
+        eval_args['vec'] = dict(eval_args['vec'])
+        eval_args['env'] = dict(eval_args['env'])
+        eval_args['vec']['backend'] = 'Serial'
+        eval_args['vec']['num_envs'] = 1
+        eval_args['vec'].pop('num_workers', None)
+        eval_args['vec']['batch_size'] = 1
+        eval_args['env']['num_envs'] = 1
+        eval_args['env']['render_mode'] = 'rgb_array'
+        eval_args['env']['render_tile_size'] = gif_tile_size
+        eval_args['env']['render_full_map'] = bool(config.get('gif_full_map', True))
+
+        env_name = eval_args['env_name']
+        eval_env = load_env(env_name, eval_args)
+        driver = eval_env.driver_env
+        device = config['device']
+
+        gif_seed = config.get('gif_seed', None)
+        gif_randomize = config.get('gif_randomize', False)
+        if gif_seed is None and gif_randomize:
+            gif_seed = int(time.time_ns() % 2147483647)
+
+        if 'pushworld' in env_name:
+            gif_map_idx = config.get('gif_map_idx', None)
+            gif_map_random = config.get('gif_map_random', gif_randomize)
+            from pufferlib.ocean.pushworld import binding as pw_binding
+            from pufferlib.ocean.pushworld import pushworld as pw_env
+            num_puzzles = int(pw_binding.vec_num_puzzles(driver.c_envs))
+            if num_puzzles > 0:
+                if gif_map_idx is None and not gif_map_random:
+                    train_map_idx = eval_args['env'].get('train_map_idx', -1)
+                    train_map = eval_args['env'].get('train_map', None)
+                    coverage_map_idx = config.get('coverage_map_idx', -1)
+                    coverage_map = config.get('coverage_map', None)
+                    if isinstance(train_map, str) and train_map.strip() == "":
+                        train_map = None
+                    if isinstance(coverage_map, str) and coverage_map.strip() == "":
+                        coverage_map = None
+
+                    if train_map_idx is not None and int(train_map_idx) >= 0:
+                        gif_map_idx = int(train_map_idx)
+                    elif train_map is not None:
+                        gif_map_idx = pw_env._resolve_puzzle_index(
+                            os.path.expanduser(eval_args['env'].get('puzzle_dir', '')),
+                            train_map,
+                            None,
+                            int(eval_args['env'].get('max_puzzles', 0)),
+                        )
+                    elif coverage_map_idx is not None and int(coverage_map_idx) >= 0:
+                        gif_map_idx = int(coverage_map_idx)
+                    elif coverage_map is not None:
+                        gif_map_idx = pw_env._resolve_puzzle_index(
+                            os.path.expanduser(eval_args['env'].get('puzzle_dir', '')),
+                            coverage_map,
+                            None,
+                            int(eval_args['env'].get('max_puzzles', 0)),
+                        )
+                if gif_map_idx is None and gif_map_random:
+                    gif_map_idx = int(np.random.randint(0, num_puzzles))
+                if gif_map_idx is not None:
+                    gif_map_idx = int(gif_map_idx)
+                    if gif_map_idx < 0 or gif_map_idx >= num_puzzles:
+                        gif_map_idx = int(np.random.randint(0, num_puzzles))
+                    pw_binding.vec_set_puzzle_indices(
+                        driver.c_envs,
+                        [gif_map_idx] * driver.num_agents,
+                    )
+
+        if gif_seed is not None:
+            obs, _ = eval_env.reset(seed=gif_seed)
+        else:
+            obs, _ = eval_env.reset()
+
+        policy = policy or self.uncompiled_policy
+        state = {}
+        if eval_args['train']['use_rnn']:
+            state = dict(
+                lstm_h=torch.zeros(eval_env.num_agents, policy.hidden_size, device=device),
+                lstm_c=torch.zeros(eval_env.num_agents, policy.hidden_size, device=device),
+            )
+
+        frames = []
+        was_training = policy.training
+        policy.eval()
+        with torch.no_grad():
+            while len(frames) < gif_frames:
+                frame = driver.render()
+                if frame is not None:
+                    frames.append(frame)
+
+                obs_t = torch.as_tensor(obs).to(device)
+                logits, _ = policy.forward_eval(obs_t, state)
+                action, _, _ = pufferlib.pytorch.sample_logits(logits)
+                action = action.cpu().numpy().reshape(eval_env.action_space.shape)
+                if isinstance(logits, torch.distributions.Normal):
+                    action = np.clip(action, eval_env.action_space.low, eval_env.action_space.high)
+
+                obs, _, terminals, truncations, _ = eval_env.step(action)
+                if np.any(terminals) or np.any(truncations):
+                    obs, _ = eval_env.reset()
+                    if eval_args['train']['use_rnn']:
+                        state['lstm_h'].zero_()
+                        state['lstm_c'].zero_()
+
+        if was_training:
+            policy.train()
+        eval_env.close()
+
+        if not frames:
+            return
+
+        import imageio
+        gif_path = os.path.join(gif_dir, f'{env_name}_ep{self.epoch:06d}.gif')
+        imageio.mimsave(gif_path, frames, fps=gif_fps, loop=0)
+
+        if hasattr(self.logger, "wandb") and self.logger.wandb:
+            import wandb
+            self.logger.wandb.log(
+                {'render/gif': wandb.Video(gif_path, fps=gif_fps, format="gif")},
+                step=self.global_step
+            )
+
     def record_video(self, policy=None):
         """Record a video of the agent and log to wandb/neptune"""
         import subprocess
@@ -855,9 +1317,134 @@ class PuffeRL:
         if os.path.exists(actions_path):
             os.remove(actions_path)
         
-        if not os.path.exists(video_path):
-            return
-                        
+            if not os.path.exists(video_path):
+                return
+
+    def evaluate_maps(self, policy=None):
+        config = self.config
+        interval_steps = int(config.get('map_eval_interval_steps', 0))
+        interval_epochs = int(config.get('map_eval_interval', 0))
+        if interval_steps <= 0 and interval_epochs <= 0:
+            return {}
+
+        if interval_steps > 0:
+            if (self.global_step - self.last_map_eval_step) < interval_steps:
+                return {}
+        elif interval_epochs > 0 and (self.epoch % interval_epochs) != 0:
+            return {}
+
+        env_name = self.config['env']
+        if 'pushworld' not in env_name:
+            return {}
+
+        from copy import deepcopy
+        from pufferlib.ocean.pushworld import binding as pw_binding
+
+        eval_batch = int(config.get('map_eval_batch', 64))
+        eval_batch = max(1, eval_batch)
+
+        def build_eval_env(puzzle_dir=None):
+            eval_args = deepcopy(self.full_config)
+            eval_args['vec'] = dict(backend='PufferEnv', num_envs=1)
+            eval_args['env'] = dict(eval_args['env'])
+            eval_args['env']['num_envs'] = eval_batch
+            eval_args['env']['render_mode'] = 'None'
+            eval_args['env']['render_full_map'] = False
+            eval_args['env'].pop('train_map', None)
+            eval_args['env'].pop('train_map_idx', None)
+            if puzzle_dir:
+                eval_args['env']['puzzle_dir'] = puzzle_dir
+            return load_env(env_name, eval_args)
+
+        if self.map_eval_env is None or self.map_eval_env.num_agents != eval_batch:
+            self.map_eval_env = build_eval_env()
+
+        eval_env = self.map_eval_env
+        num_puzzles = int(pw_binding.vec_num_puzzles(eval_env.c_envs))
+
+        policy = policy or self.uncompiled_policy
+        device = config['device']
+        max_steps = int(self.full_config['env'].get('max_episode_length', 500))
+        def run_eval(eval_env, num_puzzles):
+            if num_puzzles <= 0:
+                return 0, 0
+
+            batch = eval_env.num_agents
+            puzzle_indices = np.full(batch, -1, dtype=np.int32)
+            pending = np.zeros(batch, dtype=bool)
+
+            state = {}
+            if config['use_rnn']:
+                state = dict(
+                    lstm_h=torch.zeros(batch, policy.hidden_size, device=device),
+                    lstm_c=torch.zeros(batch, policy.hidden_size, device=device),
+                )
+
+            total = 0
+            solved = 0
+            for start in range(0, num_puzzles, batch):
+                count = min(batch, num_puzzles - start)
+                puzzle_indices[:count] = np.arange(start, start + count, dtype=np.int32)
+                puzzle_indices[count:] = -1
+                pending[:] = False
+                pending[:count] = True
+
+                pw_binding.vec_set_puzzle_indices(eval_env.c_envs, puzzle_indices.tolist())
+                obs, _ = eval_env.reset()
+
+                steps = 0
+                while pending.any() and steps < max_steps:
+                    obs_t = torch.as_tensor(obs).to(device)
+                    if config['use_rnn']:
+                        logits, _ = policy.forward_eval(obs_t, state)
+                    else:
+                        logits, _ = policy.forward_eval(obs_t)
+                    action, _, _ = pufferlib.pytorch.sample_logits(logits)
+                    action = action.cpu().numpy().reshape(eval_env.action_space.shape)
+                    if isinstance(logits, torch.distributions.Normal):
+                        action = np.clip(action, eval_env.action_space.low, eval_env.action_space.high)
+
+                    obs, _, terminals, truncations, _ = eval_env.step(action)
+                    terminals = np.asarray(terminals) | np.asarray(truncations)
+                    last_solved = np.asarray(pw_binding.vec_last_solved(eval_env.c_envs)).astype(bool)
+
+                    newly_done = pending & terminals
+                    if np.any(newly_done):
+                        total += int(np.sum(newly_done))
+                        solved += int(np.sum(newly_done & last_solved))
+                        pending[newly_done] = False
+                    steps += 1
+
+            return solved, total
+
+        was_training = policy.training
+        policy.eval()
+        logs = {}
+        with torch.no_grad():
+            solved, total = run_eval(eval_env, num_puzzles)
+            if total > 0:
+                logs['environment/map_eval_solved_rate'] = solved / total
+                logs['environment/map_eval_puzzles'] = total
+
+            test_dir = config.get('map_eval_test_dir', '')
+            if test_dir:
+                test_dir = os.path.expanduser(test_dir)
+                if os.path.isdir(test_dir):
+                    if self.map_eval_env_test is None or self.map_eval_env_test.num_agents != eval_batch:
+                        self.map_eval_env_test = build_eval_env(puzzle_dir=test_dir)
+                    eval_env_test = self.map_eval_env_test
+                    num_puzzles_test = int(pw_binding.vec_num_puzzles(eval_env_test.c_envs))
+                    solved_test, total_test = run_eval(eval_env_test, num_puzzles_test)
+                    if total_test > 0:
+                        logs['environment/map_eval_test_solved_rate'] = solved_test / total_test
+
+        if was_training:
+            policy.train()
+
+        if logs:
+            self.last_map_eval_step = self.global_step
+        return logs
+
     def print_dashboard(self, clear=False, idx=[0],
             c1='[cyan]', c2='[dim default]', b1='[bright_cyan]', b2='[default]'):
         config = self.config
@@ -1233,9 +1820,13 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
     vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv, env_name)
     
+    wm_cont_obs = args['train'].get('wm_continuous_obs_size', 1)
+    wm_num_tiles = args['train'].get('wm_num_tile_types', 10)
     world_model = pufferlib.models.TinyWorldModel(
         observation_size=np.prod(vecenv.single_observation_space.shape),
         action_size=vecenv.single_action_space.n,
+        continuous_obs_size=wm_cont_obs,
+        num_tile_types=wm_num_tiles,
     )
     
     if 'LOCAL_RANK' in os.environ:
@@ -1281,7 +1872,9 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
                 if 'early_stop_threshold' in logs:
                     pufferl.logger.log({'environment/early_stop_threshold': logs['early_stop_threshold']}, logs['agent_steps'])
 
-            if pufferl.solved_at_step is not None:
+            stop_on_solve = train_config.get('stop_on_solve', True)
+            min_solve_steps = train_config.get('min_solve_steps', 0)
+            if stop_on_solve and pufferl.solved_at_step is not None and pufferl.global_step >= min_solve_steps:
                 should_stop_early = True
                 # Log last video at solve time
                 #pufferl.record_video(policy=pufferl.uncompiled_policy)

@@ -84,7 +84,10 @@ class Serial:
             )
             ptr = end
             seed_i = seed + i if seed is not None else None
-            env = env_creators[i](*env_args[i], buf=buf_i, seed=seed_i, **env_kwargs[i])
+            if 'seed' in env_kwargs[i]:
+                env = env_creators[i](*env_args[i], buf=buf_i, **env_kwargs[i])
+            else:
+                env = env_creators[i](*env_args[i], buf=buf_i, seed=seed_i, **env_kwargs[i])
             self.envs.append(env)
 
         self.driver_env = driver = self.envs[0]
@@ -188,7 +191,10 @@ def _worker_process(env_creators, env_args, env_kwargs, obs_shape, obs_dtype, at
     buf['masks'][:] = True
 
     if is_native and num_envs == 1:
-        envs = env_creators[0](*env_args[0], **env_kwargs[0], buf=buf, seed=seed)
+        if 'seed' in env_kwargs[0]:
+            envs = env_creators[0](*env_args[0], **env_kwargs[0], buf=buf)
+        else:
+            envs = env_creators[0](*env_args[0], **env_kwargs[0], buf=buf, seed=seed)
     else:
         envs = Serial(env_creators, env_args, env_kwargs, num_envs, buf=buf, seed=seed*num_envs)
 

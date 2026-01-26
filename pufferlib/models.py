@@ -9,12 +9,17 @@ import pufferlib.pytorch
 import pufferlib.spaces
 
 class TinyWorldModel(nn.Module):
-    def __init__(self, observation_size, action_size, hidden_size=128):
+    def __init__(self, observation_size, action_size, hidden_size=128,
+                 continuous_obs_size=1, num_tile_types=10):
         super().__init__()
-        
-        self.cat_obs_size = observation_size - 1 # Grid elements are classes
-        self.cont_obs_size = 1   # Agent direction is continuous
-        self.num_tile_types = 10  # EMPTY through WALL_4 (0-9)
+
+        self.cont_obs_size = int(continuous_obs_size)
+        if self.cont_obs_size < 0:
+            raise ValueError("continuous_obs_size must be >= 0")
+        self.cat_obs_size = observation_size - self.cont_obs_size
+        if self.cat_obs_size < 0:
+            raise ValueError("categorical obs size must be >= 0")
+        self.num_tile_types = int(num_tile_types)
         self.input_size = self.cat_obs_size * self.num_tile_types + self.cont_obs_size + action_size
         self.num_actions = action_size
         
@@ -31,10 +36,12 @@ class TinyWorldModel(nn.Module):
             nn.Linear(hidden_size, self.cat_obs_size * self.num_tile_types)
         )
         
-        # Output continuous values (agent direction)
-        self.continuous_head = pufferlib.pytorch.layer_init(
-            nn.Linear(hidden_size, 1)
-        )
+        # Output continuous values (optional)
+        self.continuous_head = None
+        if self.cont_obs_size > 0:
+            self.continuous_head = pufferlib.pytorch.layer_init(
+                nn.Linear(hidden_size, self.cont_obs_size)
+            )
 
     def forward(self, observations, actions):
         '''
@@ -42,24 +49,36 @@ class TinyWorldModel(nn.Module):
         '''
         
         categorical_obs = observations[:, :, :self.cat_obs_size]
-        continuous_obs = observations[:, :, self.cat_obs_size:]
+        continuous_obs = None
+        if self.cont_obs_size > 0:
+            continuous_obs = observations[:, :, self.cat_obs_size:]
         
+        feature_dtype = self.shared[0].weight.dtype
         categorical_obs_onehot = torch.nn.functional.one_hot(
-            categorical_obs.long(), 
+            categorical_obs.long(),
             num_classes=self.num_tile_types
-        ) 
+        ).to(feature_dtype)
         
-        categorical_obs_flat = categorical_obs_onehot.flatten(start_dim=-2) 
-        actions_onehot = torch.nn.functional.one_hot(actions.long(), num_classes=self.num_actions)
+        categorical_obs_flat = categorical_obs_onehot.flatten(start_dim=-2)
+        actions_onehot = torch.nn.functional.one_hot(
+            actions.long(), num_classes=self.num_actions
+        ).to(feature_dtype)
+        if continuous_obs is not None:
+            continuous_obs = continuous_obs.to(feature_dtype)
         
-        x = torch.cat([categorical_obs_flat, continuous_obs, actions_onehot], dim=-1)
+        if continuous_obs is None:
+            x = torch.cat([categorical_obs_flat, actions_onehot], dim=-1)
+        else:
+            x = torch.cat([categorical_obs_flat, continuous_obs, actions_onehot], dim=-1)
         features = self.shared(x)
         
         # Reshape categorical logits: (batch, seq, positions, classes)
         categorical_logits = self.categorical_head(features).reshape(
             -1, observations.shape[1], self.cat_obs_size, self.num_tile_types
         )
-        continuous_pred = self.continuous_head(features)
+        continuous_pred = None
+        if self.continuous_head is not None:
+            continuous_pred = self.continuous_head(features)
         
         return categorical_logits, continuous_pred
 

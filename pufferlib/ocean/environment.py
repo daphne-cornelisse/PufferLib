@@ -147,6 +147,7 @@ MAKE_FUNCTIONS = {
     'rware': 'Rware',
     'trash_pickup': 'TrashPickupEnv',
     'tower_climb': 'TowerClimb',
+    'pushworld': 'PushWorld',
     'grid': 'Grid',
     'shared_pool': 'PyCPR',
     'impulse_wars': 'ImpulseWars',

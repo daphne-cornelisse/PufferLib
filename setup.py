@@ -287,6 +287,8 @@ if not NO_TRAIN:
         'rich',
         'rich_argparse',
         'imageio',
+        'matplotlib',
+        'pillow',
         'gpytorch',
         'scikit-learn',
         'heavyball>=2.2.0', # contains relevant fixes compared to 1.7.2 and 2.1.1
