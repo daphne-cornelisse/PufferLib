@@ -82,6 +82,133 @@ class TinyWorldModel(nn.Module):
         
         return categorical_logits, continuous_pred
 
+class BTDUnlockPotential(nn.Module):
+    def __init__(
+        self,
+        obs_shape,
+        action_size,
+        latent_dim=64,
+        encoder_type="mlp",
+        encoder_hidden=256,
+        conv_channels=32,
+        grid_size=0,
+        action_embed_dim=16,
+        dynamics_hidden=256,
+        phi_hidden=128,
+        latent_norm="layernorm",
+        spread_eps=1e-6,
+        branching_metric="log",
+    ):
+        super().__init__()
+        self.num_actions = int(action_size)
+        self.latent_dim = int(latent_dim)
+        self.encoder_type = encoder_type
+        self.grid_size = int(grid_size)
+        self.latent_norm_type = latent_norm
+        self.spread_eps = float(spread_eps)
+        self.branching_metric = branching_metric
+
+        obs_dim = int(np.prod(obs_shape))
+        if self.encoder_type == "conv":
+            if self.grid_size <= 0:
+                self.grid_size = int(np.sqrt(obs_dim))
+            conv = nn.Sequential(
+                pufferlib.pytorch.layer_init(
+                    nn.Conv2d(1, conv_channels, 3, padding=1)
+                ),
+                nn.ReLU(),
+                pufferlib.pytorch.layer_init(
+                    nn.Conv2d(conv_channels, conv_channels, 3, stride=2, padding=1)
+                ),
+                nn.ReLU(),
+                nn.Flatten(),
+            )
+            with torch.no_grad():
+                dummy = torch.zeros(1, 1, self.grid_size, self.grid_size)
+                conv_out = conv(dummy).shape[-1]
+            self.encoder = nn.Sequential(
+                conv,
+                pufferlib.pytorch.layer_init(nn.Linear(conv_out, self.latent_dim)),
+            )
+        else:
+            self.encoder = nn.Sequential(
+                pufferlib.pytorch.layer_init(nn.Linear(obs_dim, encoder_hidden)),
+                nn.ReLU(),
+                pufferlib.pytorch.layer_init(nn.Linear(encoder_hidden, encoder_hidden)),
+                nn.ReLU(),
+                pufferlib.pytorch.layer_init(nn.Linear(encoder_hidden, self.latent_dim)),
+            )
+
+        if self.latent_norm_type == "layernorm":
+            self.latent_norm = nn.LayerNorm(self.latent_dim)
+        else:
+            self.latent_norm = None
+
+        self.action_embed = nn.Embedding(self.num_actions, action_embed_dim)
+        self.dynamics = nn.Sequential(
+            pufferlib.pytorch.layer_init(
+                nn.Linear(self.latent_dim + action_embed_dim, dynamics_hidden)
+            ),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(dynamics_hidden, self.latent_dim)),
+        )
+
+        self.phi = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(self.latent_dim, phi_hidden)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(phi_hidden, 1), std=0.01),
+        )
+        self.phi_target = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(self.latent_dim, phi_hidden)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(phi_hidden, 1), std=0.01),
+        )
+        self.phi_target.load_state_dict(self.phi.state_dict())
+        for p in self.phi_target.parameters():
+            p.requires_grad_(False)
+
+        self.register_buffer(
+            "action_ids",
+            torch.arange(self.num_actions, dtype=torch.long),
+            persistent=False,
+        )
+
+    def _normalize_latent(self, z):
+        if self.latent_norm is not None:
+            return self.latent_norm(z)
+        return z / (z.norm(dim=-1, keepdim=True) + 1e-6)
+
+    def encode(self, observations):
+        x = observations.float()
+        if self.encoder_type == "conv":
+            b = x.shape[0]
+            x = x.view(b, 1, self.grid_size, self.grid_size)
+        else:
+            x = x.view(x.shape[0], -1)
+        z = self.encoder(x)
+        return self._normalize_latent(z)
+
+    def predict_next(self, z, actions):
+        a_emb = self.action_embed(actions)
+        delta = self.dynamics(torch.cat([z, a_emb], dim=-1))
+        return self._normalize_latent(z + delta)
+
+    def branching(self, z):
+        batch, dim = z.shape
+        z_rep = z.unsqueeze(1).expand(batch, self.num_actions, dim).reshape(-1, dim)
+        a_rep = self.action_ids.repeat(batch)
+        z_next = self.predict_next(z_rep, a_rep).view(batch, self.num_actions, dim)
+        mu = z_next.mean(dim=1)
+        diff = z_next - mu[:, None, :]
+        spread = diff.pow(2).sum(dim=-1).mean(dim=1)
+        if self.branching_metric == "sqrt":
+            return torch.sqrt(spread + self.spread_eps)
+        return torch.log(spread + self.spread_eps)
+
+    def update_target(self, tau):
+        for tgt, src in zip(self.phi_target.parameters(), self.phi.parameters()):
+            tgt.data.mul_(tau).add_(src.data, alpha=1 - tau)
+
 class Default(nn.Module):
     '''Default PyTorch policy. Flattens obs and applies a linear layer.
 

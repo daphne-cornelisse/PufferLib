@@ -142,7 +142,7 @@ def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, 
     }, step=step)
 
 class PuffeRL:
-    def __init__(self, config, full_config, vecenv, policy, world_model, logger=None):
+    def __init__(self, config, full_config, vecenv, policy, world_model, btd_up=None, logger=None):
         # Backend perf optimization
         torch.set_float32_matmul_precision('high')
         torch.backends.cudnn.deterministic = config['torch_deterministic']
@@ -237,6 +237,7 @@ class PuffeRL:
         self.uncompiled_policy = policy
         self.policy = policy
         self.world_model = world_model.to(device)
+        self.btd_up = btd_up.to(device) if btd_up is not None else None
         if config['compile']:
             self.policy = torch.compile(policy, mode=config['compile_mode'])
             self.policy.forward_eval = torch.compile(policy, mode=config['compile_mode'])
@@ -274,6 +275,9 @@ class PuffeRL:
 
         self.optimizer = build_optimizer(self.policy.parameters())
         self.world_model_optimizer = build_optimizer(self.world_model.parameters())
+        self.btd_up_optimizer = None
+        if self.btd_up is not None:
+            self.btd_up_optimizer = build_optimizer(self.btd_up.parameters())
 
         # Logging
         self.logger = logger
@@ -308,6 +312,7 @@ class PuffeRL:
         self.stats = defaultdict(list)
         self.last_stats = defaultdict(list)
         self.losses = {}
+        self.btd_logs = {}
 
         # Dashboard
         self.model_size = sum(p.numel() for p in policy.parameters() if p.requires_grad)
@@ -323,6 +328,146 @@ class PuffeRL:
             return 0
 
         return (self.global_step - self.last_log_step) / (time.time() - self.last_log_time)
+
+    def _btd_beta(self):
+        cfg = self.config
+        warmup = int(cfg.get('btd_up_beta_warmup', 0))
+        ramp = int(cfg.get('btd_up_beta_ramp', 0))
+        target = float(cfg.get('btd_up_beta_target', 0.0))
+        if self.epoch < warmup:
+            return 0.0
+        if ramp <= 0:
+            return target
+        progress = min(1.0, (self.epoch - warmup) / ramp)
+        return target * progress
+
+    def _compute_btd_intrinsic(self):
+        config = self.config
+        device = config['device']
+        obs = self.observations
+        obs_shape = self.vecenv.single_observation_space.shape
+        beta = self._btd_beta()
+        gamma_phi = float(config.get('btd_up_gamma', 0.95))
+        clip = float(config.get('btd_up_intrinsic_clip', 0.0))
+        chunk = int(config.get('btd_up_chunk_size', 8192))
+        max_hist = int(config.get('btd_up_hist_samples', 8192))
+
+        obs_t = obs[:, :-1].reshape(-1, *obs_shape)
+        obs_tp1 = obs[:, 1:].reshape(-1, *obs_shape)
+        not_done = 1.0 - self.terminals[:, :-1].reshape(-1)
+        total = obs_t.shape[0]
+        r_int = torch.empty(total, device=device)
+
+        sum_r = 0.0
+        sum_r2 = 0.0
+        sum_b = 0.0
+        sum_b2 = 0.0
+        sum_phi = 0.0
+        sum_phi2 = 0.0
+        sum_btp1 = 0.0
+        sum_btp1_2 = 0.0
+        sum_r_btp1 = 0.0
+        count = 0
+        clip_count = 0
+        r_samples = []
+        b_samples = []
+        sample_target = max_hist
+
+        with torch.no_grad():
+            for start in range(0, total, chunk):
+                end = min(total, start + chunk)
+                obs_t_chunk = obs_t[start:end]
+                obs_tp1_chunk = obs_tp1[start:end]
+                if config['cpu_offload']:
+                    obs_t_chunk = obs_t_chunk.to(device, non_blocking=True)
+                    obs_tp1_chunk = obs_tp1_chunk.to(device, non_blocking=True)
+
+                z_t = self.btd_up.encode(obs_t_chunk)
+                z_tp1 = self.btd_up.encode(obs_tp1_chunk)
+                phi_tgt_t = self.btd_up.phi_target(z_t).squeeze(-1)
+                phi_tgt_tp1 = self.btd_up.phi_target(z_tp1).squeeze(-1)
+                not_done_chunk = not_done[start:end]
+                r_chunk = beta * (gamma_phi * not_done_chunk * phi_tgt_tp1 - phi_tgt_t)
+                if clip > 0:
+                    r_chunk = torch.clamp(r_chunk, -clip, clip)
+
+                r_int[start:end] = r_chunk
+
+                b_t = self.btd_up.branching(z_t)
+                phi_t = self.btd_up.phi(z_t).squeeze(-1)
+                b_tp1 = self.btd_up.branching(z_tp1)
+
+                sum_r += r_chunk.sum().item()
+                sum_r2 += (r_chunk * r_chunk).sum().item()
+                sum_b += b_t.sum().item()
+                sum_b2 += (b_t * b_t).sum().item()
+                sum_phi += phi_t.sum().item()
+                sum_phi2 += (phi_t * phi_t).sum().item()
+                sum_btp1 += b_tp1.sum().item()
+                sum_btp1_2 += (b_tp1 * b_tp1).sum().item()
+                sum_r_btp1 += (r_chunk * b_tp1).sum().item()
+                count += int(r_chunk.numel())
+
+                if clip > 0:
+                    clip_count += (r_chunk.abs() >= clip).float().sum().item()
+
+                if sample_target > 0 and hasattr(self.logger, "wandb") and self.logger.wandb:
+                    take = min(sample_target, r_chunk.numel())
+                    if take > 0:
+                        idx = torch.randint(0, r_chunk.numel(), (take,), device=r_chunk.device)
+                        r_samples.append(r_chunk[idx].detach().cpu())
+                        b_samples.append(b_t[idx].detach().cpu())
+                        sample_target -= take
+
+        r_int_view = r_int.view(self.rewards.shape[0], self.rewards.shape[1] - 1)
+        btd_rewards = torch.zeros_like(self.rewards)
+        btd_rewards[:, :-1] = r_int_view
+
+        if count > 0:
+            r_mean = sum_r / count
+            r_var = max(0.0, sum_r2 / count - r_mean * r_mean)
+            r_std = r_var ** 0.5
+            b_mean = sum_b / count
+            b_var = max(0.0, sum_b2 / count - b_mean * b_mean)
+            b_std = b_var ** 0.5
+            phi_mean = sum_phi / count
+            phi_var = max(0.0, sum_phi2 / count - phi_mean * phi_mean)
+            phi_std = phi_var ** 0.5
+            btp1_mean = sum_btp1 / count
+            btp1_var = max(0.0, sum_btp1_2 / count - btp1_mean * btp1_mean)
+            btp1_std = btp1_var ** 0.5
+            cov = sum_r_btp1 / count - r_mean * btp1_mean
+            denom = (r_std * btp1_std) + 1e-8
+            corr = cov / denom if denom > 0 else 0.0
+        else:
+            r_mean = r_std = b_mean = b_std = phi_mean = phi_std = corr = 0.0
+
+        clip_frac = 0.0
+        if clip > 0 and count > 0:
+            clip_frac = clip_count / count
+
+        logs = {
+            'btd_up/branching_mean': b_mean,
+            'btd_up/branching_std': b_std,
+            'btd_up/phi_mean': phi_mean,
+            'btd_up/phi_std': phi_std,
+            'btd_up/r_int_mean': r_mean,
+            'btd_up/r_int_std': r_std,
+            'btd_up/r_int_clip_frac': clip_frac,
+            'btd_up/r_int_corr_b_tp1': corr,
+            'btd_up/beta': beta,
+        }
+
+        if hasattr(self.logger, "wandb") and self.logger.wandb:
+            import wandb
+            if r_samples:
+                sample = torch.cat(r_samples, dim=0)
+                logs['btd_up/r_int_hist'] = wandb.Histogram(sample.numpy())
+            if b_samples:
+                b_sample = torch.cat(b_samples, dim=0)
+                logs['btd_up/branching_hist'] = wandb.Histogram(b_sample.numpy())
+
+        return btd_rewards, logs
 
     def evaluate(self):
         profile = self.profile
@@ -446,6 +591,12 @@ class PuffeRL:
 
         wm_pred_error_mean = 0.0
         wm_intrinsic_mean = 0.0
+        rewards_for_adv = self.rewards
+        self.btd_logs = {}
+        if self.btd_up is not None:
+            btd_rewards, btd_logs = self._compute_btd_intrinsic()
+            rewards_for_adv = self.rewards + btd_rewards
+            self.btd_logs = btd_logs
     
         for mb in range(self.total_minibatches):
             profile('train_misc', epoch)
@@ -453,7 +604,7 @@ class PuffeRL:
 
             shape = self.values.shape
             advantages = torch.zeros(shape, device=device)
-            advantages = compute_puff_advantage(self.values, self.rewards,
+            advantages = compute_puff_advantage(self.values, rewards_for_adv,
                 self.terminals, self.ratio, advantages, config['gamma'],
                 config['gae_lambda'], config['vtrace_rho_clip'], config['vtrace_c_clip'])
 
@@ -468,7 +619,7 @@ class PuffeRL:
             mb_obs = self.observations[idx]
             mb_actions = self.actions[idx]
             mb_logprobs = self.logprobs[idx]
-            mb_rewards = self.rewards[idx]
+            mb_rewards = rewards_for_adv[idx]
             mb_terminals = self.terminals[idx]
             mb_truncations = self.truncations[idx]
             mb_ratio = self.ratio[idx]
@@ -477,6 +628,7 @@ class PuffeRL:
             mb_advantages = advantages[idx]
 
             profile('train_forward', epoch)
+            mb_obs_seq = mb_obs
             if not config['use_rnn']:
                 mb_obs = mb_obs.reshape(-1, *self.vecenv.single_observation_space.shape)
 
@@ -489,8 +641,8 @@ class PuffeRL:
             logits, newvalue = self.policy(mb_obs, state)
             actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(logits, action=mb_actions)
                        
-            mb_obs_cur = mb_obs[:, :-1]
-            mb_obs_nxt = mb_obs[:, 1:] 
+            mb_obs_cur = mb_obs_seq[:, :-1]
+            mb_obs_nxt = mb_obs_seq[:, 1:]
             
             # Tiny world model predicts next observation given action taken
             categorical_logits, continuous_pred = self.world_model(mb_obs_cur, mb_actions[:, :-1])
@@ -558,6 +710,31 @@ class PuffeRL:
             
             # Note: we're skipping one element every batch (the last one) to match shapes
             mb_rewards[:, :-1] += intrinsic_reward
+
+            btd_loss = None
+            if self.btd_up is not None:
+                btd_obs_cur = mb_obs_cur.reshape(-1, *self.vecenv.single_observation_space.shape)
+                btd_obs_nxt = mb_obs_nxt.reshape(-1, *self.vecenv.single_observation_space.shape)
+                z_t = self.btd_up.encode(btd_obs_cur)
+                z_tp1 = self.btd_up.encode(btd_obs_nxt)
+                actions_cur = mb_actions[:, :-1].reshape(-1).long()
+
+                z_pred = self.btd_up.predict_next(z_t, actions_cur)
+                btd_dyn_loss = torch.nn.functional.mse_loss(z_pred, z_tp1.detach())
+
+                with torch.no_grad():
+                    b_t = self.btd_up.branching(z_t)
+                    phi_tp1_tgt = self.btd_up.phi_target(z_tp1).squeeze(-1)
+                    not_done = 1.0 - mb_terminals[:, :-1].reshape(-1)
+                    y = b_t + float(config.get('btd_up_gamma', 0.95)) * not_done * phi_tp1_tgt
+
+                phi_t = self.btd_up.phi(z_t).squeeze(-1)
+                btd_phi_loss = torch.nn.functional.mse_loss(phi_t, y)
+
+                alpha_dyn = float(config.get('btd_up_alpha_dyn', 1.0))
+                alpha_phi = float(config.get('btd_up_alpha_phi', 1.0))
+                btd_loss = alpha_dyn * btd_dyn_loss + alpha_phi * btd_phi_loss
+
                 
             profile('train_misc', epoch)
             newlogprob = newlogprob.reshape(mb_logprobs.shape)
@@ -611,6 +788,10 @@ class PuffeRL:
             losses['clipfrac'] += clipfrac.item() / self.total_minibatches
             losses['importance'] += ratio.mean().item() / self.total_minibatches
             losses['wm_loss'] += wm_loss.item() / self.total_minibatches
+            if btd_loss is not None:
+                losses['btd_dyn_loss'] += btd_dyn_loss.item() / self.total_minibatches
+                losses['btd_phi_loss'] += btd_phi_loss.item() / self.total_minibatches
+                losses['btd_loss'] += btd_loss.item() / self.total_minibatches
 
             # Learn on accumulated minibatches
             profile('learn', epoch)
@@ -627,6 +808,13 @@ class PuffeRL:
                 self.world_model_optimizer.step()
                 self.world_model_optimizer.zero_grad()
 
+            if btd_loss is not None:
+                btd_loss.backward()
+                if (mb + 1) % self.accumulate_minibatches == 0:
+                    torch.nn.utils.clip_grad_norm_(self.btd_up.parameters(), config['max_grad_norm'])
+                    self.btd_up_optimizer.step()
+                    self.btd_up_optimizer.zero_grad()
+
         # Reprioritize experience
         profile('train_misc', epoch)
         if config['anneal_lr']:
@@ -639,6 +827,9 @@ class PuffeRL:
         losses['explained_variance'] = explained_var
         self.wm_pred_error_mean = wm_pred_error_mean
         self.wm_intrinsic_mean = wm_intrinsic_mean
+        if self.btd_up is not None:
+            tau = float(config.get('btd_up_tau', 0.995))
+            self.btd_up.update_target(tau)
 
         profile.end()
         logs = None
@@ -749,6 +940,8 @@ class PuffeRL:
 
         logs['world_model/pred_error_mean'] = self.wm_pred_error_mean
         logs['world_model/intrinsic_reward_mean'] = self.wm_intrinsic_mean
+        if self.btd_logs:
+            logs.update(self.btd_logs)
 
         solved_eps = self.stats.get('solved_episodes', None)
         if solved_eps is not None:
@@ -1555,6 +1748,24 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
         continuous_obs_size=wm_cont_obs,
         num_tile_types=wm_num_tiles,
     )
+    btd_up = None
+    if args['train'].get('btd_up_enabled', False):
+        btd_cfg = args['train']
+        btd_up = pufferlib.models.BTDUnlockPotential(
+            obs_shape=vecenv.single_observation_space.shape,
+            action_size=vecenv.single_action_space.n,
+            latent_dim=btd_cfg.get('btd_up_latent_dim', 64),
+            encoder_type=btd_cfg.get('btd_up_encoder_type', 'mlp'),
+            encoder_hidden=btd_cfg.get('btd_up_encoder_hidden', 256),
+            conv_channels=btd_cfg.get('btd_up_conv_channels', 32),
+            grid_size=btd_cfg.get('btd_up_grid_size', 0),
+            action_embed_dim=btd_cfg.get('btd_up_action_embed_dim', 16),
+            dynamics_hidden=btd_cfg.get('btd_up_dynamics_hidden', 256),
+            phi_hidden=btd_cfg.get('btd_up_phi_hidden', 128),
+            latent_norm=btd_cfg.get('btd_up_latent_norm', 'layernorm'),
+            spread_eps=btd_cfg.get('btd_up_spread_eps', 1e-6),
+            branching_metric=btd_cfg.get('btd_up_branching_metric', 'log'),
+        )
     
     if 'LOCAL_RANK' in os.environ:
         args['train']['device'] = torch.cuda.current_device()
@@ -1576,7 +1787,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
         logger = WandbLogger(args)
 
     train_config = { **args['train'], 'env': env_name }
-    pufferl = PuffeRL(train_config, args, vecenv, policy, world_model, logger)
+    pufferl = PuffeRL(train_config, args, vecenv, policy, world_model, btd_up, logger)
 
     # Sweep needs data for early stopped runs, so send data when steps > 100M
     logging_threshold = min(0.20*train_config['total_timesteps'], 100_000_000)
@@ -1822,7 +2033,34 @@ def profile(args=None, env_name=None, vecenv=None, policy=None):
 
     train_config = dict(**args['train'], env=args['env_name'], tag=args['tag'])
 
-    pufferl = PuffeRL(train_config, args, vecenv, policy, neptune=args['neptune'], wandb=args['wandb'])
+    wm_cont_obs = args['train'].get('wm_continuous_obs_size', 1)
+    wm_num_tiles = args['train'].get('wm_num_tile_types', 10)
+    world_model = pufferlib.models.TinyWorldModel(
+        observation_size=np.prod(vecenv.single_observation_space.shape),
+        action_size=vecenv.single_action_space.n,
+        continuous_obs_size=wm_cont_obs,
+        num_tile_types=wm_num_tiles,
+    )
+    btd_up = None
+    if args['train'].get('btd_up_enabled', False):
+        btd_cfg = args['train']
+        btd_up = pufferlib.models.BTDUnlockPotential(
+            obs_shape=vecenv.single_observation_space.shape,
+            action_size=vecenv.single_action_space.n,
+            latent_dim=btd_cfg.get('btd_up_latent_dim', 64),
+            encoder_type=btd_cfg.get('btd_up_encoder_type', 'mlp'),
+            encoder_hidden=btd_cfg.get('btd_up_encoder_hidden', 256),
+            conv_channels=btd_cfg.get('btd_up_conv_channels', 32),
+            grid_size=btd_cfg.get('btd_up_grid_size', 0),
+            action_embed_dim=btd_cfg.get('btd_up_action_embed_dim', 16),
+            dynamics_hidden=btd_cfg.get('btd_up_dynamics_hidden', 256),
+            phi_hidden=btd_cfg.get('btd_up_phi_hidden', 128),
+            latent_norm=btd_cfg.get('btd_up_latent_norm', 'layernorm'),
+            spread_eps=btd_cfg.get('btd_up_spread_eps', 1e-6),
+            branching_metric=btd_cfg.get('btd_up_branching_metric', 'log'),
+        )
+
+    pufferl = PuffeRL(train_config, args, vecenv, policy, world_model, btd_up)
 
     import torchvision.models as models
     from torch.profiler import profile, record_function, ProfilerActivity

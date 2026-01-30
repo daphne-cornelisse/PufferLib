@@ -1,3 +1,6 @@
+import numpy as np
+
+import pufferlib
 from pufferlib import pufferl
 
 def evaluate(env_name, load_model_path):
@@ -12,7 +15,33 @@ def evaluate(env_name, load_model_path):
 
     vecenv = pufferl.load_env(env_name, args)
     policy = pufferl.load_policy(args, vecenv, env_name)
-    trainer = pufferl.PuffeRL(args['train'], vecenv, policy)
+    wm_cont_obs = args['train'].get('wm_continuous_obs_size', 1)
+    wm_num_tiles = args['train'].get('wm_num_tile_types', 10)
+    world_model = pufferlib.models.TinyWorldModel(
+        observation_size=np.prod(vecenv.single_observation_space.shape),
+        action_size=vecenv.single_action_space.n,
+        continuous_obs_size=wm_cont_obs,
+        num_tile_types=wm_num_tiles,
+    )
+    btd_up = None
+    if args['train'].get('btd_up_enabled', False):
+        btd_cfg = args['train']
+        btd_up = pufferlib.models.BTDUnlockPotential(
+            obs_shape=vecenv.single_observation_space.shape,
+            action_size=vecenv.single_action_space.n,
+            latent_dim=btd_cfg.get('btd_up_latent_dim', 64),
+            encoder_type=btd_cfg.get('btd_up_encoder_type', 'mlp'),
+            encoder_hidden=btd_cfg.get('btd_up_encoder_hidden', 256),
+            conv_channels=btd_cfg.get('btd_up_conv_channels', 32),
+            grid_size=btd_cfg.get('btd_up_grid_size', 0),
+            action_embed_dim=btd_cfg.get('btd_up_action_embed_dim', 16),
+            dynamics_hidden=btd_cfg.get('btd_up_dynamics_hidden', 256),
+            phi_hidden=btd_cfg.get('btd_up_phi_hidden', 128),
+            latent_norm=btd_cfg.get('btd_up_latent_norm', 'layernorm'),
+            spread_eps=btd_cfg.get('btd_up_spread_eps', 1e-6),
+            branching_metric=btd_cfg.get('btd_up_branching_metric', 'log'),
+        )
+    trainer = pufferl.PuffeRL(args['train'], args, vecenv, policy, world_model, btd_up)
 
     # Each evaluate runs for 64 ticks. NOTE: bppt horizon might be short for g2048?
     # Avg episode length from the current model is ~18000, so it takes ~300 epochs for an avg episode.
