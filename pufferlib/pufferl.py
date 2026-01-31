@@ -266,7 +266,7 @@ class PuffeRL:
         # Add separate world model optimizer
         self.world_model_optimizer = ForeachMuon(
             self.world_model.parameters(),
-            lr=config['learning_rate'],
+            lr=config['wm_learning_rate'],
             betas=(config['adam_beta1'], config['adam_beta2']),
             eps=config['adam_eps'],
             heavyball_momentum=True,
