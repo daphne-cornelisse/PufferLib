@@ -84,7 +84,7 @@ int main(int argc, char *argv[]) {
     int num_agents = 1;
 
     // Initialize environment
-    Grid* env = allocate_grid(max_size, num_agents, horizon, vision, speed, discretize);
+    Grid* env = allocate_grid(max_size, num_agents, horizon, vision, speed, discretize, 0.0);
     
     State* levels = calloc(1, sizeof(State));
     
