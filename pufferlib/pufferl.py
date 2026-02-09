@@ -524,7 +524,7 @@ class PuffeRL:
             ], dim=-1)
             
             profile('train_misc', epoch)
-            if mb % 100 == 0 and hasattr(self.logger, 'wandb') and epoch % 100 == 0:
+            if self.config["log_wm_reconstruction"] and mb % 100 == 0 and hasattr(self.logger, 'wandb') and epoch % 100 == 0:
                 show_reconstruction(
                     mb_obs_nxt, 
                     mb_obs_next_pred, 
@@ -697,7 +697,7 @@ class PuffeRL:
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
         
-        if self.config['log_coverage_grid'] and (self.epoch - 1) % 100 == 0:
+        if self.config['log_coverage_grid'] and (self.epoch - 1) % 25 == 0:
             # Note: This only works when backend is Serial
             coverage_grid = self.vecenv.driver_env.get_coverage_counts()
             if coverage_grid.size > 0:

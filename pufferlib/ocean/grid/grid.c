@@ -122,7 +122,7 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    int cell_size = (max_size <= 32) ? 16 : 512 / max_size;
+    int cell_size = (max_size <= MAX_GRID_SIZE) ? 16 : 512 / max_size;
     int render_width = max_size * cell_size;
     int render_height = max_size * cell_size;
     
