@@ -50,6 +50,8 @@ class Grid(pufferlib.PufferEnv):
             seed=seed,
             difficulty=difficulty,
             count_based_reward_coef=count_based_reward_coef,
+            vision=vision,
+            speed=speed,
         )
         
         self.c_envs = binding.vec_init(
@@ -65,6 +67,8 @@ class Grid(pufferlib.PufferEnv):
             num_maps=num_maps,
             horizon=horizon,
             count_based_reward_coef=count_based_reward_coef,
+            vision=vision,
+            speed=speed,
         )
 
     def reset(self, seed=None):

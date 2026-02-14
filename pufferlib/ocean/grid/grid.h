@@ -117,8 +117,8 @@ struct Grid{
 
 void init_grid(Grid* env) {
     env->num_agents = 1;
-    env->vision = 5;
-    env->speed = 1;
+    env->vision = env->vision;
+    env->speed = env->speed;
     env->discretize = true;
     env->obs_size = 2*env->vision + 1;
     int env_mem = env->max_size * env->max_size;
@@ -126,6 +126,8 @@ void init_grid(Grid* env) {
     env->counts = calloc(env_mem, sizeof(int));
     env->agents = calloc(env->num_agents, sizeof(Agent));
     env->coverage_counts = calloc(env_mem, sizeof(int));
+    // printf("Initialized grid with max size %d, num agents %d, vision %d, speed %f, discretize %d\n",
+    //     env->max_size, env->num_agents, env->vision, env->speed, env->discretize);
 }
 
 Grid* allocate_grid(int max_size, int num_agents, int horizon, int vision, float speed, bool discretize, float count_based_reward_coef) {
