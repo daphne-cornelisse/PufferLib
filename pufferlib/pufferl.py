@@ -19,7 +19,9 @@ import matplotlib
 import configparser
 from threading import Thread
 from collections import defaultdict, deque
-
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
 import numpy as np
 import psutil
 
@@ -76,8 +78,8 @@ def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, 
     
     # Get flattened observations. Exclude last element for visualization purposes, since
     # we want to show the grid.
-    actual_grid = mb_obs_nxt[batch_idx, time_idx, :-1].reshape(obs_size, obs_size)
-    predicted_grid = mb_obs_next_pred[batch_idx, time_idx, :-1].reshape(obs_size, obs_size)
+    actual_grid = mb_obs_nxt[batch_idx, time_idx, :-3].reshape(obs_size, obs_size)
+    predicted_grid = mb_obs_next_pred[batch_idx, time_idx, :-3].reshape(obs_size, obs_size)
     error = prediction_error[batch_idx, time_idx]
 
     
@@ -156,8 +158,11 @@ class PuffeRL:
         atn_space = vecenv.single_action_space
         total_agents = vecenv.num_agents
         self.total_agents = total_agents
-        
         self.solved_at_step = None
+    
+        self.grid_height = full_config['env']['max_size']
+        self.state_visit_counts = np.zeros((self.grid_height, self.grid_height), dtype=np.int32)    
+        self.state_reward_sums = np.zeros((self.grid_height, self.grid_height), dtype=np.float32)
 
         # Experience
         if config['batch_size'] == 'auto' and config['bptt_horizon'] == 'auto':
@@ -321,7 +326,50 @@ class PuffeRL:
             return 0
 
         return (self.global_step - self.last_log_step) / (time.time() - self.last_log_time)
-
+    
+    def visualize_state_visitation(self):
+        """Create visualizations of state visitation counts and rewards"""
+        
+        # Set style
+        sns.set("notebook", font_scale=1.05, rc={"figure.figsize": (16, 5)})
+        sns.set_style("ticks", rc={"figure.facecolor": "white", "axes.facecolor": "white"})
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5), dpi=200)
+        
+        # 1. State visitation heatmap
+        sns.heatmap(self.state_visit_counts, ax=axes[0], vmin=0, vmax=self.segments, cbar_kws={'label': 'Visit Count'})
+        axes[0].set_title(r'State visitation counts $N_s$')
+        axes[0].set_xlabel('x')
+        axes[0].set_ylabel('y')
+        
+        # 2. Average reward heatmap
+        avg_rewards = np.divide(
+            self.state_reward_sums,
+            self.state_visit_counts,
+            where=self.state_visit_counts > 0,
+            out=np.zeros_like(self.state_reward_sums)
+        )
+        sns.heatmap(avg_rewards, ax=axes[1])
+        axes[1].set_title(r'Moving average of $r^i(s)$: $\sum r^i / N_s$')
+        axes[1].set_xlabel('x')
+        axes[1].set_ylabel('y')
+        
+        # 3. Reward vs 1/n scatter plot
+        # We take the intrinsic rewards obtained in a particular rollout
+        # And the approximated state visitation counts for those states
+        axes[2].scatter(self.normalized_state_counts_rollout, self.state_reward_rollout, alpha=0.5, label='Reward', s=20)
+        x_range = np.linspace(1, max(self.normalized_state_counts_rollout), 100)
+        axes[2].plot(x_range, 0.1 / x_range, 'r--', label='0.1/n', linewidth=2)
+        axes[2].set_xlabel(r'State visitation count ($N_s$)')
+        axes[2].set_ylabel(r'Intrinsic rewards obtained in rollout')
+        axes[2].set_title(r'Intrinsic rewards vs state visitation count')
+        axes[2].legend()
+        # axes[2].set_xscale('log')
+        # axes[2].set_yscale('log')
+        axes[2].grid(True, alpha=0.3)
+        plt.tight_layout()
+        sns.despine()
+        return fig
+    
     def evaluate(self):
         profile = self.profile
         epoch = self.epoch
@@ -339,8 +387,42 @@ class PuffeRL:
         self.full_rows = 0
         while self.full_rows < self.segments:
             profile('env', epoch)
+            
+            # Receive data from envs
             o, r, d, t, info, env_id, mask = self.vecenv.recv()
-
+            
+            # Intrinsic rewards for exploration
+            # Increment state visitation counts for each collected segment (transition)
+            col_indices = o[:, -2].astype(int) # x
+            row_indices = o[:, -1].astype(int) # y
+            
+            # Store counts at reward computation time
+            prev_state_counts_rollout = self.state_visit_counts[row_indices, col_indices].copy()
+        
+            # Increment counts
+            np.add.at(self.state_visit_counts, (row_indices, col_indices), 1)
+            
+            # Add intrinsic rewards
+            if config['python_count_based_reward_coef'] > 0:
+                # Baseline intrinsic reward proportional to 1/(n)
+                current_state_counts_rollout = self.state_visit_counts[row_indices, col_indices].copy()
+                self.normalized_state_counts_rollout = (current_state_counts_rollout / self.segments) + 1
+                # Approximate intrinsic rewards
+                intrinsic_rewards = config['python_count_based_reward_coef'] * (0.1 / (self.normalized_state_counts_rollout))
+                # Augment extrinsic reward with intrinsic reward
+                r += intrinsic_rewards
+            elif config['wm_reward_coef'] > 0:
+                # TODO: Integrate world model-based intrinsic rewards here.
+                pass
+            else: # Intrinsic rewards are computed in grid.h
+                self.normalized_state_counts_rollout = (prev_state_counts_rollout / self.segments) + 1
+                intrinsic_rewards = r.copy()
+            
+            np.add.at(self.state_reward_sums, (row_indices, col_indices), intrinsic_rewards)      
+            
+            # Store
+            self.state_reward_rollout = intrinsic_rewards
+            
             profile('eval_misc', epoch)
             env_id = slice(env_id[0], env_id[-1] + 1)
 
@@ -461,6 +543,8 @@ class PuffeRL:
 
             profile('train_copy', epoch)
             mb_obs = self.observations[idx]
+            # Zero out absolute position in observations to prevent world model from simply memorizing positions
+            mb_obs[:, :, -2:] = 0
             mb_actions = self.actions[idx]
             mb_logprobs = self.logprobs[idx]
             mb_rewards = self.rewards[idx]
@@ -483,7 +567,8 @@ class PuffeRL:
 
             logits, newvalue = self.policy(mb_obs, state)
             actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(logits, action=mb_actions)
-                       
+
+            # # # # Calculate intrinsic reward from world model prediction error # # # #
             mb_obs_cur = mb_obs[:, :-1]
             mb_obs_nxt = mb_obs[:, 1:] 
             
@@ -524,7 +609,7 @@ class PuffeRL:
             ], dim=-1)
             
             profile('train_misc', epoch)
-            if mb % 100 == 0 and hasattr(self.logger, 'wandb') and epoch % 100 == 0:
+            if self.config['log_wm_reconstruction'] and mb % 100 == 0 and hasattr(self.logger, 'wandb') and epoch % 100 == 0:
                 show_reconstruction(
                     mb_obs_nxt, 
                     mb_obs_next_pred, 
@@ -697,7 +782,7 @@ class PuffeRL:
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
         
-        if self.config['log_coverage_grid'] and (self.epoch - 1) % 100 == 0:
+        if self.config['log_coverage_grid'] and (self.epoch - 1) % 50 == 0:
             # Note: This only works when backend is Serial
             coverage_grid = self.vecenv.driver_env.get_coverage_counts()
             if coverage_grid.size > 0:
@@ -705,6 +790,14 @@ class PuffeRL:
                     coverage_grid,
                     caption=f"Epoch {self.epoch}",
                 )
+            
+            # Get visualization
+            vis_fig = self.visualize_state_visitation()
+            logs['environment/state_visitation_intrinsic_reward'] = wandb.Image(
+                vis_fig,
+                caption=f"Epoch {self.epoch}"
+            )
+            plt.close(vis_fig)
         
         if self.config['log_detailed_stats']:
             if len(self.explore_stats['entropy']) > 0:

@@ -102,7 +102,7 @@ struct Grid{
     int obs_size;
     int max_size;
     bool discretize;
-    float count_based_reward_coef;
+    float c_count_based_reward_coef;
     Log log;
     Agent* agents;
     unsigned char* grid;
@@ -130,7 +130,7 @@ void init_grid(Grid* env) {
     //     env->max_size, env->num_agents, env->vision, env->speed, env->discretize);
 }
 
-Grid* allocate_grid(int max_size, int num_agents, int horizon, int vision, float speed, bool discretize, float count_based_reward_coef) {
+Grid* allocate_grid(int max_size, int num_agents, int horizon, int vision, float speed, bool discretize, float c_count_based_reward_coef) {
     Grid* env = (Grid*)calloc(1, sizeof(Grid));
     env->max_size = max_size;
     env->num_agents = num_agents;
@@ -138,9 +138,9 @@ Grid* allocate_grid(int max_size, int num_agents, int horizon, int vision, float
     env->vision = vision;
     env->speed = speed;
     env->discretize = discretize;
-    env->count_based_reward_coef = count_based_reward_coef;
+    env->c_count_based_reward_coef = c_count_based_reward_coef;
     int obs_size = 2*vision + 1;
-    env->observations = calloc(num_agents*(obs_size*obs_size + 1), sizeof(float));
+    env->observations = calloc(num_agents*(obs_size*obs_size + 3), sizeof(float));
     env->actions = calloc(num_agents, sizeof(float));
     env->rewards = calloc(num_agents, sizeof(float));
     env->terminals = calloc(num_agents, sizeof(unsigned char));
@@ -196,7 +196,7 @@ void add_log(Grid* env, int idx) {
 }
  
 void compute_observations(Grid* env) {
-    memset(env->observations, 0, (env->obs_size*env->obs_size + 1)*env->num_agents);
+    memset(env->observations, 0, (env->obs_size*env->obs_size + 3)*env->num_agents);
     for (int agent_idx = 0; agent_idx < env->num_agents; agent_idx++) {
         Agent* agent = &env->agents[agent_idx];
         float y = agent->y;
@@ -235,7 +235,14 @@ void compute_observations(Grid* env) {
         // Add direction at the end of the observation
         int direction_idx = obs_offset + env->obs_size*env->obs_size;
         env->observations[direction_idx] = agent->direction / 10;
+
+        // Add absolute x position
+        int x_idx = direction_idx + 1;
+        env->observations[x_idx] = agent->x;
         
+        // Add absolute y position
+        int y_idx = direction_idx + 2;
+        env->observations[y_idx] = agent->y;
         /*
         int obs_adr = 0;
         for (int r = 0; r < env->obs_size; r++) {
@@ -447,8 +454,8 @@ bool step_agent(Grid* env, int idx) {
     env->counts[adr]++;
     env->coverage_counts[adr]++;
 
-    env->rewards[idx] +=  env->count_based_reward_coef * (0.1 / (float)env->counts[adr]);
-    //printf("Count based reward coef: %f\n", env->count_based_reward_coef);
+    env->rewards[idx] +=  env->c_count_based_reward_coef * (0.1 / (float)env->counts[adr]);
+    //printf("Count based reward coef: %f\n", env->c_count_based_reward_coef);
     //printf("Agent %d reward: %f (count %d)\n", idx, env->rewards[idx], env->counts[adr]);
     return true;
 }

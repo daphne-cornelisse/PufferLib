@@ -19,7 +19,7 @@ class Grid(pufferlib.PufferEnv):
         speed=1.0, 
         discretize=True,
         difficulty=0.85,
-        count_based_reward_coef=0.0,
+        c_count_based_reward_coef=0.0,
         report_interval=128, 
         buf=None,
         seed=0,
@@ -30,10 +30,10 @@ class Grid(pufferlib.PufferEnv):
         self.speed = speed
         self.discretize = discretize
         self.size = size    
-        self.count_based_reward_coef = count_based_reward_coef 
+        self.c_count_based_reward_coef = c_count_based_reward_coef
         self.obs_size = 2*vision + 1
         self.single_observation_space = gymnasium.spaces.Box(
-            low=-1, high=255, shape=(self.obs_size*self.obs_size + 1,), dtype=np.float32
+           low=-1, high=255, shape=(self.obs_size*self.obs_size + 3,), dtype=np.float32
         )
         self.single_action_space = gymnasium.spaces.Discrete(5)
         self.render_mode = render_mode
@@ -49,7 +49,7 @@ class Grid(pufferlib.PufferEnv):
             size=size,
             seed=seed,
             difficulty=difficulty,
-            count_based_reward_coef=count_based_reward_coef,
+            c_count_based_reward_coef=c_count_based_reward_coef,
             vision=vision,
             speed=speed,
         )
@@ -66,7 +66,7 @@ class Grid(pufferlib.PufferEnv):
             max_size=max_size, 
             num_maps=num_maps,
             horizon=horizon,
-            count_based_reward_coef=count_based_reward_coef,
+            c_count_based_reward_coef=c_count_based_reward_coef,
             vision=vision,
             speed=speed,
         )
@@ -99,7 +99,7 @@ class Grid(pufferlib.PufferEnv):
         pass
 
 def test_performance(timeout=10, atn_cache=1024):
-    env = Grid(max_size=7, size=-1, num_envs=1, num_maps=1, count_based_reward_coef=1.0, horizon=1000)
+    env = Grid(max_size=7, size=-1, num_envs=1, num_maps=1, c_count_based_reward_coef=1.0, horizon=1000)
     env.reset(0)
     tick = 0
 
