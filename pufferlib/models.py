@@ -67,6 +67,216 @@ class TinyWorldModel(nn.Module):
         continuous_pred = self.continuous_head(features)
         
         return categorical_logits, continuous_pred
+    
+    def compute_prediction_error(self, observations, actions, next_observations, clip_value=None):
+        '''
+        Compute prediction error for given transitions.
+        
+        Args:
+            observations: (batch, seq, obs_size) current observations
+            actions: (batch, seq) actions taken
+            next_observations: (batch, seq, obs_size) resulting observations
+            clip_value: optional max value to clip error
+            
+        Returns:
+            prediction_error: (batch, seq) prediction error per transition
+        '''
+        # Get predictions
+        categorical_logits, continuous_pred = self.forward(observations, actions)
+        
+        # Split target observations
+        next_obs_cat = next_observations[:, :, :self.cat_obs_size].long()
+        next_obs_cont = next_observations[:, :, self.cat_obs_size:]
+        
+        batch_size, seq_len, num_positions = next_obs_cat.shape
+        
+        # Categorical loss (cross-entropy)
+        categorical_loss = torch.nn.functional.cross_entropy(
+            categorical_logits.reshape(-1, self.num_tile_types),
+            next_obs_cat.reshape(-1),
+            reduction='none'
+        )
+        cat_loss = categorical_loss.reshape(batch_size, seq_len, num_positions).mean(dim=-1)
+        
+        # Continuous loss (MSE)
+        cont_loss = ((continuous_pred - next_obs_cont)**2).mean(dim=-1)
+        
+        # Combined prediction error
+        prediction_error = cat_loss + cont_loss
+        
+        if clip_value is not None:
+            prediction_error = torch.clamp(prediction_error, 0, clip_value)
+            
+        return prediction_error
+    
+    def compute_intrinsic_reward(self, observations, actions, next_observations, 
+                                  reward_coef=1.0, clip_value=None, normalize=True):
+        '''
+        Compute curiosity-driven intrinsic reward based on prediction error.
+        
+        Args:
+            observations: (batch, seq, obs_size) current observations
+            actions: (batch, seq) actions taken
+            next_observations: (batch, seq, obs_size) resulting observations
+            reward_coef: scaling coefficient for intrinsic rewards
+            clip_value: optional max value to clip prediction error
+            normalize: whether to z-score normalize errors before converting to reward
+            
+        Returns:
+            intrinsic_reward: (batch, seq) intrinsic reward per transition
+        '''
+        prediction_error = self.compute_prediction_error(
+            observations, actions, next_observations, clip_value
+        )
+        
+        if normalize:
+            # Z-score normalization
+            error_mean = prediction_error.mean()
+            error_std = prediction_error.std() + 1e-8
+            normalized_error = (prediction_error - error_mean) / error_std
+            
+            # Apply ReLU to only reward above-average errors
+            intrinsic_reward = torch.relu(normalized_error) ** 2 * reward_coef
+        else:
+            # Direct scaling without normalization
+            intrinsic_reward = prediction_error * reward_coef
+            
+        return intrinsic_reward
+    
+    def predict_and_compute_reward(self, prev_obs, action, curr_obs, 
+                                     reward_coef=1.0, clip_value=None, 
+                                     normalize=True, zero_out_positions=True):
+        '''
+        Convenience method for computing intrinsic reward during eval loop.
+        Handles batched transitions with optional position zeroing.
+        
+        Args:
+            prev_obs: (n_envs, obs_size) previous observations
+            action: (n_envs,) actions taken
+            curr_obs: (n_envs, obs_size) current observations
+            reward_coef: scaling coefficient for intrinsic rewards
+            clip_value: optional max value to clip prediction error
+            normalize: whether to z-score normalize errors
+            zero_out_positions: whether to zero out last 2 dims (x,y positions)
+            
+        Returns:
+            intrinsic_reward: (n_envs,) intrinsic reward per environment
+        '''
+        # Clone to avoid modifying originals
+        prev_obs_clean = prev_obs.clone()
+        curr_obs_clean = curr_obs.clone()
+        
+        # Zero out absolute positions to prevent world model from memorizing them
+        if zero_out_positions:
+            prev_obs_clean[:, -2:] = 0
+            curr_obs_clean[:, -2:] = 0
+        
+        # Add sequence dimension (treat batch as batch, add seq=1)
+        # Shape: (n_envs, obs_size) -> (n_envs, 1, obs_size)
+        prev_obs_wm = prev_obs_clean.unsqueeze(1)
+        curr_obs_wm = curr_obs_clean.unsqueeze(1)
+        action_wm = action.unsqueeze(1)  # (n_envs,) -> (n_envs, 1)
+        
+        # Compute intrinsic reward
+        intrinsic_reward = self.compute_intrinsic_reward(
+            prev_obs_wm, action_wm, curr_obs_wm,
+            reward_coef=reward_coef,
+            clip_value=clip_value,
+            normalize=normalize
+        )
+        
+        # Remove sequence dimension and return
+        # Shape: (n_envs, 1) -> (n_envs,)
+        return intrinsic_reward.squeeze(1)
+    
+    def compute_loss(self, observations, actions, next_observations, clip_value=None):
+        '''
+        Compute training loss for the world model.
+        
+        Args:
+            observations: (batch, seq, obs_size) current observations
+            actions: (batch, seq) actions taken
+            next_observations: (batch, seq, obs_size) resulting observations
+            clip_value: optional max value to clip error
+            
+        Returns:
+            loss: scalar loss for backpropagation
+        '''
+        prediction_error = self.compute_prediction_error(
+            observations, actions, next_observations, clip_value
+        )
+        return prediction_error.mean()
+    
+    def get_predictions_for_logging(self, observations, actions, next_observations, clip_value=None):
+        '''
+        Get predictions and errors formatted for the show_reconstruction function.
+        This is a convenience method for logging/visualization during training.
+        
+        Args:
+            observations: (batch, seq, obs_size) current observations
+            actions: (batch, seq) actions taken
+            next_observations: (batch, seq, obs_size) target observations
+            clip_value: optional max value to clip error
+            
+        Returns:
+            tuple: (predictions, errors) ready for show_reconstruction
+                predictions: (batch, seq, obs_size) predicted next observations
+                errors: (batch, seq) prediction error per transition
+        '''
+        with torch.no_grad():
+            # Get predictions from forward pass
+            categorical_logits, continuous_pred = self.forward(observations, actions)
+            
+            # Convert logits to predicted classes
+            categorical_pred = categorical_logits.argmax(dim=-1)  # (batch, seq, cat_obs_size)
+            
+            # Concatenate categorical predictions with continuous predictions
+            predictions = torch.cat([
+                categorical_pred.float(),
+                continuous_pred
+            ], dim=-1)
+            
+            # Compute prediction error
+            errors = self.compute_prediction_error(
+                observations, actions, next_observations, clip_value
+            )
+            
+            return predictions, errors
+    
+    @torch.no_grad()
+    def visualize_prediction(self, observations, actions, next_observations, idx=0):
+        '''
+        Helper method to get predicted vs actual observations for visualization.
+        
+        Args:
+            observations: (batch, seq, obs_size)
+            actions: (batch, seq)
+            next_observations: (batch, seq, obs_size)
+            idx: which batch element to visualize
+            
+        Returns:
+            dict with 'actual', 'predicted', and 'error' arrays
+        '''
+        categorical_logits, continuous_pred = self.forward(observations, actions)
+        
+        # Convert logits to predicted classes
+        categorical_pred = categorical_logits.argmax(dim=-1)  # (batch, seq, cat_obs_size)
+        
+        # Concatenate predictions
+        predicted = torch.cat([
+            categorical_pred.float(),
+            continuous_pred
+        ], dim=-1)
+        
+        # Compute error
+        error = self.compute_prediction_error(observations, actions, next_observations)
+        
+        return {
+            'actual': next_observations[idx].cpu().numpy(),
+            'predicted': predicted[idx].cpu().numpy(),
+            'error': error[idx].cpu().numpy()
+        }
+
 
 class Default(nn.Module):
     '''Default PyTorch policy. Flattens obs and applies a linear layer.
