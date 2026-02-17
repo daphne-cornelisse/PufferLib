@@ -743,16 +743,18 @@ class Protein:
             self.score_opt = torch.optim.Adam(self.gp_score.parameters(), lr=self.gp_learning_rate, amsgrad=True)
             self.cost_opt = torch.optim.Adam(self.gp_cost.parameters(), lr=self.gp_learning_rate, amsgrad=True)
        
+        
         pareto_front, pareto_idxs = pareto_points(self.success_observations)
         pruned_front = prune_pareto_front(pareto_front)
         pareto_observations = pruned_front if self.prune_pareto else pareto_front
 
         # Use the max cost from the pruned pareto to avoid inefficiently long runs
-        if self.upper_cost_threshold < 0:
-            self.upper_cost_threshold = pruned_front[-1]['cost']
-        # Try to change the threshold slowly
-        elif self.upper_cost_threshold < pruned_front[-1]['cost']:
-            self.upper_cost_threshold *= 1.01
+        if pruned_front:
+            if self.upper_cost_threshold < 0:
+                self.upper_cost_threshold = pruned_front[-1]['cost']
+            # Try to change the threshold slowly
+            elif self.upper_cost_threshold < pruned_front[-1]['cost']:
+                self.upper_cost_threshold *= 1.01
         self.stop_threshold_model.fit(self.success_observations, self.upper_cost_threshold)
 
         ### Sample suggestions

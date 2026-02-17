@@ -27,6 +27,9 @@
 #define REWARD 4
 #define OBJECT 5
 #define AGENT 6
+#define WALL_2 7
+#define WALL_3 8
+#define WALL_4 9
 #define KEY 14
 #define DOOR_LOCKED 20
 #define DOOR_OPEN 26
@@ -40,6 +43,8 @@ struct Log {
     float episode_return;
     float episode_length;
     float n;
+    float unique_visited;
+    float cum_coverage;
 };
 
 // 8 unique agents
@@ -62,6 +67,9 @@ bool is_open_door(int idx) {
 }
 bool is_correct_key(int key, int door) {
     return key == door - 6;
+}
+bool is_wall(int idx) {
+    return idx == WALL || idx == WALL_2 || idx == WALL_3 || idx == WALL_4;
 }
 
 typedef struct Agent Agent;
@@ -94,30 +102,35 @@ struct Grid{
     int obs_size;
     int max_size;
     bool discretize;
+    float count_based_ri_c;
     Log log;
     Agent* agents;
     unsigned char* grid;
     int* counts;
-    unsigned char* observations;
+    float* observations;
     float* actions;
     float* rewards;
     unsigned char* terminals;
+    int total_traversable;
+    int* coverage_counts;
 };
 
 void init_grid(Grid* env) {
     env->num_agents = 1;
-    env->vision = 5;
-    env->speed = 1;
+    env->vision = env->vision;
+    env->speed = env->speed;
     env->discretize = true;
     env->obs_size = 2*env->vision + 1;
-    int env_mem= env->max_size * env->max_size;
+    int env_mem = env->max_size * env->max_size;
     env->grid = calloc(env_mem, sizeof(unsigned char));
     env->counts = calloc(env_mem, sizeof(int));
     env->agents = calloc(env->num_agents, sizeof(Agent));
+    env->coverage_counts = calloc(env_mem, sizeof(int));
+    // printf("Initialized grid with max size %d, num agents %d, vision %d, speed %f, discretize %d\n",
+    //     env->max_size, env->num_agents, env->vision, env->speed, env->discretize);
 }
 
-Grid* allocate_grid(int max_size, int num_agents, int horizon,
-        int vision, float speed, bool discretize) {
+Grid* allocate_grid(int max_size, int num_agents, int horizon, int vision, float speed, bool discretize, float count_based_ri_c) {
     Grid* env = (Grid*)calloc(1, sizeof(Grid));
     env->max_size = max_size;
     env->num_agents = num_agents;
@@ -125,9 +138,9 @@ Grid* allocate_grid(int max_size, int num_agents, int horizon,
     env->vision = vision;
     env->speed = speed;
     env->discretize = discretize;
+    env->count_based_ri_c = count_based_ri_c;
     int obs_size = 2*vision + 1;
-    env->observations = calloc(
-        num_agents*obs_size*obs_size, sizeof(unsigned char));
+    env->observations = calloc(num_agents*(obs_size*obs_size + 3), sizeof(float));
     env->actions = calloc(num_agents, sizeof(float));
     env->rewards = calloc(num_agents, sizeof(float));
     env->terminals = calloc(num_agents, sizeof(unsigned char));
@@ -139,6 +152,7 @@ void c_close(Grid* env) {
     free(env->grid);
     free(env->counts);
     free(env->agents);
+    free(env->coverage_counts);
     free(env);
 }
 
@@ -165,10 +179,24 @@ void add_log(Grid* env, int idx) {
     env->log.episode_return += env->rewards[idx];
     env->log.episode_length += env->tick;
     env->log.n += 1.0;
+
+    // Log coverage
+    int visited_tiles = 0;
+    for (int r = 0; r < env->height; r++) {
+        for (int c = 0; c < env->width; c++) {
+            int adr = grid_offset(env, r, c);
+            if (env->coverage_counts[adr] != 0) {
+                visited_tiles++;
+            }
+        }
+    }
+
+    env->log.unique_visited += (float)visited_tiles; 
+    env->log.cum_coverage += ((float)visited_tiles / (float)env->total_traversable) * 100.0f;
 }
  
 void compute_observations(Grid* env) {
-    memset(env->observations, 0, env->obs_size*env->obs_size*env->num_agents);
+    memset(env->observations, 0, (env->obs_size*env->obs_size + 3)*env->num_agents);
     for (int agent_idx = 0; agent_idx < env->num_agents; agent_idx++) {
         Agent* agent = &env->agents[agent_idx];
         float y = agent->y;
@@ -203,6 +231,18 @@ void compute_observations(Grid* env) {
                 env->observations[obs_adr] = env->grid[adr];
             }
         }
+        
+        // Add direction at the end of the observation
+        int direction_idx = obs_offset + env->obs_size*env->obs_size;
+        env->observations[direction_idx] = agent->direction / 10;
+
+        // Add absolute x position
+        int x_idx = direction_idx + 1;
+        env->observations[x_idx] = agent->x;
+        
+        // Add absolute y position
+        int y_idx = direction_idx + 2;
+        env->observations[y_idx] = agent->y;
         /*
         int obs_adr = 0;
         for (int r = 0; r < env->obs_size; r++) {
@@ -256,16 +296,22 @@ struct State {
     int num_agents;
     Agent* agents;
     unsigned char* grid;
+    int total_traversable;
+    int* coverage_counts;
 };
 
 void init_state(State* state, int max_size, int num_agents) {
     state->agents = calloc(num_agents, sizeof(Agent));
     state->grid = calloc(max_size*max_size, sizeof(unsigned char));
+    state->total_traversable = 0;
+    // Intialize array for cumulative coverage counts (across episodes)
+    state->coverage_counts = calloc(max_size*max_size, sizeof(int));
 }
 
 void free_state(State* state) {
     free(state->agents);
     free(state->grid);
+    free(state->coverage_counts);
     free(state);
 }
 
@@ -275,20 +321,25 @@ void get_state(Grid* env, State* state) {
     state->num_agents = env->num_agents;
     memcpy(state->agents, env->agents, env->num_agents*sizeof(Agent));
     memcpy(state->grid, env->grid, env->max_size*env->max_size);
+    state->total_traversable = env->total_traversable;
 }
 
 void set_state(Grid* env, State* state) {
     env->width = state->width;
     env->height = state->height;
-    env->horizon = 2*env->width*env->height;
+    // Read from ini
+    //env->horizon = 2*env->width*env->height; 
     env->num_agents = state->num_agents;
     memcpy(env->agents, state->agents, env->num_agents*sizeof(Agent));
     memcpy(env->grid, state->grid, env->max_size*env->max_size);
+    // Ensure this is not reset in between episodes
+    env->coverage_counts = state->coverage_counts;
+    env->total_traversable = state->total_traversable;
 }
 
 void c_reset(Grid* env) {
     memset(env->grid, 0, env->max_size*env->max_size);
-    memset(env->counts, 0, env->max_size*env->max_size*sizeof(int));
+    //memset(env->counts, 0, env->max_size*env->max_size*sizeof(int)); Do not reset between episodes
     env->tick = 0;
     int idx = rand() % env->num_maps;
     set_state(env, &env->levels[idx]);
@@ -303,7 +354,7 @@ int move_to(Grid* env, int agent_idx, float y, float x) {
 
     int adr = grid_offset(env, round(y), round(x));
     int dest = env->grid[adr];
-    if (dest == WALL) {
+    if (is_wall(dest)) {  
         return 1;
     } else if (dest == REWARD || dest == GOAL) {
         env->rewards[agent_idx] = 1.0;
@@ -397,10 +448,15 @@ bool step_agent(Grid* env, int idx) {
 
     int x_int = agent->x;
     int y_int = agent->y;
-    int adr = grid_offset(env, y_int, x_int);
+    int adr = grid_offset(env, round(y), round(x));
+
+    // Increment visit counts
     env->counts[adr]++;
-    //env->rewards[idx] += 0.01 / (float)env->counts[adr];
-    //env->log.episode_return += 0.01 / (float)env->counts[adr];
+    env->coverage_counts[adr]++;
+
+    env->rewards[idx] += env->count_based_ri_c * (0.1 / (float)env->counts[adr]);
+    //printf("Count based reward coef: %f\n", env->count_based_ri_c);
+    //printf("Agent %d reward: %f (count %d)\n", idx, env->rewards[idx], env->counts[adr]);
     return true;
 }
 
@@ -425,6 +481,7 @@ void c_step(Grid* env) {
     if (env->tick >= env->horizon) {
         done = true;
         add_log(env, 0);
+        //printf("Episode timed out at horizon %d\n", env->horizon);
     }
 
     if (done) {
@@ -539,8 +596,17 @@ void c_render(Grid* env) {
             }
 
             Color color;
+
             if (tile == WALL) {
                 color = (Color){128, 128, 128, 255};
+            } else if (tile == WALL_2) {
+                color = (Color){100, 100, 150, 255};  // Bluish gray
+            } else if (tile == WALL_3) {
+                color = (Color){150, 100, 100, 255};  // Reddish gray
+            } else if (tile == WALL_4) {
+                color = (Color){100, 150, 100, 255};  // Greenish gray
+            } else if (tile == GOAL) {
+                color = GREEN;
             } else if (tile == GOAL) {
                 color = GREEN;
             } else if (is_locked_door(tile)) {
@@ -647,12 +713,22 @@ void generate_growing_tree_maze(unsigned char* grid,
     bool visited[width*height];
     memset(visited, false, width*height);
 
+    // Create a fixed random pattern for wall colors
+    unsigned char wall_types[4] = {WALL, WALL_2, WALL_3, WALL_4};
+    unsigned char wall_pattern[width * height];
+    for (int i = 0; i < width * height; i++) {
+        wall_pattern[i] = wall_types[rand() % 4];
+    }
+    
     memset(grid, WALL, max_size*height);
     for (int r = 0; r < height; r++) {
         for (int c = 0; c < width; c++) {
             int adr = r*max_size + c;
             if (r % 2 == 1 && c % 2 == 1) {
                 grid[adr] = EMPTY;
+            } else {
+                int pattern_idx = r * width + c;
+                grid[adr] = wall_pattern[pattern_idx];
             }
         }
     }

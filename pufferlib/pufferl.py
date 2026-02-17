@@ -15,10 +15,13 @@ import random
 import shutil
 import argparse
 import importlib
+import matplotlib
 import configparser
 from threading import Thread
 from collections import defaultdict, deque
-
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
 import numpy as np
 import psutil
 
@@ -31,6 +34,7 @@ import pufferlib
 import pufferlib.sweep
 import pufferlib.vector
 import pufferlib.pytorch
+import pufferlib.models
 try:
     from pufferlib import _C
 except ImportError:
@@ -54,8 +58,88 @@ from torch.utils.cpp_extension import (
 # and can find CUDA or HIP in the system
 ADVANTAGE_CUDA = bool(CUDA_HOME or ROCM_HOME)
 
+def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, step, vision=5):
+    
+    import wandb
+    import matplotlib.pyplot as plt
+    from io import BytesIO
+    from PIL import Image
+    
+    # Compute observation size 
+    obs_size = 2 * vision + 1
+    mb_obs_nxt = mb_obs_nxt.detach().cpu().numpy()
+    mb_obs_next_pred = mb_obs_next_pred.detach().cpu().numpy()
+    prediction_error = prediction_error.detach().cpu().numpy()
+    
+    wandb_images = []
+    
+    batch_idx = 0
+    time_idx = 0
+    
+    # Get flattened observations. Exclude last element for visualization purposes, since
+    # we want to show the grid.
+    actual_grid = mb_obs_nxt[batch_idx, time_idx, :-3].reshape(obs_size, obs_size)
+    predicted_grid = mb_obs_next_pred[batch_idx, time_idx, :-3].reshape(obs_size, obs_size)
+    error = prediction_error[batch_idx, time_idx]
+
+    
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5), dpi=150)
+    
+    # Actual observation
+    im0 = axes[0].imshow(actual_grid, vmin=0, vmax=9, interpolation='nearest', cmap='cividis')
+    axes[0].set_title(f'Actual next observation ({obs_size}x{obs_size})')
+    axes[0].set_xlabel('X')
+    axes[0].set_ylabel('Y')
+    axes[0].grid(True, alpha=0.3)
+    plt.colorbar(im0, ax=axes[0], label='Tile Type')
+    
+    # Predicted observation
+    im1 = axes[1].imshow(predicted_grid, vmin=0, vmax=9, interpolation='nearest', cmap='cividis')
+    axes[1].set_title(f'Pred next observation ({obs_size}x{obs_size})')
+    axes[1].set_xlabel('X')
+    axes[1].set_ylabel('Y')
+    axes[1].grid(True, alpha=0.3)
+    plt.colorbar(im1, ax=axes[1], label='Tile Type')
+    
+    # Absolute difference
+    diff_grid = np.abs(actual_grid - predicted_grid)
+    im2 = axes[2].imshow(diff_grid, cmap='Reds', interpolation='nearest', vmin=0, vmax=2)
+    axes[2].set_title(f'Abs Difference\nMSE: {error:.4f}')
+    axes[2].set_xlabel('X')
+    axes[2].set_ylabel('Y')
+    axes[2].grid(True, alpha=0.3)
+    plt.colorbar(im2, ax=axes[2], label='Error')
+    
+    plt.suptitle(f'Batch {batch_idx}, Time {time_idx}', fontsize=14)
+    plt.tight_layout()
+    
+    # Convert figure to image array
+    buf = BytesIO()
+    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+    buf.seek(0)
+    image = Image.open(buf)
+    image_array = np.array(image)
+    buf.close()
+    
+    wandb_images.append(
+        wandb.Image(
+            image_array, 
+            caption=f"Batch {batch_idx}, t={time_idx}, MSE={error:.4f}"
+        )
+    )
+    
+    plt.close(fig)
+    
+    # Log to wandb
+    logger.wandb.log({
+        'world_model/reconstruction': wandb_images,
+        'world_model/mean_reconstruction_error': prediction_error.mean(),
+        'world_model/max_reconstruction_error': prediction_error.max(),
+        'world_model/min_reconstruction_error': prediction_error.min(),
+    }, step=step)
+
 class PuffeRL:
-    def __init__(self, config, vecenv, policy, logger=None):
+    def __init__(self, config, full_config, vecenv, policy, world_model, logger=None):
         # Backend perf optimization
         torch.set_float32_matmul_precision('high')
         torch.backends.cudnn.deterministic = config['torch_deterministic']
@@ -68,12 +152,21 @@ class PuffeRL:
         #torch.manual_seed(seed)
 
         # Vecenv info
+        self.full_config = full_config
         vecenv.async_reset(seed)
         obs_space = vecenv.single_observation_space
         atn_space = vecenv.single_action_space
         total_agents = vecenv.num_agents
         self.total_agents = total_agents
-
+        self.solved_at_step = None
+    
+        self.grid_height = full_config['env']['max_size']
+        self.state_visit_counts = np.zeros((self.grid_height, self.grid_height), dtype=np.int32)    
+        self.state_reward_sums = np.zeros((self.grid_height, self.grid_height), dtype=np.float32)
+        
+        self.prev_obs = None
+        self.prev_action = None
+        
         # Experience
         if config['batch_size'] == 'auto' and config['bptt_horizon'] == 'auto':
             raise pufferlib.APIUsageError('Must specify batch_size or bptt_horizon')
@@ -140,6 +233,7 @@ class PuffeRL:
         # Torch compile
         self.uncompiled_policy = policy
         self.policy = policy
+        self.world_model = world_model.to(device)
         if config['compile']:
             self.policy = torch.compile(policy, mode=config['compile_mode'])
             self.policy.forward_eval = torch.compile(policy, mode=config['compile_mode'])
@@ -176,6 +270,15 @@ class PuffeRL:
             raise ValueError(f'Unknown optimizer: {config["optimizer"]}')
 
         self.optimizer = optimizer
+        
+        # Add separate world model optimizer
+        self.world_model_optimizer = ForeachMuon(
+            self.world_model.parameters(),
+            lr=config['wm_learning_rate'],
+            betas=(config['adam_beta1'], config['adam_beta2']),
+            eps=config['adam_eps'],
+            heavyball_momentum=True,
+        )
 
         # Logging
         self.logger = logger
@@ -210,6 +313,7 @@ class PuffeRL:
         self.stats = defaultdict(list)
         self.last_stats = defaultdict(list)
         self.losses = {}
+        self.explore_stats = {'entropy': [], 'advantages': [], 'intrinsic_reward': []}
 
         # Dashboard
         self.model_size = sum(p.numel() for p in policy.parameters() if p.requires_grad)
@@ -225,7 +329,50 @@ class PuffeRL:
             return 0
 
         return (self.global_step - self.last_log_step) / (time.time() - self.last_log_time)
-
+    
+    def visualize_state_visitation(self):
+        """Create visualizations of state visitation counts and rewards"""
+        
+        # Set style
+        sns.set("notebook", font_scale=1.05, rc={"figure.figsize": (16, 5)})
+        sns.set_style("ticks", rc={"figure.facecolor": "white", "axes.facecolor": "white"})
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5), dpi=200)
+        
+        # 1. State visitation heatmap
+        sns.heatmap(self.state_visit_counts, ax=axes[0], vmin=0, vmax=self.segments, cbar_kws={'label': 'Visit Count'})
+        axes[0].set_title(r'State visitation counts $N_s$')
+        axes[0].set_xlabel('x')
+        axes[0].set_ylabel('y')
+        
+        # 2. Average reward heatmap
+        avg_rewards = np.divide(
+            self.state_reward_sums,
+            self.state_visit_counts,
+            where=self.state_visit_counts > 0,
+            out=np.zeros_like(self.state_reward_sums)
+        )
+        sns.heatmap(avg_rewards, ax=axes[1])
+        axes[1].set_title(r'Moving average of $r^i(s)$: $\sum r^i / N_s$')
+        axes[1].set_xlabel('x')
+        axes[1].set_ylabel('y')
+        
+        # 3. Reward vs 1/n scatter plot
+        # We take the intrinsic rewards obtained in a particular rollout
+        # And the approximated state visitation counts for those states
+        axes[2].scatter(self.normalized_state_counts_rollout, self.state_reward_rollout, alpha=0.5, label='Reward', s=20)
+        x_range = np.linspace(1, max(self.normalized_state_counts_rollout), 100)
+        axes[2].plot(x_range, 0.1 / x_range, 'r--', label='0.1/n', linewidth=2)
+        axes[2].set_xlabel(r'State visitation count ($N_s$)')
+        axes[2].set_ylabel(r'Intrinsic rewards obtained in rollout')
+        axes[2].set_title(r'Intrinsic rewards vs state visitation count')
+        axes[2].legend()
+        # axes[2].set_xscale('log')
+        # axes[2].set_yscale('log')
+        axes[2].grid(True, alpha=0.3)
+        plt.tight_layout()
+        sns.despine()
+        return fig
+    
     def evaluate(self):
         profile = self.profile
         epoch = self.epoch
@@ -243,8 +390,56 @@ class PuffeRL:
         self.full_rows = 0
         while self.full_rows < self.segments:
             profile('env', epoch)
+            
+            # Receive data from envs
             o, r, d, t, info, env_id, mask = self.vecenv.recv()
-
+            
+            # Intrinsic rewards for exploration
+            # Increment state visitation counts for each collected segment (transition)
+            col_indices = o[:, -2].astype(int) # x
+            row_indices = o[:, -1].astype(int) # y
+            
+            # Store counts at reward computation time
+            prev_state_counts_rollout = self.state_visit_counts[row_indices, col_indices].copy()
+        
+            # Increment counts
+            np.add.at(self.state_visit_counts, (row_indices, col_indices), 1)
+            
+            # Add intrinsic rewards
+            if config['count_based_ri_py'] > 0:
+                # Baseline intrinsic reward proportional to 1/(n)
+                current_state_counts_rollout = self.state_visit_counts[row_indices, col_indices].copy()
+                self.normalized_state_counts_rollout = (current_state_counts_rollout / self.segments) + 1
+                # Approximate intrinsic rewards
+                intrinsic_rewards = config['count_based_ri_py'] * (0.1 / (self.normalized_state_counts_rollout))
+                # Augment extrinsic reward with intrinsic reward
+                r += intrinsic_rewards
+            elif config['wm_ri_coef'] > 0:
+                current_state_counts_rollout = self.state_visit_counts[row_indices, col_indices].copy()
+                self.normalized_state_counts_rollout = (current_state_counts_rollout / self.segments) + 1
+                
+                if self.prev_obs is not None and self.prev_action is not None:
+                    # World model-based prediction error defined intrinsic rewards
+                    with torch.no_grad():
+                        intrinsic_rewards = self.world_model.predict_and_compute_reward(
+                            prev_obs=self.prev_obs,
+                            action=self.prev_action,
+                            curr_obs=torch.as_tensor(o).to(device),
+                            reward_coef=config['wm_ri_coef']
+                        )
+                        intrinsic_rewards = intrinsic_rewards.cpu().numpy()
+                        r += intrinsic_rewards
+                else:
+                    intrinsic_rewards = np.zeros_like(r)
+            else: # Intrinsic rewards are computed in grid.h
+                self.normalized_state_counts_rollout = (prev_state_counts_rollout / self.segments) + 1
+                intrinsic_rewards = r.copy()
+            
+            np.add.at(self.state_reward_sums, (row_indices, col_indices), intrinsic_rewards)      
+            
+            # Store
+            self.state_reward_rollout = intrinsic_rewards
+            
             profile('eval_misc', epoch)
             env_id = slice(env_id[0], env_id[-1] + 1)
 
@@ -273,6 +468,10 @@ class PuffeRL:
                 logits, value = self.policy.forward_eval(o_device, state)
                 action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
                 r = torch.clamp(r, -1, 1)
+                
+                # Store for next step
+                self.prev_obs = torch.as_tensor(o).to(device)
+                self.prev_action = torch.as_tensor(action).to(device)
 
             profile('eval_copy', epoch)
             with torch.no_grad():
@@ -291,7 +490,7 @@ class PuffeRL:
 
                 self.actions[batch_rows, l] = action
                 self.logprobs[batch_rows, l] = logprob
-                self.rewards[batch_rows, l] = r
+                self.rewards[batch_rows, l] = r            
                 self.terminals[batch_rows, l] = d.float()
                 self.values[batch_rows, l] = value.flatten()
 
@@ -342,6 +541,7 @@ class PuffeRL:
         a = config['prio_alpha']
         clip_coef = config['clip_coef']
         vf_clip = config['vf_clip_coef']
+        wm_clip = config['wm_clip_coef']
         anneal_beta = b0 + (1 - b0)*a*self.epoch/self.total_epochs
         self.ratio[:] = 1
 
@@ -387,6 +587,54 @@ class PuffeRL:
             logits, newvalue = self.policy(mb_obs, state)
             actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(logits, action=mb_actions)
 
+            # Train the world model
+            profile('train_misc', epoch)
+            
+            # Prepare observations for world model (zero out positions to prevent memorization)
+            with torch.no_grad():
+                mb_obs_for_wm = mb_obs.clone()
+                mb_obs_for_wm[:, :, -2:] = 0  # Zero out x,y positions
+            
+            # Split into current and next observations
+            mb_obs_cur = mb_obs_for_wm[:, :-1]
+            mb_obs_nxt = mb_obs_for_wm[:, 1:]
+            mb_actions_wm = mb_actions[:, :-1]
+            
+            # Compute world model loss using the class method
+            wm_loss = self.world_model.compute_loss(
+                observations=mb_obs_cur,
+                actions=mb_actions_wm,
+                next_observations=mb_obs_nxt,
+                clip_value=config.get('wm_clip_coef', None)
+            )
+            
+            # Optional: Log world model reconstruction visualization
+            if self.config['log_wm_reconstruction'] and \
+                mb % 100 == 0 and \
+                hasattr(self.logger, 'wandb') and \
+                (epoch % 100 == 0):
+                
+                with torch.no_grad():
+                    viz_data = self.world_model.visualize_prediction(
+                        mb_obs_cur, 
+                        mb_actions_wm, 
+                        mb_obs_nxt,
+                        idx=0  # Visualize first batch element
+                    )
+                    
+                    # Convert to tensors for visualization function
+                    actual = torch.from_numpy(viz_data['actual']).unsqueeze(0)
+                    predicted = torch.from_numpy(viz_data['predicted']).unsqueeze(0)
+                    error = torch.from_numpy(viz_data['error']).unsqueeze(0)
+                    show_reconstruction(
+                        actual, 
+                        predicted, 
+                        error,
+                        self.logger,
+                        self.global_step,
+                        vision=self.full_config['env']['vision'],
+                    )
+                            
             profile('train_misc', epoch)
             newlogprob = newlogprob.reshape(mb_logprobs.shape)
             logratio = newlogprob - mb_logprobs
@@ -398,14 +646,13 @@ class PuffeRL:
                 approx_kl = ((ratio - 1) - logratio).mean()
                 clipfrac = ((ratio - 1.0).abs() > config['clip_coef']).float().mean()
 
-            # NOTE: Commenting this out since adv is replaced below
-            # adv = advantages[idx]
-            # adv = compute_puff_advantage(mb_values, mb_rewards, mb_terminals,
-            #     ratio, adv, config['gamma'], config['gae_lambda'],
-            #     config['vtrace_rho_clip'], config['vtrace_c_clip'])
+            adv = advantages[idx]
+            adv = compute_puff_advantage(mb_values, mb_rewards, mb_terminals,
+                 ratio, adv, config['gamma'], config['gae_lambda'],
+                 config['vtrace_rho_clip'], config['vtrace_c_clip'])
 
             # Weight advantages by priority and normalize
-            adv = mb_advantages
+            # adv = mb_advantages
             adv = mb_prio * (adv - adv.mean()) / (adv.std() + 1e-8)
 
             # Losses
@@ -418,15 +665,21 @@ class PuffeRL:
             v_loss_unclipped = (newvalue - mb_returns) ** 2
             v_loss_clipped = (v_clipped - mb_returns) ** 2
             v_loss = 0.5*torch.max(v_loss_unclipped, v_loss_clipped).mean()
-
-            entropy_loss = entropy.mean()
+        
+            entropy_loss = entropy.mean() #std()
 
             loss = pg_loss + config['vf_coef']*v_loss - config['ent_coef']*entropy_loss
             self.amp_context.__enter__() # TODO: AMP needs some debugging
 
             # This breaks vloss clipping?
             self.values[idx] = newvalue.detach().float()
-
+            
+            # Relevant stats for exploration research
+            if self.config['log_detailed_stats'] and epoch % 100 == 0:
+                self.explore_stats['entropy'].append(entropy.tolist())
+                self.explore_stats['advantages'].append(mb_advantages.tolist())
+                self.explore_stats['intrinsic_reward'].append(intrinsic_reward.tolist())
+            
             # Logging
             profile('train_misc', epoch)
             losses['policy_loss'] += pg_loss.item() / self.total_minibatches
@@ -436,6 +689,7 @@ class PuffeRL:
             losses['approx_kl'] += approx_kl.item() / self.total_minibatches
             losses['clipfrac'] += clipfrac.item() / self.total_minibatches
             losses['importance'] += ratio.mean().item() / self.total_minibatches
+            losses['wm_loss'] += wm_loss.item() / self.total_minibatches
 
             # Learn on accumulated minibatches
             profile('learn', epoch)
@@ -444,6 +698,13 @@ class PuffeRL:
                 torch.nn.utils.clip_grad_norm_(self.policy.parameters(), config['max_grad_norm'])
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+                
+            # World model loss backward and step
+            wm_loss.backward()
+            if (mb + 1) % self.accumulate_minibatches == 0:
+                torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), config['max_grad_norm'])
+                self.world_model_optimizer.step()
+                self.world_model_optimizer.zero_grad()
 
         # Reprioritize experience
         profile('train_misc', epoch)
@@ -460,9 +721,15 @@ class PuffeRL:
         logs = None
         self.epoch += 1
         done_training = self.global_step >= config['total_timesteps']
+        
+        if done_training and self.solved_at_step is None:
+            self.solved_at_step = self.global_step
+            print(f'Env not solved, marking solved at final step {self.solved_at_step}.')
+        
         if done_training or self.global_step == 0 or time.time() > self.last_log_time + 0.25:
             logs = self.mean_and_log()
             self.losses = losses
+            self.explore_stats = {'entropy': [], 'advantages': [], 'intrinsic_reward': []}
             self.print_dashboard()
             self.stats = defaultdict(list)
             self.last_log_time = time.time()
@@ -472,10 +739,15 @@ class PuffeRL:
         if self.epoch % config['checkpoint_interval'] == 0 or done_training:
             self.save_checkpoint()
             self.msg = f'Checkpoint saved at update {self.epoch}'
-
+            
+            # Add video recording on checkpoint intervals
+            #if self.epoch % config['video_interval'] == 0 or done_training:
+                #self.record_video(policy=self.uncompiled_policy)
+                
         return logs
 
     def mean_and_log(self):
+        import wandb
         config = self.config
         for k in list(self.stats.keys()):
             v = self.stats[k]
@@ -485,9 +757,18 @@ class PuffeRL:
                 del self.stats[k]
 
             self.stats[k] = v
-
+    
         device = config['device']
         agent_steps = int(dist_sum(self.global_step, device))
+        
+        # Check if agent has solved the task
+        score_key = 'score'
+        if (self.solved_at_step is None and 
+            score_key in self.stats and 
+            self.stats[score_key] >= 0.999):
+            self.solved_at_step = agent_steps
+            print(f'solved at step {self.solved_at_step}!')
+            
         logs = {
             'SPS': dist_sum(self.sps, device),
             'agent_steps': agent_steps,
@@ -501,6 +782,39 @@ class PuffeRL:
             #**{f'losses/{k}': dist_mean(v, device) for k, v in self.losses.items()},
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
+        
+        if self.config['log_coverage_grid'] and (self.epoch - 1) % 50 == 0:
+            # Note: This only works when backend is Serial
+            coverage_grid = self.vecenv.driver_env.get_coverage_counts()
+            if coverage_grid.size > 0:
+                logs['environment/state_visitation'] = wandb.Image(
+                    coverage_grid,
+                    caption=f"Epoch {self.epoch}",
+                )
+            
+            # Get visualization
+            vis_fig = self.visualize_state_visitation()
+            logs['environment/state_visitation_intrinsic_reward'] = wandb.Image(
+                vis_fig,
+                caption=f"Epoch {self.epoch}"
+            )
+            plt.close(vis_fig)
+        
+        if self.config['log_detailed_stats']:
+            if len(self.explore_stats['entropy']) > 0:
+                logs['environment/entropy'] = wandb.Histogram(self.explore_stats['entropy'])
+                logs['environment/entropy_mean'] = np.mean(self.explore_stats['entropy'])
+                logs['environment/entropy_std'] = np.std(self.explore_stats['entropy'])
+            if len(self.explore_stats['advantages']) > 0:
+                logs['environment/advantages'] = wandb.Histogram(self.explore_stats['advantages'])
+                logs['environment/advantages_mean'] = np.mean(self.explore_stats['advantages'])
+                logs['environment/advantages_std'] = np.std(self.explore_stats['advantages'])
+            if len(self.explore_stats['intrinsic_reward']) > 0:
+                logs['environment/intrinsic_reward'] = wandb.Histogram(self.explore_stats['intrinsic_reward'])
+
+        if self.solved_at_step is not None:
+            logs['environment/steps_to_solve'] = self.solved_at_step
+            logs['environment/time_to_solve'] = time.time() - self.start_time
 
         if torch.distributed.is_initialized():
            if torch.distributed.get_rank() != 0:
@@ -550,7 +864,94 @@ class PuffeRL:
         torch.save(state, state_path + '.tmp')
         os.replace(state_path + '.tmp', state_path)
         return model_path
+    
+    def record_video(self, policy=None):
+        """Record a video of the agent and log to wandb/neptune"""
+        import subprocess
+        import os
+        
+        video_path = os.path.join("resources/grid", f'video_{self.epoch}.mp4')
+        os.makedirs(os.path.dirname(video_path), exist_ok=True)
+        actions_path = "resources/grid/actions.bin"
+        
+        # Create identical eval env
+        eval_env = load_env(self.config['env'], self.full_config)
+        eval_env.async_reset(0)
+        
+        # Get environment parameters
+        driver_env = eval_env.driver_env
+        max_size = driver_env.max_size
+        size = driver_env.size
+        horizon = driver_env.horizon
+        speed = driver_env.speed
+        vision = driver_env.vision
+        discretize = 1 if driver_env.discretize else 0
+        difficulty = driver_env.difficulty
+        
+        obs = eval_env.recv()[0]
+        
+        device = self.config['device']
+        state = dict(
+            lstm_h=torch.zeros(eval_env.num_agents, policy.hidden_size, device=device),
+            lstm_c=torch.zeros(eval_env.num_agents, policy.hidden_size, device=device),
+        )
+            
+        actions = []
+        with torch.no_grad():
+            for time_step in range(horizon):
+                obs = torch.as_tensor(obs).to(device)
+                logits, value = policy.forward_eval(obs, state)
+                action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
+                action = action.cpu().numpy().reshape(eval_env.action_space.shape)
+                
+                actions.append(int(action[0]))
+                
+                eval_env.send(action)
+                obs = eval_env.recv()[0]
+        
+        eval_env.close()
+            
+        # Save actions
+        np.array(actions, dtype=np.int32).tofile(actions_path)
+        
+        # Render with actions - C will generate same maze with same seed
+        cmd = [
+            'xvfb-run', '-s', '-screen 0 1280x720x24',
+            './grid', 
+            str(horizon),
+            video_path,
+            '15',
+            actions_path,
+            str(0), 
+            str(max_size),
+            str(size),
+            str(speed),
+            str(vision),
+            str(discretize),
+            str(difficulty)
+        ]
 
+        result = subprocess.run(
+            cmd, timeout=60, cwd=os.getcwd(), capture_output=True, text=True
+        )
+        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+            print(f'Video saved to {video_path}')
+        else:
+            print(f'Warning: Video generation may have failed (file not found or empty)')
+        
+        if hasattr(self.logger, "wandb") and self.logger.wandb:
+            import wandb
+            self.logger.wandb.log({
+                'render': wandb.Video(video_path, format="mp4")
+            }, step=self.global_step)
+            
+        # Cleanup
+        if os.path.exists(actions_path):
+            os.remove(actions_path)
+        
+        if not os.path.exists(video_path):
+            return
+                        
     def print_dashboard(self, clear=False, idx=[0],
             c1='[cyan]', c2='[dim default]', b1='[bright_cyan]', b2='[default]'):
         config = self.config
@@ -872,8 +1273,10 @@ class NeptuneLogger:
 class WandbLogger:
     def __init__(self, args, load_id=None, resume='allow'):
         import wandb
+        run_name = args.get('wandb_run_name', None)
         wandb.init(
             id=load_id or wandb.util.generate_id(),
+            name=run_name,
             project=args['wandb_project'],
             group=args['wandb_group'],
             allow_val_change=True,
@@ -920,10 +1323,15 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
         print(f"rank: {local_rank}, MASTER_ADDR={master_addr}, MASTER_PORT={master_port}")
         torch.cuda.set_device(local_rank)
         os.environ["CUDA_VISIBLE_DEVICES"] = str(local_rank)
-
+        
     vecenv = vecenv or load_env(env_name, args)
     policy = policy or load_policy(args, vecenv, env_name)
-
+    
+    world_model = pufferlib.models.TinyWorldModel(
+        observation_size=np.prod(vecenv.single_observation_space.shape),
+        action_size=vecenv.single_action_space.n,
+    )
+    
     if 'LOCAL_RANK' in os.environ:
         args['train']['device'] = torch.cuda.current_device()
         torch.distributed.init_process_group(backend='nccl', world_size=world_size)
@@ -944,7 +1352,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
         logger = WandbLogger(args)
 
     train_config = { **args['train'], 'env': env_name }
-    pufferl = PuffeRL(train_config, vecenv, policy, logger)
+    pufferl = PuffeRL(train_config, args, vecenv, policy, world_model, logger)
 
     # Sweep needs data for early stopped runs, so send data when steps > 100M
     logging_threshold = min(0.20*train_config['total_timesteps'], 100_000_000)
@@ -959,12 +1367,18 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
         logs = pufferl.train()
 
         if logs is not None:
+                        
             should_stop_early = False
             if early_stop_fn is not None:
                 should_stop_early = early_stop_fn(logs)
                 # This is hacky, but need to see if threshold looks reasonable
                 if 'early_stop_threshold' in logs:
                     pufferl.logger.log({'environment/early_stop_threshold': logs['early_stop_threshold']}, logs['agent_steps'])
+
+            if pufferl.solved_at_step is not None:
+                should_stop_early = True
+                # Log last video at solve time
+                #pufferl.record_video(policy=pufferl.uncompiled_policy)
 
             if pufferl.global_step > logging_threshold:
                 all_logs.append(logs)
@@ -990,6 +1404,56 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
     model_path = pufferl.close()
     pufferl.logger.close(model_path, early_stop=False)
     return all_logs
+
+def controlled_exp(env_name, args=None):
+    """Run experiments with all combinations of specified parameter values."""
+    import itertools
+    from copy import deepcopy
+
+    args = args or load_config(env_name)
+    if not args["wandb"] and not args["neptune"]:
+        raise pufferlib.APIUsageError("Targeted experiments require either wandb or neptune")
+
+    # Check if controlled_exp config exists
+    if "controlled_exp" not in args:
+        raise pufferlib.APIUsageError("No [controlled_exp.*] sections found in config")
+
+    # Extract parameters from controlled_exp namespace
+    params = {}
+    for section, section_config in args["controlled_exp"].items():
+        if isinstance(section_config, dict):
+            for param, param_config in section_config.items():
+                if isinstance(param_config, dict) and "values" in param_config:
+                    params[f"{section}.{param}"] = param_config["values"]
+
+    if not params:
+        raise pufferlib.APIUsageError("No parameters with 'values' lists found in [controlled_exp.*] sections")
+
+    # Generate all combinations
+    keys = list(params.keys())
+    combinations = list(itertools.product(*[params[k] for k in keys]))
+
+    print(f"Running a total of {len(combinations)} experiments with parameters: {keys}")
+
+    # Run each combination
+    for i, combo in enumerate(combinations, 1):
+        exp_args = deepcopy(args)
+
+        # Set parameters
+        for key, value in zip(keys, combo):
+            section, param = key.split(".")
+            exp_args[section][param] = value
+
+        run_name_parts = [f"{key.split('.')[-1]}={value}" for key, value in zip(keys, combo)]
+        exp_name = "_".join(run_name_parts)
+        exp_args['wandb_run_name'] = f"{exp_name}"
+
+        print(f"\nExperiment {i}/{len(combinations)}: {dict(zip(keys, combo))}")
+
+        # Train
+        train(env_name, args=exp_args)
+
+    print(f"\n✓ Completed all {len(combinations)} experiments")
 
 def eval(env_name, args=None, vecenv=None, policy=None):
     args = args or load_config(env_name)
@@ -1132,7 +1596,8 @@ def profile(args=None, env_name=None, vecenv=None, policy=None):
     policy = policy or load_policy(args, vecenv)
 
     train_config = dict(**args['train'], env=args['env_name'], tag=args['tag'])
-    pufferl = PuffeRL(train_config, vecenv, policy, neptune=args['neptune'], wandb=args['wandb'])
+
+    pufferl = PuffeRL(train_config, args, vecenv, policy, neptune=args['neptune'], wandb=args['wandb'])
 
     import torchvision.models as models
     from torch.profiler import profile, record_function, ProfilerActivity
@@ -1322,26 +1787,29 @@ def process_config(config, parser=None):
     return args
 
 def main():
-    err = 'Usage: puffer [train, eval, sweep, autotune, profile, export] [env_name] [optional args]. --help for more info'
+    err = "Usage: puffer [train, eval, sweep, controlled_exp, autotune, profile, export, sanity] [env_name] [optional args]. --help for more info"
     if len(sys.argv) < 3:
         raise pufferlib.APIUsageError(err)
 
     mode = sys.argv.pop(1)
     env_name = sys.argv.pop(1)
-    if mode == 'train':
+    if mode == "train":
         train(env_name=env_name)
-    elif mode == 'eval':
+    elif mode == "eval":
         eval(env_name=env_name)
-    elif mode == 'sweep':
+    elif mode == "sweep":
         sweep(env_name=env_name)
-    elif mode == 'autotune':
+    elif mode == "controlled_exp":
+        controlled_exp(env_name=env_name)
+    elif mode == "autotune":
         autotune(env_name=env_name)
-    elif mode == 'profile':
+    elif mode == "profile":
         profile(env_name=env_name)
-    elif mode == 'export':
+    elif mode == "export":
         export(env_name=env_name)
     else:
         raise pufferlib.APIUsageError(err)
+
 
 if __name__ == '__main__':
     main()
