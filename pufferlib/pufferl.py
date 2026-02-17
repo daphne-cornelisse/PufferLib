@@ -19,7 +19,9 @@ import matplotlib
 import configparser
 from threading import Thread
 from collections import defaultdict, deque
-
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
 import numpy as np
 import psutil
 
@@ -76,8 +78,8 @@ def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, 
     
     # Get flattened observations. Exclude last element for visualization purposes, since
     # we want to show the grid.
-    actual_grid = mb_obs_nxt[batch_idx, time_idx, :-1].reshape(obs_size, obs_size)
-    predicted_grid = mb_obs_next_pred[batch_idx, time_idx, :-1].reshape(obs_size, obs_size)
+    actual_grid = mb_obs_nxt[batch_idx, time_idx, :-3].reshape(obs_size, obs_size)
+    predicted_grid = mb_obs_next_pred[batch_idx, time_idx, :-3].reshape(obs_size, obs_size)
     error = prediction_error[batch_idx, time_idx]
 
     
@@ -156,9 +158,15 @@ class PuffeRL:
         atn_space = vecenv.single_action_space
         total_agents = vecenv.num_agents
         self.total_agents = total_agents
-        
         self.solved_at_step = None
-
+    
+        self.grid_height = full_config['env']['max_size']
+        self.state_visit_counts = np.zeros((self.grid_height, self.grid_height), dtype=np.int32)    
+        self.state_reward_sums = np.zeros((self.grid_height, self.grid_height), dtype=np.float32)
+        
+        self.prev_obs = None
+        self.prev_action = None
+        
         # Experience
         if config['batch_size'] == 'auto' and config['bptt_horizon'] == 'auto':
             raise pufferlib.APIUsageError('Must specify batch_size or bptt_horizon')
@@ -321,7 +329,50 @@ class PuffeRL:
             return 0
 
         return (self.global_step - self.last_log_step) / (time.time() - self.last_log_time)
-
+    
+    def visualize_state_visitation(self):
+        """Create visualizations of state visitation counts and rewards"""
+        
+        # Set style
+        sns.set("notebook", font_scale=1.05, rc={"figure.figsize": (16, 5)})
+        sns.set_style("ticks", rc={"figure.facecolor": "white", "axes.facecolor": "white"})
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5), dpi=200)
+        
+        # 1. State visitation heatmap
+        sns.heatmap(self.state_visit_counts, ax=axes[0], vmin=0, vmax=self.segments, cbar_kws={'label': 'Visit Count'})
+        axes[0].set_title(r'State visitation counts $N_s$')
+        axes[0].set_xlabel('x')
+        axes[0].set_ylabel('y')
+        
+        # 2. Average reward heatmap
+        avg_rewards = np.divide(
+            self.state_reward_sums,
+            self.state_visit_counts,
+            where=self.state_visit_counts > 0,
+            out=np.zeros_like(self.state_reward_sums)
+        )
+        sns.heatmap(avg_rewards, ax=axes[1])
+        axes[1].set_title(r'Moving average of $r^i(s)$: $\sum r^i / N_s$')
+        axes[1].set_xlabel('x')
+        axes[1].set_ylabel('y')
+        
+        # 3. Reward vs 1/n scatter plot
+        # We take the intrinsic rewards obtained in a particular rollout
+        # And the approximated state visitation counts for those states
+        axes[2].scatter(self.normalized_state_counts_rollout, self.state_reward_rollout, alpha=0.5, label='Reward', s=20)
+        x_range = np.linspace(1, max(self.normalized_state_counts_rollout), 100)
+        axes[2].plot(x_range, 0.1 / x_range, 'r--', label='0.1/n', linewidth=2)
+        axes[2].set_xlabel(r'State visitation count ($N_s$)')
+        axes[2].set_ylabel(r'Intrinsic rewards obtained in rollout')
+        axes[2].set_title(r'Intrinsic rewards vs state visitation count')
+        axes[2].legend()
+        # axes[2].set_xscale('log')
+        # axes[2].set_yscale('log')
+        axes[2].grid(True, alpha=0.3)
+        plt.tight_layout()
+        sns.despine()
+        return fig
+    
     def evaluate(self):
         profile = self.profile
         epoch = self.epoch
@@ -339,8 +390,56 @@ class PuffeRL:
         self.full_rows = 0
         while self.full_rows < self.segments:
             profile('env', epoch)
+            
+            # Receive data from envs
             o, r, d, t, info, env_id, mask = self.vecenv.recv()
-
+            
+            # Intrinsic rewards for exploration
+            # Increment state visitation counts for each collected segment (transition)
+            col_indices = o[:, -2].astype(int) # x
+            row_indices = o[:, -1].astype(int) # y
+            
+            # Store counts at reward computation time
+            prev_state_counts_rollout = self.state_visit_counts[row_indices, col_indices].copy()
+        
+            # Increment counts
+            np.add.at(self.state_visit_counts, (row_indices, col_indices), 1)
+            
+            # Add intrinsic rewards
+            if config['count_based_ri_py'] > 0:
+                # Baseline intrinsic reward proportional to 1/(n)
+                current_state_counts_rollout = self.state_visit_counts[row_indices, col_indices].copy()
+                self.normalized_state_counts_rollout = (current_state_counts_rollout / self.segments) + 1
+                # Approximate intrinsic rewards
+                intrinsic_rewards = config['count_based_ri_py'] * (0.1 / (self.normalized_state_counts_rollout))
+                # Augment extrinsic reward with intrinsic reward
+                r += intrinsic_rewards
+            elif config['wm_ri_coef'] > 0:
+                current_state_counts_rollout = self.state_visit_counts[row_indices, col_indices].copy()
+                self.normalized_state_counts_rollout = (current_state_counts_rollout / self.segments) + 1
+                
+                if self.prev_obs is not None and self.prev_action is not None:
+                    # World model-based prediction error defined intrinsic rewards
+                    with torch.no_grad():
+                        intrinsic_rewards = self.world_model.predict_and_compute_reward(
+                            prev_obs=self.prev_obs,
+                            action=self.prev_action,
+                            curr_obs=torch.as_tensor(o).to(device),
+                            reward_coef=config['wm_ri_coef']
+                        )
+                        intrinsic_rewards = intrinsic_rewards.cpu().numpy()
+                        r += intrinsic_rewards
+                else:
+                    intrinsic_rewards = np.zeros_like(r)
+            else: # Intrinsic rewards are computed in grid.h
+                self.normalized_state_counts_rollout = (prev_state_counts_rollout / self.segments) + 1
+                intrinsic_rewards = r.copy()
+            
+            np.add.at(self.state_reward_sums, (row_indices, col_indices), intrinsic_rewards)      
+            
+            # Store
+            self.state_reward_rollout = intrinsic_rewards
+            
             profile('eval_misc', epoch)
             env_id = slice(env_id[0], env_id[-1] + 1)
 
@@ -369,6 +468,10 @@ class PuffeRL:
                 logits, value = self.policy.forward_eval(o_device, state)
                 action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
                 r = torch.clamp(r, -1, 1)
+                
+                # Store for next step
+                self.prev_obs = torch.as_tensor(o).to(device)
+                self.prev_action = torch.as_tensor(action).to(device)
 
             profile('eval_copy', epoch)
             with torch.no_grad():
@@ -483,69 +586,55 @@ class PuffeRL:
 
             logits, newvalue = self.policy(mb_obs, state)
             actions, newlogprob, entropy = pufferlib.pytorch.sample_logits(logits, action=mb_actions)
-                       
-            mb_obs_cur = mb_obs[:, :-1]
-            mb_obs_nxt = mb_obs[:, 1:] 
-            
-            # Tiny world model predicts next observation given action taken
-            categorical_logits, continuous_pred = self.world_model(mb_obs_cur, mb_actions[:, :-1])
 
-            # Split target observations
-            mb_obs_nxt_cat = mb_obs_nxt[:, :, :self.world_model.cat_obs_size].long()
-            mb_obs_nxt_cont = mb_obs_nxt[:, :, self.world_model.cat_obs_size:]
-
-            batch_size, seq_len, num_positions = mb_obs_nxt_cat.shape
-
-            # Categorical loss (cross-entropy)
-            categorical_loss = torch.nn.functional.cross_entropy(
-                categorical_logits.reshape(-1, self.world_model.num_tile_types),  # [B*S*P, 10]
-                mb_obs_nxt_cat.reshape(-1),                                # [B*S*P]
-                reduction='none'
-            )  # [B*S*P]
-
-            # Reshape back and average over positions
-            cat_loss = categorical_loss.reshape(batch_size, seq_len, num_positions).mean(dim=-1)  # [B, S]
-
-            # Continuous loss (MSE for direction)
-            cont_loss = ((continuous_pred - mb_obs_nxt_cont)**2).mean(dim=-1)
-
-            # Combined loss
-            next_obs_pred_error = cat_loss + cont_loss
-            next_obs_pred_error_clipped = torch.clamp(next_obs_pred_error, 0, config['wm_clip_coef'])
-
-            # Reconstruct predictions for visualization
-            # Convert logits to predicted classes
-            categorical_pred = categorical_logits.argmax(dim=-1)  # Shape: (batch, seq, categorical_obs_size)
-
-            # Concatenate categorical predictions with continuous predictions
-            mb_obs_next_pred = torch.cat([
-                categorical_pred.float(),
-                continuous_pred
-            ], dim=-1)
-            
+            # Train the world model
             profile('train_misc', epoch)
-            if self.config["log_wm_reconstruction"] and mb % 100 == 0 and hasattr(self.logger, 'wandb') and epoch % 100 == 0:
-                show_reconstruction(
-                    mb_obs_nxt, 
-                    mb_obs_next_pred, 
-                    next_obs_pred_error,
-                    self.logger,
-                    self.global_step,
-                    vision=self.full_config['env']['vision'],
-                )
-                
-            error_mean = next_obs_pred_error_clipped.mean()
-            error_std = next_obs_pred_error_clipped.std() + 1e-8
-    
-            # z-score normalize, then apply ReLU to only reward above-average errors in a batch
-            normalized_error = (next_obs_pred_error_clipped - error_mean) / error_std
-            intrinsic_reward = torch.relu(normalized_error) ** 2 * config['wm_reward_coef']
             
-            #print(f'Intrinsic reward stats - mean: {error_mean.item():.6f}, std: {error_std.item():.6f}')
+            # Prepare observations for world model (zero out positions to prevent memorization)
+            with torch.no_grad():
+                mb_obs_for_wm = mb_obs.clone()
+                mb_obs_for_wm[:, :, -2:] = 0  # Zero out x,y positions
             
-            # Note: we're skipping one element every batch (the last one) to match shapes
-            mb_rewards[:, :-1] += intrinsic_reward
+            # Split into current and next observations
+            mb_obs_cur = mb_obs_for_wm[:, :-1]
+            mb_obs_nxt = mb_obs_for_wm[:, 1:]
+            mb_actions_wm = mb_actions[:, :-1]
+            
+            # Compute world model loss using the class method
+            wm_loss = self.world_model.compute_loss(
+                observations=mb_obs_cur,
+                actions=mb_actions_wm,
+                next_observations=mb_obs_nxt,
+                clip_value=config.get('wm_clip_coef', None)
+            )
+            
+            # Optional: Log world model reconstruction visualization
+            if self.config['log_wm_reconstruction'] and \
+                mb % 100 == 0 and \
+                hasattr(self.logger, 'wandb') and \
+                (epoch % 100 == 0):
                 
+                with torch.no_grad():
+                    viz_data = self.world_model.visualize_prediction(
+                        mb_obs_cur, 
+                        mb_actions_wm, 
+                        mb_obs_nxt,
+                        idx=0  # Visualize first batch element
+                    )
+                    
+                    # Convert to tensors for visualization function
+                    actual = torch.from_numpy(viz_data['actual']).unsqueeze(0)
+                    predicted = torch.from_numpy(viz_data['predicted']).unsqueeze(0)
+                    error = torch.from_numpy(viz_data['error']).unsqueeze(0)
+                    show_reconstruction(
+                        actual, 
+                        predicted, 
+                        error,
+                        self.logger,
+                        self.global_step,
+                        vision=self.full_config['env']['vision'],
+                    )
+                            
             profile('train_misc', epoch)
             newlogprob = newlogprob.reshape(mb_logprobs.shape)
             logratio = newlogprob - mb_logprobs
@@ -581,9 +670,6 @@ class PuffeRL:
 
             loss = pg_loss + config['vf_coef']*v_loss - config['ent_coef']*entropy_loss
             self.amp_context.__enter__() # TODO: AMP needs some debugging
-            
-            # Aggregate batch losses
-            wm_loss = next_obs_pred_error_clipped.mean()
 
             # This breaks vloss clipping?
             self.values[idx] = newvalue.detach().float()
@@ -697,7 +783,7 @@ class PuffeRL:
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
         }
         
-        if self.config['log_coverage_grid'] and (self.epoch - 1) % 25 == 0:
+        if self.config['log_coverage_grid'] and (self.epoch - 1) % 50 == 0:
             # Note: This only works when backend is Serial
             coverage_grid = self.vecenv.driver_env.get_coverage_counts()
             if coverage_grid.size > 0:
@@ -705,6 +791,14 @@ class PuffeRL:
                     coverage_grid,
                     caption=f"Epoch {self.epoch}",
                 )
+            
+            # Get visualization
+            vis_fig = self.visualize_state_visitation()
+            logs['environment/state_visitation_intrinsic_reward'] = wandb.Image(
+                vis_fig,
+                caption=f"Epoch {self.epoch}"
+            )
+            plt.close(vis_fig)
         
         if self.config['log_detailed_stats']:
             if len(self.explore_stats['entropy']) > 0:

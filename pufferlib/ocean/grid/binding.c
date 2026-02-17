@@ -12,7 +12,9 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
     float difficulty = unpack(kwargs, "difficulty");
     int size = unpack(kwargs, "size");
     int seed = unpack(kwargs, "seed");
-    float count_based_reward_coef = unpack(kwargs, "count_based_reward_coef");
+    int vision = unpack(kwargs, "vision");
+    int speed = unpack(kwargs, "speed");
+    float count_based_ri_c = unpack(kwargs, "count_based_ri_c");
     State* levels = calloc(num_maps, sizeof(State));
 
     if (max_size <= 5) {
@@ -71,7 +73,9 @@ static PyObject* my_shared(PyObject* self, PyObject* args, PyObject* kwargs) {
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->max_size = unpack(kwargs, "max_size");
     env->num_maps = unpack(kwargs, "num_maps");
-    env->count_based_reward_coef = unpack(kwargs, "count_based_reward_coef");
+    env->count_based_ri_c = unpack(kwargs, "count_based_ri_c");
+    env->vision = unpack(kwargs, "vision");
+    env->speed = unpack(kwargs, "speed");
     int horizon = unpack(kwargs, "horizon");
     if (horizon > 1) {
         env->horizon = horizon;
