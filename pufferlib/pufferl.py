@@ -362,6 +362,7 @@ class PuffeRL:
         axes[2].scatter(self.normalized_state_counts_rollout, self.state_reward_rollout, alpha=0.5, label='Reward', s=20)
         x_range = np.linspace(1, max(self.normalized_state_counts_rollout), 100)
         axes[2].plot(x_range, 0.1 / x_range, 'r--', label='0.1/n', linewidth=2)
+        axes[2].plot(x_range, 0.1 / np.log(x_range+1), 'g--', label='0.1/log(n)', linewidth=2)
         axes[2].set_xlabel(r'State visitation count ($N_s$)')
         axes[2].set_ylabel(r'Intrinsic rewards obtained in rollout')
         axes[2].set_title(r'Intrinsic rewards vs state visitation count')
@@ -411,7 +412,10 @@ class PuffeRL:
                 current_state_counts_rollout = self.state_visit_counts[row_indices, col_indices].copy()
                 self.normalized_state_counts_rollout = (current_state_counts_rollout / self.segments) + 1
                 # Approximate intrinsic rewards
+                # 1/n
                 intrinsic_rewards = config['count_based_ri_py'] * (0.1 / (self.normalized_state_counts_rollout))
+                # 1/log(n) [slower decay]
+                #intrinsic_rewards = config['count_based_ri_py'] * (0.1 / np.log(self.normalized_state_counts_rollout))
                 # Augment extrinsic reward with intrinsic reward
                 r += intrinsic_rewards
             elif config['wm_ri_coef'] > 0:
@@ -421,13 +425,13 @@ class PuffeRL:
                 if self.prev_obs is not None and self.prev_action is not None:
                     # World model-based prediction error defined intrinsic rewards
                     with torch.no_grad():
-                        intrinsic_rewards = self.world_model.predict_and_compute_reward(
-                            prev_obs=self.prev_obs,
-                            action=self.prev_action,
-                            curr_obs=torch.as_tensor(o).to(device),
+                        intrinsic_rewards = self.world_model.compute_intrinsic_reward(
+                            observations=self.prev_obs,
+                            actions=self.prev_action,
+                            next_observations=torch.as_tensor(o).to(device),
                             reward_coef=config['wm_ri_coef']
                         )
-                        intrinsic_rewards = intrinsic_rewards.cpu().numpy()
+                        intrinsic_rewards = intrinsic_rewards.squeeze().cpu().numpy()
                         r += intrinsic_rewards
                 else:
                     intrinsic_rewards = np.zeros_like(r)
@@ -590,23 +594,19 @@ class PuffeRL:
             # Train the world model
             profile('train_misc', epoch)
             
-            # Prepare observations for world model (zero out positions to prevent memorization)
-            with torch.no_grad():
-                mb_obs_for_wm = mb_obs.clone()
-                mb_obs_for_wm[:, :, -2:] = 0  # Zero out x,y positions
-            
             # Split into current and next observations
-            mb_obs_cur = mb_obs_for_wm[:, :-1]
-            mb_obs_nxt = mb_obs_for_wm[:, 1:]
+            mb_obs_cur = mb_obs[:, :-1]
+            mb_obs_nxt = mb_obs[:, 1:]
             mb_actions_wm = mb_actions[:, :-1]
             
             # Compute world model loss using the class method
-            wm_loss = self.world_model.compute_loss(
+            wm_pred_errors = self.world_model.compute_prediction_error(
                 observations=mb_obs_cur,
                 actions=mb_actions_wm,
                 next_observations=mb_obs_nxt,
-                clip_value=config.get('wm_clip_coef', None)
-            )
+                clip_value=config["wm_clip_coef"]
+            )            
+            wm_loss = wm_pred_errors.mean()
             
             # Optional: Log world model reconstruction visualization
             if self.config['log_wm_reconstruction'] and \

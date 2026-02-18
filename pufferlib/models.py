@@ -12,8 +12,8 @@ class TinyWorldModel(nn.Module):
     def __init__(self, observation_size, action_size, hidden_size=128):
         super().__init__()
         
-        self.cat_obs_size = observation_size - 1 # Grid elements are classes
-        self.cont_obs_size = 1   # Agent direction is continuous
+        self.cat_obs_size = observation_size - 3 # Grid elements are classes
+        self.cont_obs_size = 3   # Agent direction is continuous
         self.num_tile_types = 10  # EMPTY through WALL_4 (0-9)
         self.input_size = self.cat_obs_size * self.num_tile_types + self.cont_obs_size + action_size
         self.num_actions = action_size
@@ -45,9 +45,14 @@ class TinyWorldModel(nn.Module):
         '''
         Predict next observations given current observations and actions.
         '''
-        
+        # This is the grid-specific encoding: first part of obs is categorical, second part is continuous
         categorical_obs = observations[:, :, :self.cat_obs_size]
-        continuous_obs = observations[:, :, self.cat_obs_size:]
+        
+        # This contains the agent direction (continuous) and absolute position 
+        # (which we will ignore for now)
+        continuous_obs = observations[:, :, self.cat_obs_size:].clone()
+        # Temp: Zero out the absolute agent position for now
+        continuous_obs[:, :, 1:] = 0  
         
         categorical_obs_onehot = torch.nn.functional.one_hot(
             categorical_obs.long(), 
@@ -81,6 +86,13 @@ class TinyWorldModel(nn.Module):
         Returns:
             prediction_error: (batch, seq) prediction error per transition
         '''
+
+        if observations.ndim == 2:
+            # Add fake time dim
+            observations = observations.unsqueeze(1)
+            actions = actions.unsqueeze(1)
+            next_observations = next_observations.unsqueeze(1)
+        
         # Get predictions
         categorical_logits, continuous_pred = self.forward(observations, actions)
         
@@ -99,7 +111,7 @@ class TinyWorldModel(nn.Module):
         cat_loss = categorical_loss.reshape(batch_size, seq_len, num_positions).mean(dim=-1)
         
         # Continuous loss (MSE)
-        cont_loss = ((continuous_pred - next_obs_cont)**2).mean(dim=-1)
+        cont_loss = ((continuous_pred - next_obs_cont[:, :, :1])**2).mean(dim=-1)
         
         # Combined prediction error
         prediction_error = cat_loss + cont_loss
@@ -109,103 +121,32 @@ class TinyWorldModel(nn.Module):
             
         return prediction_error
     
-    def compute_intrinsic_reward(self, observations, actions, next_observations, 
-                                  reward_coef=1.0, clip_value=None, normalize=True):
-        '''
-        Compute curiosity-driven intrinsic reward based on prediction error.
-        
-        Args:
-            observations: (batch, seq, obs_size) current observations
-            actions: (batch, seq) actions taken
-            next_observations: (batch, seq, obs_size) resulting observations
-            reward_coef: scaling coefficient for intrinsic rewards
-            clip_value: optional max value to clip prediction error
-            normalize: whether to z-score normalize errors before converting to reward
-            
-        Returns:
-            intrinsic_reward: (batch, seq) intrinsic reward per transition
-        '''
+    def compute_intrinsic_reward(
+        self, 
+        observations, 
+        actions, 
+        next_observations, 
+        reward_coef=1.0, 
+        clip_value=None, 
+        normalize=False
+    ):
         prediction_error = self.compute_prediction_error(
             observations, actions, next_observations, clip_value
         )
         
         if normalize:
-            # Z-score normalization
             error_mean = prediction_error.mean()
             error_std = prediction_error.std() + 1e-8
             normalized_error = (prediction_error - error_mean) / error_std
-            
-            # Apply ReLU to only reward above-average errors
-            intrinsic_reward = torch.relu(normalized_error) ** 2 * reward_coef
+            # Shift to non-negative, then apply log for sharp but bounded curve
+            shifted = normalized_error - normalized_error.min()
+            intrinsic_reward = torch.log(1 + shifted) * reward_coef
         else:
-            # Direct scaling without normalization
-            intrinsic_reward = prediction_error * reward_coef
+            # Percentile clip to bound without flattening the curve
+            upper = torch.quantile(prediction_error, 0.95)
+            intrinsic_reward = torch.clamp(prediction_error, 0, upper) * reward_coef
             
         return intrinsic_reward
-    
-    def predict_and_compute_reward(self, prev_obs, action, curr_obs, 
-                                     reward_coef=1.0, clip_value=None, 
-                                     normalize=True, zero_out_positions=True):
-        '''
-        Convenience method for computing intrinsic reward during eval loop.
-        Handles batched transitions with optional position zeroing.
-        
-        Args:
-            prev_obs: (n_envs, obs_size) previous observations
-            action: (n_envs,) actions taken
-            curr_obs: (n_envs, obs_size) current observations
-            reward_coef: scaling coefficient for intrinsic rewards
-            clip_value: optional max value to clip prediction error
-            normalize: whether to z-score normalize errors
-            zero_out_positions: whether to zero out last 2 dims (x,y positions)
-            
-        Returns:
-            intrinsic_reward: (n_envs,) intrinsic reward per environment
-        '''
-        # Clone to avoid modifying originals
-        prev_obs_clean = prev_obs.clone()
-        curr_obs_clean = curr_obs.clone()
-        
-        # Zero out absolute positions to prevent world model from memorizing them
-        if zero_out_positions:
-            prev_obs_clean[:, -2:] = 0
-            curr_obs_clean[:, -2:] = 0
-        
-        # Add sequence dimension (treat batch as batch, add seq=1)
-        # Shape: (n_envs, obs_size) -> (n_envs, 1, obs_size)
-        prev_obs_wm = prev_obs_clean.unsqueeze(1)
-        curr_obs_wm = curr_obs_clean.unsqueeze(1)
-        action_wm = action.unsqueeze(1)  # (n_envs,) -> (n_envs, 1)
-        
-        # Compute intrinsic reward
-        intrinsic_reward = self.compute_intrinsic_reward(
-            prev_obs_wm, action_wm, curr_obs_wm,
-            reward_coef=reward_coef,
-            clip_value=clip_value,
-            normalize=normalize
-        )
-        
-        # Remove sequence dimension and return
-        # Shape: (n_envs, 1) -> (n_envs,)
-        return intrinsic_reward.squeeze(1)
-    
-    def compute_loss(self, observations, actions, next_observations, clip_value=None):
-        '''
-        Compute training loss for the world model.
-        
-        Args:
-            observations: (batch, seq, obs_size) current observations
-            actions: (batch, seq) actions taken
-            next_observations: (batch, seq, obs_size) resulting observations
-            clip_value: optional max value to clip error
-            
-        Returns:
-            loss: scalar loss for backpropagation
-        '''
-        prediction_error = self.compute_prediction_error(
-            observations, actions, next_observations, clip_value
-        )
-        return prediction_error.mean()
     
     def get_predictions_for_logging(self, observations, actions, next_observations, clip_value=None):
         '''
