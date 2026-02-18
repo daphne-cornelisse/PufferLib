@@ -412,10 +412,10 @@ class PuffeRL:
                 current_state_counts_rollout = self.state_visit_counts[row_indices, col_indices].copy()
                 self.normalized_state_counts_rollout = (current_state_counts_rollout / self.segments) + 1
                 # Approximate intrinsic rewards
-                # 1/n
+                # 1/n [fast decay]
                 intrinsic_rewards = config['count_based_ri_py'] * (0.1 / (self.normalized_state_counts_rollout))
-                # 1/log(n) [slower decay]
-                #intrinsic_rewards = config['count_based_ri_py'] * (0.1 / np.log(self.normalized_state_counts_rollout))
+                # 1/log(n+1) [slower decay]
+                #intrinsic_rewards = config['count_based_ri_py'] * (0.1 / np.log(self.normalized_state_counts_rollout + 1))
                 # Augment extrinsic reward with intrinsic reward
                 r += intrinsic_rewards
             elif config['wm_ri_coef'] > 0:
