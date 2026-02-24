@@ -359,9 +359,38 @@ class PuffeRL:
         # 3. Reward vs 1/n scatter plot
         # We take the intrinsic rewards obtained in a particular rollout
         # And the approximated state visitation counts for those states
-        axes[2].scatter(self.normalized_state_counts_rollout, self.state_reward_rollout, alpha=0.5, label='Reward', s=20)
+        axes[2].scatter(self.normalized_state_counts_rollout, self.state_reward_rollout, alpha=0.3, label='Reward', s=20)
         x_range = np.linspace(1, max(self.normalized_state_counts_rollout), 100)
         axes[2].plot(x_range, 0.1 / x_range, 'r--', label='0.1/n', linewidth=2)
+        axes[2].plot(x_range, 0.1 / np.log(x_range+1), 'g--', label='0.1/log(n)', linewidth=2)
+
+        # Bin the scatter data and plot per-bin mean ± std
+        num_bins = 20
+        counts = np.array(self.normalized_state_counts_rollout)
+        rewards = np.array(self.state_reward_rollout)
+        bin_edges = np.linspace(counts.min(), counts.max(), num_bins + 1)
+        bin_indices = np.clip(np.digitize(counts, bin_edges) - 1, 0, num_bins - 1)
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        bin_means = np.full(num_bins, np.nan)
+        bin_stds  = np.full(num_bins, np.nan)
+        for b in range(num_bins):
+            mask = bin_indices == b
+            if mask.sum() > 0:
+                bin_means[b] = rewards[mask].mean()
+                bin_stds[b]  = rewards[mask].std()
+        valid = ~np.isnan(bin_means)
+        axes[2].plot(bin_centers[valid], bin_means[valid], 'k-o',
+                     markersize=4, linewidth=1.5, label='Bin mean', zorder=5)
+        axes[2].fill_between(
+            bin_centers[valid],
+            bin_means[valid] - bin_stds[valid],
+            bin_means[valid] + bin_stds[valid],
+            alpha=0.1, color='black', label='±1 σ'
+        )
+
+        # std_var_ri: mean per-bin reward variance — captures noise of the reward signal
+        self.std_var_ri = float(np.nanmean(bin_stds[valid] ** 2))
+
         axes[2].set_xlabel(r'State visitation count ($N_s$)')
         axes[2].set_ylabel(r'Intrinsic rewards obtained in rollout')
         axes[2].set_title(r'Intrinsic rewards vs state visitation count')
@@ -411,7 +440,10 @@ class PuffeRL:
                 current_state_counts_rollout = self.state_visit_counts[row_indices, col_indices].copy()
                 self.normalized_state_counts_rollout = (current_state_counts_rollout / self.segments) + 1
                 # Approximate intrinsic rewards
+                # 1/n [fast decay]
                 intrinsic_rewards = config['count_based_ri_py'] * (0.1 / (self.normalized_state_counts_rollout))
+                # 1/log(n+1) [slower decay]
+                #intrinsic_rewards = config['count_based_ri_py'] * (0.1 / np.log(self.normalized_state_counts_rollout + 1))
                 # Augment extrinsic reward with intrinsic reward
                 r += intrinsic_rewards
             elif config['wm_ri_coef'] > 0:
@@ -421,13 +453,13 @@ class PuffeRL:
                 if self.prev_obs is not None and self.prev_action is not None:
                     # World model-based prediction error defined intrinsic rewards
                     with torch.no_grad():
-                        intrinsic_rewards = self.world_model.predict_and_compute_reward(
-                            prev_obs=self.prev_obs,
-                            action=self.prev_action,
-                            curr_obs=torch.as_tensor(o).to(device),
+                        intrinsic_rewards = self.world_model.compute_intrinsic_reward(
+                            observations=self.prev_obs,
+                            actions=self.prev_action,
+                            next_observations=torch.as_tensor(o).to(device),
                             reward_coef=config['wm_ri_coef']
                         )
-                        intrinsic_rewards = intrinsic_rewards.cpu().numpy()
+                        intrinsic_rewards = intrinsic_rewards.squeeze().cpu().numpy()
                         r += intrinsic_rewards
                 else:
                     intrinsic_rewards = np.zeros_like(r)
@@ -590,23 +622,19 @@ class PuffeRL:
             # Train the world model
             profile('train_misc', epoch)
             
-            # Prepare observations for world model (zero out positions to prevent memorization)
-            with torch.no_grad():
-                mb_obs_for_wm = mb_obs.clone()
-                mb_obs_for_wm[:, :, -2:] = 0  # Zero out x,y positions
-            
             # Split into current and next observations
-            mb_obs_cur = mb_obs_for_wm[:, :-1]
-            mb_obs_nxt = mb_obs_for_wm[:, 1:]
+            mb_obs_cur = mb_obs[:, :-1]
+            mb_obs_nxt = mb_obs[:, 1:]
             mb_actions_wm = mb_actions[:, :-1]
             
             # Compute world model loss using the class method
-            wm_loss = self.world_model.compute_loss(
+            wm_pred_errors = self.world_model.compute_prediction_error(
                 observations=mb_obs_cur,
                 actions=mb_actions_wm,
                 next_observations=mb_obs_nxt,
-                clip_value=config.get('wm_clip_coef', None)
-            )
+                clip_value=config["wm_clip_coef"]
+            )            
+            wm_loss = wm_pred_errors.mean()
             
             # Optional: Log world model reconstruction visualization
             if self.config['log_wm_reconstruction'] and \
@@ -799,6 +827,8 @@ class PuffeRL:
                 caption=f"Epoch {self.epoch}"
             )
             plt.close(vis_fig)
+            
+            logs['environment/std_var_ri'] = self.std_var_ri  
         
         if self.config['log_detailed_stats']:
             if len(self.explore_stats['entropy']) > 0:
@@ -1516,8 +1546,6 @@ def stop_if_loss_nan(logs):
 
 def sweep(args=None, env_name=None):
     args = args or load_config(env_name)
-    if not args['wandb'] and not args['neptune']:
-        raise pufferlib.APIUsageError('Sweeps require either wandb or neptune')
     args['no_model_upload'] = True  # Uploading trained model during sweep crashed wandb
 
     method = args['sweep'].pop('method')
@@ -1532,7 +1560,7 @@ def sweep(args=None, env_name=None):
     running_target_buffer = deque(maxlen=30)
 
     def stop_if_perf_below(logs):
-        if stop_if_loss_nan(logs):
+        if any("losses/" in k and np.isnan(v) for k, v in logs.items()):
             logs['is_loss_nan'] = True
             return True
 
@@ -1546,6 +1574,7 @@ def sweep(args=None, env_name=None):
             
             # If metric distribution is percentile, threshold is also logit transformed
             threshold = sweep.get_early_stop_threshold(cost)
+            print(f'Threshold: {threshold} at cost {cost}')
             logs['early_stop_threshold'] = max(threshold, -5)  # clipping for visualization
 
             if sweep.should_stop(max(target_running_mean, metric_val), cost):
