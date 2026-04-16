@@ -200,14 +200,30 @@ class PuffeRL:
         self.importance = torch.ones(segments, horizon, device=device)
         self.ep_lengths = torch.zeros(total_agents, device=device, dtype=torch.int32)
         self.ep_indices = torch.arange(total_agents, device=device, dtype=torch.int32)
+
         self.free_idx = total_agents
 
+        self.prev_obs = None
+        self.prev_action = None
+        
         # LSTM
         if config['use_rnn']:
             n = vecenv.agents_per_batch
             h = policy.hidden_size
             self.lstm_h = {i*n: torch.zeros(n, h, device=device) for i in range(total_agents//n)}
             self.lstm_c = {i*n: torch.zeros(n, h, device=device) for i in range(total_agents//n)}
+            
+        if config['wm_ri_coef'] > 0:
+            wm_h = world_model.hidden_size
+            n = vecenv.agents_per_batch
+            # (1, n, hidden) to match nn.GRU convention
+            self.wm_gru_h = {
+                i*n: torch.zeros(1, n, wm_h, device=device)
+                for i in range(total_agents // n)
+            }
+            # Replay buffer stores (batch, hidden) — the state at the START
+            # of each segment, used to seed GRU during training
+            self.wm_hiddens = torch.zeros(segments, world_model.hidden_size, device=device)
 
         # Minibatching & gradient accumulation
         minibatch_size = config['minibatch_size']
@@ -307,6 +323,7 @@ class PuffeRL:
         self.global_step = 0
         self.last_log_step = 0
         self.last_log_time = time.time()
+        self.last_log_cum_coverage = 0.0 
         self.start_time = time.time()
         self.utilization = Utilization()
         self.profile = Profile()
@@ -415,6 +432,11 @@ class PuffeRL:
             for k in self.lstm_h:
                 self.lstm_h[k].zero_()
                 self.lstm_c[k].zero_()
+                
+        # Reset world model hidden states
+        # if config['wm_ri_coef'] > 0:
+        #     for k in self.wm_gru_h:
+        #         self.wm_gru_h[k].zero_()
 
         self.full_rows = 0
         while self.full_rows < self.segments:
@@ -453,12 +475,16 @@ class PuffeRL:
                 if self.prev_obs is not None and self.prev_action is not None:
                     # World model-based prediction error defined intrinsic rewards
                     with torch.no_grad():
-                        intrinsic_rewards = self.world_model.compute_intrinsic_reward(
+                        gru_h = self.wm_gru_h[env_id[0]].squeeze(0)  # (batch, hidden)
+                        intrinsic_rewards, gru_h = self.world_model.compute_intrinsic_reward(
                             observations=self.prev_obs,
                             actions=self.prev_action,
                             next_observations=torch.as_tensor(o).to(device),
-                            reward_coef=config['wm_ri_coef']
+                            gru_h=gru_h,  # pass 2D (batch, hidden) — fixed inside model now
+                            reward_coef=config['wm_ri_coef'],
                         )
+                        # gru_h comes back as (1, batch, hidden) from nn.GRU
+                        self.wm_gru_h[env_id[0]] = gru_h.detach()  # store as-is, no unsqueeze needed
                         intrinsic_rewards = intrinsic_rewards.squeeze().cpu().numpy()
                         r += intrinsic_rewards
                 else:
@@ -476,6 +502,12 @@ class PuffeRL:
             env_id = slice(env_id[0], env_id[-1] + 1)
 
             done_mask = d + t # TODO: Handle truncations separately
+            
+            # Reset world model hidden state at end of episode           
+            if config['wm_ri_coef'] > 0:
+                done_indices = torch.where(torch.as_tensor(done_mask))[0]
+                if len(done_indices) > 0:
+                    self.wm_gru_h[env_id.start][:, done_indices, :] = 0.0
             self.global_step += int(mask.sum())
 
             profile('eval_copy', epoch)
@@ -514,6 +546,9 @@ class PuffeRL:
                 # Fast path for fully vectorized envs
                 l = self.ep_lengths[env_id.start].item()
                 batch_rows = slice(self.ep_indices[env_id.start].item(), 1+self.ep_indices[env_id.stop - 1].item())
+                
+                if l == 0:
+                    self.wm_hiddens[batch_rows] = self.wm_gru_h[env_id.start].squeeze(0).detach()
 
                 if config['cpu_offload']:
                     self.observations[batch_rows, l] = o
@@ -574,6 +609,7 @@ class PuffeRL:
         clip_coef = config['clip_coef']
         vf_clip = config['vf_clip_coef']
         wm_clip = config['wm_clip_coef']
+        
         anneal_beta = b0 + (1 - b0)*a*self.epoch/self.total_epochs
         self.ratio[:] = 1
 
@@ -628,12 +664,14 @@ class PuffeRL:
             mb_actions_wm = mb_actions[:, :-1]
             
             # Compute world model loss using the class method
-            wm_pred_errors = self.world_model.compute_prediction_error(
+            mb_wm_h = self.wm_hiddens[idx].unsqueeze(0)  # (1, batch, hidden)
+            wm_pred_errors, _ = self.world_model.compute_prediction_error(
                 observations=mb_obs_cur,
                 actions=mb_actions_wm,
                 next_observations=mb_obs_nxt,
-                clip_value=config["wm_clip_coef"]
-            )            
+                gru_h=mb_wm_h,
+                clip_value=config["wm_clip_coef"],
+            )
             wm_loss = wm_pred_errors.mean()
             
             # Optional: Log world model reconstruction visualization
@@ -641,13 +679,14 @@ class PuffeRL:
                 mb % 100 == 0 and \
                 hasattr(self.logger, 'wandb') and \
                 (epoch % 100 == 0):
-                
+                    
                 with torch.no_grad():
                     viz_data = self.world_model.visualize_prediction(
-                        mb_obs_cur, 
-                        mb_actions_wm, 
+                        mb_obs_cur,
+                        mb_actions_wm,
                         mb_obs_nxt,
-                        idx=0  # Visualize first batch element
+                        gru_h=mb_wm_h,
+                        idx=0,
                     )
                     
                     # Convert to tensors for visualization function
@@ -1360,6 +1399,8 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
     world_model = pufferlib.models.TinyWorldModel(
         observation_size=np.prod(vecenv.single_observation_space.shape),
         action_size=vecenv.single_action_space.n,
+        cat_threshold=args['train']['wm_cat_threshold'],
+        cont_threshold=args['train']['wm_cont_threshold'],
     )
     
     if 'LOCAL_RANK' in os.environ:

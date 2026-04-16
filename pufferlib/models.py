@@ -9,7 +9,7 @@ import pufferlib.pytorch
 import pufferlib.spaces
 
 class TinyWorldModel(nn.Module):
-    def __init__(self, observation_size, action_size, hidden_size=128):
+    def __init__(self, observation_size, action_size, hidden_size=128, cat_threshold=0.1, cont_threshold=0.01):
         super().__init__()
         
         self.cat_obs_size = observation_size - 3 # Grid elements are classes
@@ -17,6 +17,9 @@ class TinyWorldModel(nn.Module):
         self.num_tile_types = 10  # EMPTY through WALL_4 (0-9)
         self.input_size = self.cat_obs_size * self.num_tile_types + self.cont_obs_size + action_size
         self.num_actions = action_size
+        self.hidden_size = hidden_size
+        self.cat_threshold = cat_threshold
+        self.cont_threshold = cont_threshold
         
         # Separate heads for categorical and continuous predictions
         self.shared = nn.Sequential(
@@ -28,6 +31,14 @@ class TinyWorldModel(nn.Module):
             nn.ReLU(),
         )
         
+        # GRU for WM memory — nn.GRU for training, GRUCell for eval (shared weights)
+        self.gru = nn.GRU(hidden_size, hidden_size, batch_first=True)
+        self.gru_cell = nn.GRUCell(hidden_size, hidden_size)
+        self.gru_cell.weight_ih = self.gru.weight_ih_l0
+        self.gru_cell.weight_hh = self.gru.weight_hh_l0
+        self.gru_cell.bias_ih   = self.gru.bias_ih_l0
+        self.gru_cell.bias_hh   = self.gru.bias_hh_l0
+
         # Output logits for each categorical position
         self.categorical_head = nn.Sequential(
             pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size // 2)),
@@ -41,181 +52,180 @@ class TinyWorldModel(nn.Module):
             pufferlib.pytorch.layer_init(nn.Linear(hidden_size // 2, 1))
         )
 
-    def forward(self, observations, actions):
+    def forward(self, observations, actions, gru_h=None):
         '''
-        Predict next observations given current observations and actions.
+        Training forward — processes full sequences using nn.GRU.
+
+        Args:
+            observations : (batch, seq, obs_size)
+            actions      : (batch, seq)
+            gru_h        : (1, batch, hidden) or None
+
+        Returns:
+            categorical_logits : (batch, seq, cat_obs_size, num_tile_types)
+            continuous_pred    : (batch, seq, 1)
+            gru_h              : (1, batch, hidden)
         '''
-        # This is the grid-specific encoding: first part of obs is categorical, second part is continuous
+        batch_size, seq_len = observations.shape[:2]
+
         categorical_obs = observations[:, :, :self.cat_obs_size]
-        
-        # This contains the agent direction (continuous) and absolute position 
-        # (which we will ignore for now)
-        continuous_obs = observations[:, :, self.cat_obs_size:].clone()
-        # Temp: Zero out the absolute agent position for now
+        continuous_obs  = observations[:, :, self.cat_obs_size:].clone()
         continuous_obs[:, :, 1:] = 0  
         
         categorical_obs_onehot = torch.nn.functional.one_hot(
-            categorical_obs.long(), 
-            num_classes=self.num_tile_types
-        ) 
-        
-        categorical_obs_flat = categorical_obs_onehot.flatten(start_dim=-2) 
-        actions_onehot = torch.nn.functional.one_hot(actions.long(), num_classes=self.num_actions)
+            categorical_obs.long(), num_classes=self.num_tile_types
+        )
+        categorical_obs_flat = categorical_obs_onehot.flatten(start_dim=-2).float()
+        actions_onehot = torch.nn.functional.one_hot(
+            actions.long(), num_classes=self.num_actions
+        ).float()
         
         x = torch.cat([categorical_obs_flat, continuous_obs, actions_onehot], dim=-1)
-        features = self.shared(x)
-        
-        # Reshape categorical logits: (batch, seq, positions, classes)
-        categorical_logits = self.categorical_head(features).reshape(
-            -1, observations.shape[1], self.cat_obs_size, self.num_tile_types
-        )
-        continuous_pred = self.continuous_head(features)
-        
-        return categorical_logits, continuous_pred
-    
-    def compute_prediction_error(self, observations, actions, next_observations, clip_value=None):
-        '''
-        Compute prediction error for given transitions.
-        
-        Args:
-            observations: (batch, seq, obs_size) current observations
-            actions: (batch, seq) actions taken
-            next_observations: (batch, seq, obs_size) resulting observations
-            clip_value: optional max value to clip error
-            
-        Returns:
-            prediction_error: (batch, seq) prediction error per transition
-        '''
+        features = self.shared(x.reshape(batch_size * seq_len, -1))
+        features = features.reshape(batch_size, seq_len, self.hidden_size)
 
+        if gru_h is None:
+            gru_h = torch.zeros(1, batch_size, self.hidden_size, device=observations.device)
+
+        out, gru_h = self.gru(features, gru_h)  # out: (batch, seq, hidden)
+
+        categorical_logits = self.categorical_head(out).reshape(
+            batch_size, seq_len, self.cat_obs_size, self.num_tile_types
+        )
+        continuous_pred = self.continuous_head(out).reshape(batch_size, seq_len, 1)
+        
+        return categorical_logits, continuous_pred, gru_h
+
+    def forward_step(self, observation, action, gru_h=None):
+        '''
+        Single-step eval forward — uses GRUCell, faster than nn.GRU.
+
+        Args:
+            observation : (batch, obs_size)
+            action      : (batch,)
+            gru_h       : (batch, hidden) or None
+
+        Returns:
+            categorical_logits : (batch, cat_obs_size, num_tile_types)
+            continuous_pred    : (batch, 1)
+            gru_h              : (batch, hidden)
+        '''
+        batch_size = observation.shape[0]
+
+        cat_obs  = observation[:, :self.cat_obs_size]
+        cont_obs = observation[:, self.cat_obs_size:].clone()
+        cont_obs[:, 1:] = 0
+
+        cat_onehot = torch.nn.functional.one_hot(
+            cat_obs.long(), num_classes=self.num_tile_types
+        ).flatten(start_dim=-2).float()
+        act_onehot = torch.nn.functional.one_hot(
+            action.long(), num_classes=self.num_actions
+        ).float()
+
+        x = torch.cat([cat_onehot, cont_obs, act_onehot], dim=-1)
+        features = self.shared(x)  # (batch, hidden)
+
+        if gru_h is None:
+            gru_h = torch.zeros(batch_size, self.hidden_size, device=observation.device)
+
+        gru_h = self.gru_cell(features, gru_h)  # (batch, hidden)
+
+        categorical_logits = self.categorical_head(gru_h).reshape(
+            batch_size, self.cat_obs_size, self.num_tile_types
+        )
+        continuous_pred = self.continuous_head(gru_h)
+
+        return categorical_logits, continuous_pred, gru_h
+
+    def compute_prediction_error(self, observations, actions, next_observations,
+                              gru_h=None, clip_value=None):
         if observations.ndim == 2:
-            # Add fake time dim
-            observations = observations.unsqueeze(1)
-            actions = actions.unsqueeze(1)
+            observations      = observations.unsqueeze(1)
+            actions           = actions.unsqueeze(1)
             next_observations = next_observations.unsqueeze(1)
+
+        # Ensure gru_h is (1, batch, hidden) for nn.GRU
+        if gru_h is not None and gru_h.ndim == 2:
+            gru_h = gru_h.unsqueeze(0)
+
+        categorical_logits, continuous_pred, gru_h = self.forward(
+            observations, actions, gru_h
+        )
         
-        # Get predictions
-        categorical_logits, continuous_pred = self.forward(observations, actions)
-        
-        # Split target observations
-        next_obs_cat = next_observations[:, :, :self.cat_obs_size].long()
+        next_obs_cat  = next_observations[:, :, :self.cat_obs_size].long()
         next_obs_cont = next_observations[:, :, self.cat_obs_size:]
         
         batch_size, seq_len, num_positions = next_obs_cat.shape
         
-        # Categorical loss (cross-entropy)
         categorical_loss = torch.nn.functional.cross_entropy(
             categorical_logits.reshape(-1, self.num_tile_types),
             next_obs_cat.reshape(-1),
             reduction='none'
         )
-        cat_loss = categorical_loss.reshape(batch_size, seq_len, num_positions).mean(dim=-1)
+        cat_loss  = categorical_loss.reshape(batch_size, seq_len, num_positions).mean(dim=-1)
+        cont_loss = ((continuous_pred - next_obs_cont[:, :, :1]) ** 2).mean(dim=-1)
         
-        # Continuous loss (MSE)
-        cont_loss = ((continuous_pred - next_obs_cont[:, :, :1])**2).mean(dim=-1)
-        
-        # Combined prediction error
+        # Margin: zero out "good enough" predictions
+        # cat threshold: cross-entropy of a confident correct prediction is ~0.1
+        #                uniform over 10 classes is ~2.3, so 0.1 is already quite good
+        # cont threshold: MSE below 0.01 is essentially perfect for a direction signal
+        cat_loss  = torch.relu(cat_loss  - self.cat_threshold)
+        cont_loss = torch.relu(cont_loss - self.cont_threshold)
+
         prediction_error = cat_loss + cont_loss
         
         if clip_value is not None:
             prediction_error = torch.clamp(prediction_error, 0, clip_value)
             
-        return prediction_error
+        return prediction_error, gru_h
     
-    def compute_intrinsic_reward(
-        self, 
-        observations, 
-        actions, 
-        next_observations, 
-        reward_coef=1.0, 
-        clip_value=None, 
-        normalize=False
-    ):
-        prediction_error = self.compute_prediction_error(
-            observations, actions, next_observations, clip_value
+    def compute_intrinsic_reward(self, observations, actions, next_observations,
+                                  gru_h=None, reward_coef=1.0, clip_value=None, normalize=False):
+        prediction_error, gru_h = self.compute_prediction_error(
+            observations, actions, next_observations,
+            gru_h=gru_h, clip_value=clip_value
         )
         
         if normalize:
             error_mean = prediction_error.mean()
-            error_std = prediction_error.std() + 1e-8
+            error_std  = prediction_error.std() + 1e-8
             normalized_error = (prediction_error - error_mean) / error_std
-            # Shift to non-negative, then apply log for sharp but bounded curve
             shifted = normalized_error - normalized_error.min()
             intrinsic_reward = torch.log(1 + shifted) * reward_coef
         else:
-            # Percentile clip to bound without flattening the curve
             upper = torch.quantile(prediction_error, 0.95)
             intrinsic_reward = torch.clamp(prediction_error, 0, upper) * reward_coef
             
-        return intrinsic_reward
+        return intrinsic_reward, gru_h
     
-    def get_predictions_for_logging(self, observations, actions, next_observations, clip_value=None):
-        '''
-        Get predictions and errors formatted for the show_reconstruction function.
-        This is a convenience method for logging/visualization during training.
-        
-        Args:
-            observations: (batch, seq, obs_size) current observations
-            actions: (batch, seq) actions taken
-            next_observations: (batch, seq, obs_size) target observations
-            clip_value: optional max value to clip error
-            
-        Returns:
-            tuple: (predictions, errors) ready for show_reconstruction
-                predictions: (batch, seq, obs_size) predicted next observations
-                errors: (batch, seq) prediction error per transition
-        '''
+    def get_predictions_for_logging(self, observations, actions, next_observations, gru_h=None, clip_value=None):
         with torch.no_grad():
-            # Get predictions from forward pass
-            categorical_logits, continuous_pred = self.forward(observations, actions)
-            
-            # Convert logits to predicted classes
-            categorical_pred = categorical_logits.argmax(dim=-1)  # (batch, seq, cat_obs_size)
-            
-            # Concatenate categorical predictions with continuous predictions
-            predictions = torch.cat([
-                categorical_pred.float(),
-                continuous_pred
-            ], dim=-1)
-            
-            # Compute prediction error
-            errors = self.compute_prediction_error(
-                observations, actions, next_observations, clip_value
+            categorical_logits, continuous_pred, gru_h = self.forward(
+                observations, actions, gru_h
             )
-            
-            return predictions, errors
+            categorical_pred = categorical_logits.argmax(dim=-1)
+            predictions = torch.cat([categorical_pred.float(), continuous_pred], dim=-1)
+            errors, gru_h = self.compute_prediction_error(
+                observations, actions, next_observations,
+                gru_h=gru_h, clip_value=clip_value
+            )
+            return predictions, errors, gru_h
     
     @torch.no_grad()
-    def visualize_prediction(self, observations, actions, next_observations, idx=0):
-        '''
-        Helper method to get predicted vs actual observations for visualization.
-        
-        Args:
-            observations: (batch, seq, obs_size)
-            actions: (batch, seq)
-            next_observations: (batch, seq, obs_size)
-            idx: which batch element to visualize
-            
-        Returns:
-            dict with 'actual', 'predicted', and 'error' arrays
-        '''
-        categorical_logits, continuous_pred = self.forward(observations, actions)
-        
-        # Convert logits to predicted classes
-        categorical_pred = categorical_logits.argmax(dim=-1)  # (batch, seq, cat_obs_size)
-        
-        # Concatenate predictions
-        predicted = torch.cat([
-            categorical_pred.float(),
-            continuous_pred
-        ], dim=-1)
-        
-        # Compute error
-        error = self.compute_prediction_error(observations, actions, next_observations)
-        
+    def visualize_prediction(self, observations, actions, next_observations, gru_h=None, idx=0):
+        categorical_logits, continuous_pred, gru_h = self.forward(
+            observations, actions, gru_h
+        )
+        categorical_pred = categorical_logits.argmax(dim=-1)
+        predicted = torch.cat([categorical_pred.float(), continuous_pred], dim=-1)
+        error, _ = self.compute_prediction_error(
+            observations, actions, next_observations, gru_h=gru_h
+        )
         return {
-            'actual': next_observations[idx].cpu().numpy(),
+            'actual':    next_observations[idx].cpu().numpy(),
             'predicted': predicted[idx].cpu().numpy(),
-            'error': error[idx].cpu().numpy()
+            'error':     error[idx].cpu().numpy(),
         }
 
 
