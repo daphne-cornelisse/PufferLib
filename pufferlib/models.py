@@ -15,14 +15,6 @@ class TinyWorldModel(nn.Module):
     to a low-dimensional latent target, and a recurrent predictor maps
     (observation, action, hidden) to a latent prediction. The loss is MSE in
     latent space, making this agnostic to env/observation-specific changes.
-
-    Notes:
-        - The target encoder is randomly initialized and never trained
-          (requires_grad=False on its parameters). This is the simplest way to
-          get stable targets without collapse.
-        - The predictor's "encoder" is just the input MLP — there is no shared
-          state feature extractor between predictor and target. This mirrors
-          RND.
     '''
     def __init__(self, observation_size, action_size, hidden_size=128, latent_size=64, threshold=0.0):
         super().__init__()
@@ -168,6 +160,7 @@ class TinyWorldModel(nn.Module):
 
     def compute_intrinsic_reward(self, observations, actions, next_observations,
                                   gru_h=None, reward_coef=1.0, clip_value=None, normalize=True):
+        
         prediction_error, gru_h = self.compute_prediction_error(
             observations, actions, next_observations,
             gru_h=gru_h, clip_value=clip_value
@@ -184,43 +177,6 @@ class TinyWorldModel(nn.Module):
             intrinsic_reward = torch.clamp(prediction_error, 0, upper) * reward_coef
 
         return intrinsic_reward, gru_h
-
-    def get_predictions_for_logging(self, observations, actions, next_observations,
-                                    gru_h=None, clip_value=None):
-        with torch.no_grad():
-            predicted_latent, gru_h = self.forward(observations, actions, gru_h)
-            errors, gru_h = self.compute_prediction_error(
-                observations, actions, next_observations,
-                gru_h=gru_h, clip_value=clip_value,
-            )
-            return predicted_latent, errors, gru_h
-
-    @torch.no_grad()
-    def visualize_prediction(self, observations, actions, next_observations, gru_h=None, idx=0):
-        '''Returns predicted vs target latent and per-step error for inspection.
-
-        Note: outputs are now latent vectors (length latent_size), not
-        observation-space grids. The existing `show_reconstruction` callsite
-        in pufferl.py reshapes these as a 2D obs grid and will fail; either
-        disable `log_wm_reconstruction` or update that callsite to plot
-        latent vectors as 1D bar/line plots.
-        '''
-        predicted_latent, _ = self.forward(observations, actions, gru_h)
-
-        batch_size, seq_len = next_observations.shape[:2]
-        next_obs_flat = next_observations.reshape(batch_size * seq_len, -1)
-        target_latent = self.target_encoder(next_obs_flat.float()).reshape(
-            batch_size, seq_len, self.latent_size
-        )
-
-        error, _ = self.compute_prediction_error(
-            observations, actions, next_observations, gru_h=gru_h
-        )
-        return {
-            'actual':    target_latent[idx].cpu().numpy(),
-            'predicted': predicted_latent[idx].cpu().numpy(),
-            'error':     error[idx].cpu().numpy(),
-        }
 
 
 class Default(nn.Module):
@@ -293,19 +249,6 @@ class Default(nn.Module):
             observations = torch.cat([v.view(batch_size, -1) for v in observations.values()], dim=1)
         else: 
             observations = observations.view(batch_size, -1)
-
-            # # Note: temp for grid env only
-            # categorical_obs = observations[:, :121]
-            # continuous_obs = observations[:, 121:]
-            
-            # categorical_obs_onehot = torch.nn.functional.one_hot(
-            #     categorical_obs.long(), 
-            #     num_classes=10,
-            # ) 
-            
-            # categorical_obs_flat = categorical_obs_onehot.flatten(start_dim=-2) 
-            
-            # observations = torch.cat([categorical_obs_flat, continuous_obs], dim=-1).view(batch_size, -1)
             
         return self.encoder(observations.float())
 

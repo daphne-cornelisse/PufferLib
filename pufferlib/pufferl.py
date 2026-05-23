@@ -20,6 +20,7 @@ import configparser
 from threading import Thread
 from collections import defaultdict, deque
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 import seaborn as sns
 import numpy as np
@@ -58,86 +59,6 @@ from torch.utils.cpp_extension import (
 # and can find CUDA or HIP in the system
 ADVANTAGE_CUDA = bool(CUDA_HOME or ROCM_HOME)
 
-def show_reconstruction(mb_obs_nxt, mb_obs_next_pred, prediction_error, logger, step, vision=5):
-    
-    import wandb
-    import matplotlib.pyplot as plt
-    from io import BytesIO
-    from PIL import Image
-    
-    # Compute observation size 
-    obs_size = 2 * vision + 1
-    mb_obs_nxt = mb_obs_nxt.detach().cpu().numpy()
-    mb_obs_next_pred = mb_obs_next_pred.detach().cpu().numpy()
-    prediction_error = prediction_error.detach().cpu().numpy()
-    
-    wandb_images = []
-    
-    batch_idx = 0
-    time_idx = 0
-    
-    # Get flattened observations. Exclude last element for visualization purposes, since
-    # we want to show the grid.
-    actual_grid = mb_obs_nxt[batch_idx, time_idx, :-3].reshape(obs_size, obs_size)
-    predicted_grid = mb_obs_next_pred[batch_idx, time_idx, :-3].reshape(obs_size, obs_size)
-    error = prediction_error[batch_idx, time_idx]
-
-    
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5), dpi=150)
-    
-    # Actual observation
-    im0 = axes[0].imshow(actual_grid, vmin=0, vmax=9, interpolation='nearest', cmap='cividis')
-    axes[0].set_title(f'Actual next observation ({obs_size}x{obs_size})')
-    axes[0].set_xlabel('X')
-    axes[0].set_ylabel('Y')
-    axes[0].grid(True, alpha=0.3)
-    plt.colorbar(im0, ax=axes[0], label='Tile Type')
-    
-    # Predicted observation
-    im1 = axes[1].imshow(predicted_grid, vmin=0, vmax=9, interpolation='nearest', cmap='cividis')
-    axes[1].set_title(f'Pred next observation ({obs_size}x{obs_size})')
-    axes[1].set_xlabel('X')
-    axes[1].set_ylabel('Y')
-    axes[1].grid(True, alpha=0.3)
-    plt.colorbar(im1, ax=axes[1], label='Tile Type')
-    
-    # Absolute difference
-    diff_grid = np.abs(actual_grid - predicted_grid)
-    im2 = axes[2].imshow(diff_grid, cmap='Reds', interpolation='nearest', vmin=0, vmax=2)
-    axes[2].set_title(f'Abs Difference\nMSE: {error:.4f}')
-    axes[2].set_xlabel('X')
-    axes[2].set_ylabel('Y')
-    axes[2].grid(True, alpha=0.3)
-    plt.colorbar(im2, ax=axes[2], label='Error')
-    
-    plt.suptitle(f'Batch {batch_idx}, Time {time_idx}', fontsize=14)
-    plt.tight_layout()
-    
-    # Convert figure to image array
-    buf = BytesIO()
-    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-    buf.seek(0)
-    image = Image.open(buf)
-    image_array = np.array(image)
-    buf.close()
-    
-    wandb_images.append(
-        wandb.Image(
-            image_array, 
-            caption=f"Batch {batch_idx}, t={time_idx}, MSE={error:.4f}"
-        )
-    )
-    
-    plt.close(fig)
-    
-    # Log to wandb
-    logger.wandb.log({
-        'world_model/reconstruction': wandb_images,
-        'world_model/mean_reconstruction_error': prediction_error.mean(),
-        'world_model/max_reconstruction_error': prediction_error.max(),
-        'world_model/min_reconstruction_error': prediction_error.min(),
-    }, step=step)
-
 class PuffeRL:
     def __init__(self, config, full_config, vecenv, policy, world_model, logger=None):
         # Backend perf optimization
@@ -163,7 +84,8 @@ class PuffeRL:
         self.grid_height = full_config['env']['max_size']
         self.state_visit_counts = np.zeros((self.grid_height, self.grid_height), dtype=np.int32)    
         self.state_reward_sums = np.zeros((self.grid_height, self.grid_height), dtype=np.float32)
-        
+        self.state_advantage_grid = np.zeros((self.grid_height, self.grid_height), dtype=np.float32)
+
         self.prev_obs = None
         self.prev_action = None
         
@@ -353,10 +275,12 @@ class PuffeRL:
         # Set style
         sns.set("notebook", font_scale=1.05, rc={"figure.figsize": (16, 5)})
         sns.set_style("ticks", rc={"figure.facecolor": "white", "axes.facecolor": "white"})
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5), dpi=200)
+        fig, axes = plt.subplots(1, 4, figsize=(24, 5), dpi=200)
         
         # 1. State visitation heatmap
-        sns.heatmap(self.state_visit_counts, ax=axes[0], vmin=0, vmax=self.segments, cbar_kws={'label': 'Visit Count'})
+        pastel_green = LinearSegmentedColormap.from_list('pastel_green', ['white', '#77C77A'])
+
+        sns.heatmap(self.state_visit_counts, ax=axes[0], vmin=0, vmax=self.segments, cmap=pastel_green, cbar_kws={'label': 'Visit Count'})
         axes[0].set_title(r'State visitation counts $N_s$')
         axes[0].set_xlabel('x')
         axes[0].set_ylabel('y')
@@ -368,7 +292,7 @@ class PuffeRL:
             where=self.state_visit_counts > 0,
             out=np.zeros_like(self.state_reward_sums)
         )
-        sns.heatmap(avg_rewards, ax=axes[1])
+        sns.heatmap(avg_rewards, cmap='RdBu_r', center=0, ax=axes[1])
         axes[1].set_title(r'Moving average of $r^i(s)$: $\sum r^i / N_s$')
         axes[1].set_xlabel('x')
         axes[1].set_ylabel('y')
@@ -415,6 +339,13 @@ class PuffeRL:
         # axes[2].set_xscale('log')
         # axes[2].set_yscale('log')
         axes[2].grid(True, alpha=0.3)
+        
+        sns.heatmap(self.state_advantage_grid, ax=axes[3], cmap='RdBu_r', center=0,
+            cbar_kws={'label': 'Mean A(s)'})
+        axes[3].set_title(r'Mean advantage $\bar{A}(s)$ (current rollout only)')
+        axes[3].set_xlabel('x')
+        axes[3].set_ylabel('y')
+
         plt.tight_layout()
         sns.despine()
         return fig
@@ -433,11 +364,6 @@ class PuffeRL:
                 self.lstm_h[k].zero_()
                 self.lstm_c[k].zero_()
                 
-        # Reset world model hidden states
-        # if config['wm_ri_coef'] > 0:
-        #     for k in self.wm_gru_h:
-        #         self.wm_gru_h[k].zero_()
-
         self.full_rows = 0
         while self.full_rows < self.segments:
             profile('env', epoch)
@@ -533,7 +459,7 @@ class PuffeRL:
                 logits, value = self.policy.forward_eval(o_device, state)
                 action, logprob, _ = pufferlib.pytorch.sample_logits(logits)
                 r = torch.clamp(r, -1, 1)
-                
+         
                 # Store for next step
                 self.prev_obs = torch.as_tensor(o).to(device)
                 self.prev_action = torch.as_tensor(action).to(device)
@@ -675,34 +601,6 @@ class PuffeRL:
                 )
                 
                 wm_loss = wm_pred_errors.mean()
-                
-                # Optional: Log world model reconstruction visualization
-                if self.config['log_wm_reconstruction'] and \
-                    mb % 100 == 0 and \
-                    hasattr(self.logger, 'wandb') and \
-                    (epoch % 100 == 0):
-                        
-                    with torch.no_grad():
-                        viz_data = self.world_model.visualize_prediction(
-                            mb_obs_cur,
-                            mb_actions_wm,
-                            mb_obs_nxt,
-                            gru_h=mb_wm_h,
-                            idx=0,
-                        )
-                        
-                        # Convert to tensors for visualization function
-                        actual = torch.from_numpy(viz_data['actual']).unsqueeze(0)
-                        predicted = torch.from_numpy(viz_data['predicted']).unsqueeze(0)
-                        error = torch.from_numpy(viz_data['error']).unsqueeze(0)
-                        show_reconstruction(
-                            actual, 
-                            predicted, 
-                            error,
-                            self.logger,
-                            self.global_step,
-                            vision=self.full_config['env']['vision'],
-                        )
                             
             profile('train_misc', epoch)
             newlogprob = newlogprob.reshape(mb_logprobs.shape)
@@ -747,7 +645,6 @@ class PuffeRL:
             if self.config['log_detailed_stats'] and epoch % 100 == 0:
                 self.explore_stats['entropy'].append(entropy.tolist())
                 self.explore_stats['advantages'].append(mb_advantages.tolist())
-                self.explore_stats['intrinsic_reward'].append(intrinsic_reward.tolist())
             
             # Logging
             profile('train_misc', epoch)
@@ -787,6 +684,18 @@ class PuffeRL:
         var_y = y_true.var()
         explained_var = torch.nan if var_y == 0 else (1 - (y_true - y_pred).var() / var_y).item()
         losses['explained_variance'] = explained_var
+        
+        with torch.no_grad():
+            adv_np = advantages.cpu().numpy().flatten()
+            obs_np = self.observations.cpu().numpy()
+            col_indices = obs_np[:, :, -2].astype(int).flatten()
+            row_indices = obs_np[:, :, -1].astype(int).flatten()
+
+            self.state_advantage_grid[:] = 0
+            counts = np.zeros_like(self.state_advantage_grid)
+            np.add.at(self.state_advantage_grid, (row_indices, col_indices), adv_np)
+            np.add.at(counts, (row_indices, col_indices), 1)
+            np.divide(self.state_advantage_grid, counts, where=counts > 0, out=self.state_advantage_grid)
 
         profile.end()
         logs = None
@@ -811,10 +720,6 @@ class PuffeRL:
             self.save_checkpoint()
             self.msg = f'Checkpoint saved at update {self.epoch}'
             
-            # Add video recording on checkpoint intervals
-            #if self.epoch % config['video_interval'] == 0 or done_training:
-                #self.record_video(policy=self.uncompiled_policy)
-                
         return logs
 
     def mean_and_log(self):
