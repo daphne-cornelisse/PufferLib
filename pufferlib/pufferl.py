@@ -487,6 +487,7 @@ class PuffeRL:
                         self.wm_gru_h[env_id[0]] = gru_h.detach()  # store as-is, no unsqueeze needed
                         intrinsic_rewards = intrinsic_rewards.squeeze().cpu().numpy()
                         r += intrinsic_rewards
+                        #breakpoint()
                 else:
                     intrinsic_rewards = np.zeros_like(r)
             else: # Intrinsic rewards are computed in grid.h
@@ -672,6 +673,7 @@ class PuffeRL:
                 gru_h=mb_wm_h,
                 clip_value=config["wm_clip_coef"],
             )
+            
             wm_loss = wm_pred_errors.mean()
             
             # Optional: Log world model reconstruction visualization
@@ -851,13 +853,13 @@ class PuffeRL:
         }
         
         if self.config['log_coverage_grid'] and (self.epoch - 1) % 50 == 0:
-            # Note: This only works when backend is Serial
-            coverage_grid = self.vecenv.driver_env.get_coverage_counts()
-            if coverage_grid.size > 0:
-                logs['environment/state_visitation'] = wandb.Image(
-                    coverage_grid,
-                    caption=f"Epoch {self.epoch}",
-                )
+            # # Note: This only works when backend is Serial
+            # coverage_grid = self.vecenv.driver_env.get_coverage_counts()
+            # if coverage_grid.size > 0:
+            #     logs['environment/state_visitation'] = wandb.Image(
+            #         coverage_grid,
+            #         caption=f"Epoch {self.epoch}",
+            #     )
             
             # Get visualization
             vis_fig = self.visualize_state_visitation()
@@ -1399,8 +1401,7 @@ def train(env_name, args=None, vecenv=None, policy=None, logger=None, early_stop
     world_model = pufferlib.models.TinyWorldModel(
         observation_size=np.prod(vecenv.single_observation_space.shape),
         action_size=vecenv.single_action_space.n,
-        cat_threshold=args['train']['wm_cat_threshold'],
-        cont_threshold=args['train']['wm_cont_threshold'],
+        threshold=args['train']['wm_threshold'],
     )
     
     if 'LOCAL_RANK' in os.environ:

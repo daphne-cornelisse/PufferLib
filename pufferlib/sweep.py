@@ -96,7 +96,7 @@ class Log(Space):
     def normalize(self, value):
         #assert isinstance(value, (int, float))
         #assert value != 0.0
-        zero_one = (math.log(value, self.base) - math.log(self.min, self.base))/(math.log(self.max, self.base) - math.log(self.min, self.base))
+        zero_one = (math.log(value+0.00001, self.base) - math.log(self.min, self.base))/(math.log(self.max, self.base) - math.log(self.min, self.base))
         return 2*zero_one - 1
 
     def unnormalize(self, value):
