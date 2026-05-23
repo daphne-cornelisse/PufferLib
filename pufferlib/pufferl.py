@@ -548,7 +548,7 @@ class PuffeRL:
                 l = self.ep_lengths[env_id.start].item()
                 batch_rows = slice(self.ep_indices[env_id.start].item(), 1+self.ep_indices[env_id.stop - 1].item())
                 
-                if l == 0:
+                if config['wm_ri_coef'] > 0: # If world model is used
                     self.wm_hiddens[batch_rows] = self.wm_gru_h[env_id.start].squeeze(0).detach()
 
                 if config['cpu_offload']:
@@ -609,7 +609,6 @@ class PuffeRL:
         a = config['prio_alpha']
         clip_coef = config['clip_coef']
         vf_clip = config['vf_clip_coef']
-        wm_clip = config['wm_clip_coef']
         
         anneal_beta = b0 + (1 - b0)*a*self.epoch/self.total_epochs
         self.ratio[:] = 1
@@ -659,50 +658,51 @@ class PuffeRL:
             # Train the world model
             profile('train_misc', epoch)
             
-            # Split into current and next observations
-            mb_obs_cur = mb_obs[:, :-1]
-            mb_obs_nxt = mb_obs[:, 1:]
-            mb_actions_wm = mb_actions[:, :-1]
-            
-            # Compute world model loss using the class method
-            mb_wm_h = self.wm_hiddens[idx].unsqueeze(0)  # (1, batch, hidden)
-            wm_pred_errors, _ = self.world_model.compute_prediction_error(
-                observations=mb_obs_cur,
-                actions=mb_actions_wm,
-                next_observations=mb_obs_nxt,
-                gru_h=mb_wm_h,
-                clip_value=config["wm_clip_coef"],
-            )
-            
-            wm_loss = wm_pred_errors.mean()
-            
-            # Optional: Log world model reconstruction visualization
-            if self.config['log_wm_reconstruction'] and \
-                mb % 100 == 0 and \
-                hasattr(self.logger, 'wandb') and \
-                (epoch % 100 == 0):
-                    
-                with torch.no_grad():
-                    viz_data = self.world_model.visualize_prediction(
-                        mb_obs_cur,
-                        mb_actions_wm,
-                        mb_obs_nxt,
-                        gru_h=mb_wm_h,
-                        idx=0,
-                    )
-                    
-                    # Convert to tensors for visualization function
-                    actual = torch.from_numpy(viz_data['actual']).unsqueeze(0)
-                    predicted = torch.from_numpy(viz_data['predicted']).unsqueeze(0)
-                    error = torch.from_numpy(viz_data['error']).unsqueeze(0)
-                    show_reconstruction(
-                        actual, 
-                        predicted, 
-                        error,
-                        self.logger,
-                        self.global_step,
-                        vision=self.full_config['env']['vision'],
-                    )
+            if config['wm_ri_coef'] > 0:
+                # Split into current and next observations
+                mb_obs_cur = mb_obs[:, :-1]
+                mb_obs_nxt = mb_obs[:, 1:]
+                mb_actions_wm = mb_actions[:, :-1]
+                
+                # Compute world model loss using the class method
+                mb_wm_h = self.wm_hiddens[idx].unsqueeze(0)  # (1, batch, hidden)
+                wm_pred_errors, _ = self.world_model.compute_prediction_error(
+                    observations=mb_obs_cur,
+                    actions=mb_actions_wm,
+                    next_observations=mb_obs_nxt,
+                    gru_h=mb_wm_h,
+                    clip_value=config["wm_clip_coef"],
+                )
+                
+                wm_loss = wm_pred_errors.mean()
+                
+                # Optional: Log world model reconstruction visualization
+                if self.config['log_wm_reconstruction'] and \
+                    mb % 100 == 0 and \
+                    hasattr(self.logger, 'wandb') and \
+                    (epoch % 100 == 0):
+                        
+                    with torch.no_grad():
+                        viz_data = self.world_model.visualize_prediction(
+                            mb_obs_cur,
+                            mb_actions_wm,
+                            mb_obs_nxt,
+                            gru_h=mb_wm_h,
+                            idx=0,
+                        )
+                        
+                        # Convert to tensors for visualization function
+                        actual = torch.from_numpy(viz_data['actual']).unsqueeze(0)
+                        predicted = torch.from_numpy(viz_data['predicted']).unsqueeze(0)
+                        error = torch.from_numpy(viz_data['error']).unsqueeze(0)
+                        show_reconstruction(
+                            actual, 
+                            predicted, 
+                            error,
+                            self.logger,
+                            self.global_step,
+                            vision=self.full_config['env']['vision'],
+                        )
                             
             profile('train_misc', epoch)
             newlogprob = newlogprob.reshape(mb_logprobs.shape)
@@ -758,7 +758,8 @@ class PuffeRL:
             losses['approx_kl'] += approx_kl.item() / self.total_minibatches
             losses['clipfrac'] += clipfrac.item() / self.total_minibatches
             losses['importance'] += ratio.mean().item() / self.total_minibatches
-            losses['wm_loss'] += wm_loss.item() / self.total_minibatches
+            if config['wm_ri_coef'] > 0:
+                losses['wm_loss'] += wm_loss.item() / self.total_minibatches
 
             # Learn on accumulated minibatches
             profile('learn', epoch)
@@ -769,11 +770,12 @@ class PuffeRL:
                 self.optimizer.zero_grad()
                 
             # World model loss backward and step
-            wm_loss.backward()
-            if (mb + 1) % self.accumulate_minibatches == 0:
-                torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), config['max_grad_norm'])
-                self.world_model_optimizer.step()
-                self.world_model_optimizer.zero_grad()
+            if config['wm_ri_coef'] > 0:
+                wm_loss.backward()
+                if (mb + 1) % self.accumulate_minibatches == 0:
+                    torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), config['max_grad_norm'])
+                    self.world_model_optimizer.step()
+                    self.world_model_optimizer.zero_grad()
 
         # Reprioritize experience
         profile('train_misc', epoch)
