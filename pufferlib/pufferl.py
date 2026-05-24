@@ -82,7 +82,7 @@ class PuffeRL:
         self.solved_at_step = None
     
         self.grid_height = full_config['env']['max_size']
-        self.state_visit_counts = np.zeros((self.grid_height, self.grid_height), dtype=np.int32)    
+        self.state_visit_counts = np.zeros((self.grid_height, self.grid_height), dtype=np.int32)
         self.state_reward_sums = np.zeros((self.grid_height, self.grid_height), dtype=np.float32)
         self.state_advantage_grid = np.zeros((self.grid_height, self.grid_height), dtype=np.float32)
 
@@ -757,17 +757,13 @@ class PuffeRL:
             #**{f'environment/{k}': dist_mean(v, device) for k, v in self.stats.items()},
             #**{f'losses/{k}': dist_mean(v, device) for k, v in self.losses.items()},
             #**{f'performance/{k}': dist_sum(v['elapsed'], device) for k, v in self.profile},
-        }
+        }     
         
+        tiles_visited = (self.state_visit_counts > 0).sum()
+        tiles_total = self.state_visit_counts.flatten().shape[0]        
+        logs['environment/cum_coverage'] = float(tiles_visited / tiles_total)
+
         if self.config['log_coverage_grid'] and (self.epoch - 1) % 50 == 0:
-            # # Note: This only works when backend is Serial
-            # coverage_grid = self.vecenv.driver_env.get_coverage_counts()
-            # if coverage_grid.size > 0:
-            #     logs['environment/state_visitation'] = wandb.Image(
-            #         coverage_grid,
-            #         caption=f"Epoch {self.epoch}",
-            #     )
-            
             # Get visualization
             vis_fig = self.visualize_state_visitation()
             logs['environment/state_visitation_intrinsic_reward'] = wandb.Image(
@@ -1507,6 +1503,8 @@ def sweep(args=None, env_name=None):
     points_per_run = args['sweep']['downsample']
     target_key = f'environment/{args["sweep"]["metric"]}'
     running_target_buffer = deque(maxlen=30)
+    
+    print(target_key)
 
     def stop_if_perf_below(logs):
         if any("losses/" in k and np.isnan(v) for k, v in logs.items()):

@@ -163,6 +163,6 @@ static int my_log(PyObject* dict, Log* log) {
     assign_to_dict(dict, "episode_return", log->episode_return);
     assign_to_dict(dict, "episode_length", log->episode_length);
     assign_to_dict(dict, "unique_visited", log->unique_visited);
-    assign_to_dict(dict, "cum_coverage", log->cum_coverage);
+    //assign_to_dict(dict, "cum_coverage", log->cum_coverage);
     return 0;
 }
