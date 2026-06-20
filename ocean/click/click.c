@@ -1,0 +1,29 @@
+#include "click.h"
+#include "puffernet.h"
+
+int main() {
+
+    float observations[OBS_SIZE];
+    float actions[ACTION_SIZE];
+    float rewards[1];
+    float terminals[1]; 
+    
+    ClickEnv env = {
+        .width = 800,
+        .height = 600,
+        .target_spawn_duration = 50,
+        .episode_length = 200,
+        .rng = 1234,
+        .observations = observations,
+        .actions = actions,
+        .rewards = rewards,
+        .terminals = terminals,
+    };
+
+    c_reset(&env);
+    c_render(&env);
+    for (int step = 0; step < env.episode_length; step++) {
+        c_step(&env);
+        c_render(&env);
+    }
+}
