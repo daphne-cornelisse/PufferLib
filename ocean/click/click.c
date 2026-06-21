@@ -22,7 +22,8 @@ int main() {
 
     c_reset(&env);
     c_render(&env);
-    for (int step = 0; step < env.episode_length; step++) {
+    while (!WindowShouldClose()) {
+        env.human_input = get_human_input(&env);
         c_step(&env);
         c_render(&env);
     }

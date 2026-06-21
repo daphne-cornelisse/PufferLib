@@ -72,6 +72,8 @@ typedef struct {
     int episode_return;
     int targets_hit;
     int targets_total;
+    Vector2 prev_mouse;
+    int human_input;
 } ClickEnv;
 
 // Util functions
@@ -82,6 +84,30 @@ void add_log(ClickEnv* env) {
     env->log.targets_hit += env->targets_hit;
     env->log.targets_total += env->targets_total;
     env->log.n++;
+}
+
+int get_human_input(ClickEnv* env) {
+    Vector2 mouse = GetMousePosition();
+
+    if (env->prev_mouse.x < 0) {
+        env->prev_mouse = mouse;
+        return 0;
+    }
+
+    float move_x = mouse.x - env->prev_mouse.x;
+    float move_y = mouse.y - env->prev_mouse.y;
+    env->prev_mouse = mouse;
+
+    int moved   = (fabsf(move_x) > 0.5f || fabsf(move_y) > 0.5f);
+    int clicked = IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
+
+    if (!moved && !clicked) return 0;
+
+    env->actions[0] = move_x; 
+    env->actions[1] = move_y;
+    env->actions[2] = clicked ? 1 : 0;
+    return 1;
+
 }
 
 void init(ClickEnv* env) {
@@ -113,6 +139,7 @@ void c_reset(ClickEnv* env) {
     env->tick = 0;
     env->episode_return = 0;
     env->targets_hit = 0;
+    env->prev_mouse = (Vector2){ -1.0f, -1.0f };  
     env->targets_total = NUM_START_TARGETS;
 
     // Spawn a number of targets at random locations
@@ -139,19 +166,23 @@ static inline float clipf(float val, float min, float max) {
 
 void c_step(ClickEnv* env) {
 
-    // Agent takes action
     float delta_x = DELTA_X[(int)env->actions[0]];
     float delta_y = DELTA_Y[(int)env->actions[1]];
     float click_status = STATUS[(int)env->actions[2]];
 
-    env->agent.x += delta_x;
-    env->agent.y += delta_y;
-    env->agent.status = click_status;
-
-    // Clip
+    if (env->human_input) {
+        env->agent.x += env->actions[0];
+        env->agent.y += env->actions[1];
+        env->agent.status = click_status;
+    } else {
+        env->agent.x += DELTA_X[(int)env->actions[0]];
+        env->agent.y += DELTA_Y[(int)env->actions[1]];
+        env->agent.status = click_status;
+    }
+    
     env->agent.x = clipf(env->agent.x, 0, env->width);
     env->agent.y = clipf(env->agent.y, 0, env->height);
-
+   
     // Update environment
     // Target spawn times and remove targets that have been on the screen for too long
     for (int i = 0; i < MAX_TARGETS; i++) {
