@@ -166,7 +166,7 @@ if [ "$MODE" = "local" ] || [ "$MODE" = "fast" ]; then
         "${LINK_ARCHIVES[@]}"
         "${EXTRA_LDFLAGS[@]}"
         "${STANDALONE_LDFLAGS[@]}"
-        -lm -lpthread -fopenmp
+        -lm -lpthread
         -DPLATFORM_DESKTOP
     )
     echo "Compiling $ENV..."
