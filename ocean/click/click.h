@@ -19,6 +19,7 @@ Environment difficulty can be tuned by changing the average target size and spaw
 #define TARGET_RADIUS_MAX 20
 
 // Action space: 2D movement (delta x, delta y) and click status (0 or 1)
+#define CONTINUOUS 1
 #define NUM_BINS 5
 static float DELTA_X[NUM_BINS] = {-10.0f, -5.0f, 0.0f, 5.0f, 10.0f};
 static float DELTA_Y[NUM_BINS] = {-10.0f, -5.0f, 0.0f, 5.0f, 10.0f};
@@ -74,6 +75,7 @@ typedef struct {
     int targets_total;
     Vector2 prev_mouse;
     int human_input;
+    int action_type;
 } ClickEnv;
 
 // Util functions
@@ -169,22 +171,26 @@ static inline float clipf(float val, float min, float max) {
 
 void c_step(ClickEnv* env) {
 
-    float delta_x = DELTA_X[(int)env->actions[0]];
-    float delta_y = DELTA_Y[(int)env->actions[1]];
-    float click_status = STATUS[(int)env->actions[2]];
-
     if (env->human_input) {
         env->agent.x = env->actions[0];
         env->agent.y = env->actions[1];
-        env->agent.status = click_status;
+        env->agent.status = env->actions[2];
     } else {
-        env->agent.x += DELTA_X[(int)env->actions[0]];
-        env->agent.y += DELTA_Y[(int)env->actions[1]];
-        env->agent.status = click_status;
+        if (env->action_type == CONTINUOUS) {
+            env->agent.x += env->actions[0];
+            env->agent.y += env->actions[1];
+            env->agent.status = env->actions[2];
+        } else {
+            env->agent.x += DELTA_X[(int)env->actions[0]];
+            env->agent.y += DELTA_Y[(int)env->actions[1]];
+            env->agent.status = env->actions[2];
+        }
     }
     
     env->agent.x = clipf(env->agent.x, 0, env->width);
     env->agent.y = clipf(env->agent.y, 0, env->height);
+
+    int click_status = env->agent.status;
    
     // Update environment
     // Target spawn times and remove targets that have been on the screen for too long

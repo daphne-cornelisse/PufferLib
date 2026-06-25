@@ -13,6 +13,7 @@ int main() {
         .height = 600,
         .target_spawn_duration = 200,
         .episode_length = 1000,
+        .action_type = 1,
         .rng = 1234,
         .observations = observations,
         .actions = actions,
