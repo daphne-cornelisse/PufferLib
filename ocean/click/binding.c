@@ -22,4 +22,4 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "episode_length", log->episode_length);
     dict_set(out, "targets_hit", log->targets_hit);
     dict_set(out, "targets_total", log->targets_total);    
-}
+}                                                                       

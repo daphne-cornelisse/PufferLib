@@ -11,8 +11,8 @@ int main() {
     ClickEnv env = {
         .width = 800,
         .height = 600,
-        .target_spawn_duration = 50,
-        .episode_length = 200,
+        .target_spawn_duration = 200,
+        .episode_length = 1000,
         .rng = 1234,
         .observations = observations,
         .actions = actions,

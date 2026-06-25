@@ -80,7 +80,7 @@ typedef struct {
 void add_log(ClickEnv* env) {
     env->log.episode_length += env->episode_length;
     env->log.episode_return += env->targets_hit;
-    env->log.perf += (float)(env->targets_hit/env->targets_total);
+    env->log.perf += (float)(env->targets_hit);
     env->log.targets_hit += env->targets_hit;
     env->log.targets_total += env->targets_total;
     env->log.n++;
@@ -89,13 +89,14 @@ void add_log(ClickEnv* env) {
 int get_human_input(ClickEnv* env) {
     Vector2 mouse = GetMousePosition();
 
+    // If the mouse did not move, return nothing
     if (env->prev_mouse.x < 0) {
         env->prev_mouse = mouse;
         return 0;
     }
-
-    float move_x = mouse.x - env->prev_mouse.x;
-    float move_y = mouse.y - env->prev_mouse.y;
+    // Set state directly
+    float move_x = mouse.x;
+    float move_y = mouse.y;
     env->prev_mouse = mouse;
 
     int moved   = (fabsf(move_x) > 0.5f || fabsf(move_y) > 0.5f);
@@ -142,6 +143,8 @@ void c_reset(ClickEnv* env) {
     env->prev_mouse = (Vector2){ -1.0f, -1.0f };  
     env->targets_total = NUM_START_TARGETS;
 
+    printf("%d", env->episode_length);
+
     // Spawn a number of targets at random locations
     for (int i = 0; i < NUM_START_TARGETS; i++) {
         env->targets[i].x = rand_r(&env->rng) % env->width;
@@ -171,8 +174,8 @@ void c_step(ClickEnv* env) {
     float click_status = STATUS[(int)env->actions[2]];
 
     if (env->human_input) {
-        env->agent.x += env->actions[0];
-        env->agent.y += env->actions[1];
+        env->agent.x = env->actions[0];
+        env->agent.y = env->actions[1];
         env->agent.status = click_status;
     } else {
         env->agent.x += DELTA_X[(int)env->actions[0]];
@@ -212,6 +215,7 @@ void c_step(ClickEnv* env) {
                 // Target is hit
                 env->targets_hit += 1;
                 env->targets[j].spawn_time = -1; // Mark target for removal
+                printf("%d", env->targets_hit);
             }
         }
     }
@@ -280,8 +284,9 @@ void c_render(ClickEnv* env) {
     DrawTriangleLines(tip, left, right, BLACK);
     DrawTriangleLines(left, notch, right, BLACK);
 
-    // Display timestep
     DrawText(TextFormat("Timestep: %d", env->tick), 10, 10, 20, BLACK);
+    DrawText(TextFormat("Targets hit: %d", env->targets_hit), 200, 10, 20, GREEN);
+    DrawText(TextFormat("Targets total: %d", env->targets_total), 420, 10, 20, BLUE);
 
     EndDrawing();
 }
