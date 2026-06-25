@@ -170,6 +170,8 @@ static inline float clipf(float val, float min, float max) {
 }
 
 void c_step(ClickEnv* env) {
+    env->rewards[0] = 0.0f;
+    env->terminals[0] = 0.0f;
 
     if (env->human_input) {
         env->agent.x = env->actions[0];
@@ -220,6 +222,7 @@ void c_step(ClickEnv* env) {
             if (distance <= env->targets[j].radius && click_status == 1) {
                 // Target is hit
                 env->targets_hit += 1;
+                env->rewards[0] += 1.0f;
                 env->targets[j].spawn_time = -1; // Mark target for removal
                 printf("%d", env->targets_hit);
             }
@@ -235,7 +238,6 @@ void c_step(ClickEnv* env) {
 
     if (env->tick >= env->episode_length) {
         env->terminals[0] = 1; 
-        env->rewards[0] = env->targets_hit;
         add_log(env);
         c_reset(env);
         //printf("%s\n", "reset");
@@ -293,7 +295,7 @@ void c_render(ClickEnv* env) {
 
     DrawText(TextFormat("Timestep: %d", env->tick), 10, 10, 20, BLACK);
     DrawText(TextFormat("Targets hit: %d", env->targets_hit), 200, 10, 20, GREEN);
-    DrawText(TextFormat("Targets total: %d", env->targets_total), 420, 10, 20, BLUE);
+    DrawText(TextFormat("Reward: %.2f", env->rewards[0]), 420, 10, 20, BLUE);
 
     EndDrawing();
 }
