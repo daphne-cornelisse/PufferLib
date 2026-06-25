@@ -127,15 +127,17 @@ void compute_observations(ClickEnv* env) {
     int obs_idx = 3;
     // For each target, we store its x, y, radius and spawn time
     for (int i = 0; i < MAX_TARGETS; i++) {
-        env->observations[obs_idx] = (env->targets[i].x - env->agent.x)/env->width;
-        env->observations[obs_idx + 1] = (env->targets[i].y - env->agent.y)/env->height;
-        env->observations[obs_idx + 2] = env->targets[i].radius/TARGET_RADIUS_MAX;
+        if (env->targets[i].spawn_time >= 0) {
+            env->observations[obs_idx]     = (env->targets[i].x - env->agent.x)/env->width;
+            env->observations[obs_idx + 1] = (env->targets[i].y - env->agent.y)/env->height;
+            env->observations[obs_idx + 2] = env->targets[i].radius/TARGET_RADIUS_MAX;
+        } else {
+            env->observations[obs_idx]     = 0.0f;
+            env->observations[obs_idx + 1] = 0.0f;
+            env->observations[obs_idx + 2] = 0.0f;
+        }
         obs_idx += 3;
     }
-
-    // We also observe the width and height of the environment
-    // env->observations[obs_idx] = env->width;
-    // env->observations[obs_idx + 1] = env->height;
 }
 
 void c_reset(ClickEnv* env) {
