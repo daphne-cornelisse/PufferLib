@@ -235,6 +235,7 @@ void c_step(ClickEnv* env) {
 
     if (env->tick >= env->episode_length) {
         env->terminals[0] = 1; 
+        env->rewards[0] = env->targets_hit;
         add_log(env);
         c_reset(env);
         //printf("%s\n", "reset");
