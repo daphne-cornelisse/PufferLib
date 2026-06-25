@@ -15,14 +15,14 @@ Environment difficulty can be tuned by changing the average target size and spaw
 #define OBS_SIZE (3 + 3 * MAX_TARGETS + 2)
 
 #define ACTION_SIZE 3
-#define TARGET_RADIUS_MIN 5
+#define TARGET_RADIUS_MIN 2
 #define TARGET_RADIUS_MAX 20
 
 // Action space: 2D movement (delta x, delta y) and click status (0 or 1)
 #define CONTINUOUS 1
 #define NUM_BINS 5
-static float DELTA_X[NUM_BINS] = {-10.0f, -5.0f, 0.0f, 5.0f, 10.0f};
-static float DELTA_Y[NUM_BINS] = {-10.0f, -5.0f, 0.0f, 5.0f, 10.0f};
+static float DELTA_X[NUM_BINS] = {-50.0f, -25.0f, 0.0f, 25.0f, 50.0f};
+static float DELTA_Y[NUM_BINS] = {-50.0f, -25.0f, 0.0f, 25.0f, 50.0f};
 static const float STATUS[2] = {0, 1};
 
 // Define structs
