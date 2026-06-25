@@ -21,8 +21,8 @@ Environment difficulty can be tuned by changing the average target size and spaw
 // Action space: 2D movement (delta x, delta y) and click status (0 or 1)
 #define CONTINUOUS 1
 #define NUM_BINS 5
-static float DELTA_X[NUM_BINS] = {-50.0f, -25.0f, 0.0f, 25.0f, 50.0f};
-static float DELTA_Y[NUM_BINS] = {-50.0f, -25.0f, 0.0f, 25.0f, 50.0f};
+static float DELTA_X[NUM_BINS] = {-10.0f, -5.0f, 0.0f, 5.0f, 10.0f};
+static float DELTA_Y[NUM_BINS] = {-10.0f, -5.0f, 0.0f, 5.0f, 10.0f};
 static const float STATUS[2] = {0, 1};
 
 // Define structs
@@ -147,8 +147,6 @@ void c_reset(ClickEnv* env) {
     env->prev_mouse = (Vector2){ -1.0f, -1.0f };  
     env->targets_total = NUM_START_TARGETS;
 
-    printf("%d", env->episode_length);
-
     // Spawn a number of targets at random locations
     for (int i = 0; i < NUM_START_TARGETS; i++) {
         env->targets[i].x = rand_r(&env->rng) % env->width;
@@ -226,7 +224,7 @@ void c_step(ClickEnv* env) {
                 env->targets_hit += 1;
                 env->rewards[0] += 1.0f;
                 env->targets[j].spawn_time = -1; // Mark target for removal
-                printf("%d", env->targets_hit);
+                //printf("%d", env->targets_hit);
             }
         }
     }
@@ -275,7 +273,7 @@ void c_render(ClickEnv* env) {
     // Draw targets
     for (int i = 0; i < MAX_TARGETS; i++) {
         if (env->targets[i].spawn_time >= 0) {
-            DrawCircle(env->targets[i].x, env->targets[i].y, env->targets[i].radius, RED);
+            DrawCircle(env->targets[i].x, env->targets[i].y, env->targets[i].radius, CYAN);
         }
     }
 
