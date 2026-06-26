@@ -1,6 +1,6 @@
 /* Click: An environment to train an RL agent to click targets fast! 
-The agent has to move the mouse from one target to the next and then click.
-Environment difficulty can be tuned by changing the average target size and spawning rate.
+The agent has to move the mouse from one target to the next and then click. 
+Misclicking is penalized.
 */
 
 #include <stdlib.h>
@@ -33,8 +33,6 @@ typedef struct {
     float score;
     float episode_return;
     float episode_length;
-    float targets_hit;
-    float targets_total;
     float n;
 } Log;
 
@@ -88,9 +86,8 @@ typedef struct {
 void add_log(ClickEnv* env) {
     env->log.episode_length += env->episode_length;
     env->log.episode_return += env->targets_hit;
-    env->log.perf += (float)(env->targets_hit);
-    env->log.targets_hit += env->targets_hit;
-    env->log.targets_total += env->targets_total;
+    env->log.score += (float)env->targets_hit / env->targets_total;
+    env->log.perf  += (float)env->targets_hit / env->targets_total;
     env->log.n++;
 }
 
@@ -174,10 +171,10 @@ void compute_observations(ClickEnv* env) {
 void c_reset(ClickEnv* env) {
     env->tick = 0;
     env->episode_return = 0;
-    env->targets_hit = 0;
-    env->prev_mouse = (Vector2){ -1.0f, -1.0f };  
-    env->targets_total = NUM_START_TARGETS;
     env->lives = 3;
+    env->targets_hit = 0;
+    env->targets_total = NUM_START_TARGETS;
+    env->prev_mouse = (Vector2){ -1.0f, -1.0f };  
 
     // Spawn a number of targets at random locations
     for (int i = 0; i < NUM_START_TARGETS; i++) {
@@ -245,8 +242,8 @@ void c_step(ClickEnv* env) {
         }
     }
     
-    // Check if the agent position (mouse cursor) is within the radius of any target and if the click status is 1 (clicked)
     if (click_status == 1) {
+        // Check if the agent position (mouse cursor) is within the radius of any target
         int new_targets_hit = 0;
         
         for (int j = 0; j < MAX_TARGETS; j++) {
@@ -291,7 +288,7 @@ void c_step(ClickEnv* env) {
 void c_render(ClickEnv* env) {
 
     if (env->client == NULL) {
-        InitWindow(env->width, env->height, "Click Environment - Pufferfish");
+        InitWindow(env->width, env->height, "Click environment");
         SetTargetFPS(60);
         env->client = (Client*)malloc(sizeof(Client));
         env->client->width  = env->width;
