@@ -15,8 +15,8 @@ Environment difficulty can be tuned by changing the average target size and spaw
 #define OBS_SIZE (3 + 3 * MAX_TARGETS + 2)
 
 #define ACTION_SIZE 3
-#define TARGET_RADIUS_MIN 2
-#define TARGET_RADIUS_MAX 20
+#define TARGET_RADIUS_MIN 1
+#define TARGET_RADIUS_MAX 10
 
 // Action space: 2D movement (delta x, delta y) and click status (0 or 1)
 #define CONTINUOUS 1
@@ -24,6 +24,8 @@ Environment difficulty can be tuned by changing the average target size and spaw
 static float DELTA_X[NUM_BINS] = {-10.0f, -5.0f, 0.0f, 5.0f, 10.0f};
 static float DELTA_Y[NUM_BINS] = {-10.0f, -5.0f, 0.0f, 5.0f, 10.0f};
 static const float STATUS[2] = {0, 1};
+
+const Color PUFF_CYAN = (Color){0, 187, 187, 255}; 
 
 // Define structs
 typedef struct {
@@ -39,6 +41,9 @@ typedef struct {
 typedef struct {
     float width;
     float height;
+    Texture2D puffer;      // pufferfish sprite
+    bool puffer_loaded;
+    int frame;             // animation counter for ocean/bubbles
 } Client;
 
 typedef struct {
@@ -115,6 +120,31 @@ int get_human_input(ClickEnv* env) {
 
 void init(ClickEnv* env) {
     env->tick = 0;
+}
+
+static void draw_ocean(int w, int h, int frame) {
+    // Vertical gradient: lighter near the surface, darker at depth
+    Color top    = (Color){ 30, 130, 170, 255 };
+    Color bottom = (Color){  3,  35,  70, 255 };
+    DrawRectangleGradientV(0, 0, w, h, top, bottom);
+
+    // Wavy horizontal light bands
+    for (int b = 0; b < 5; b++) {
+        float baseY = h * (0.1f + 0.18f * b);
+        for (int x = 0; x < w; x += 8) {
+            float yy = baseY + sinf((x * 0.03f) + frame * 0.05f + b) * 6.0f;
+            DrawRectangle(x, (int)yy, 8, 2, (Color){255, 255, 255, 18});
+        }
+    }
+
+    // Rising bubbles
+    for (int i = 0; i < 40; i++) {
+        float bx = (i * 137) % w;
+        float speed = 0.5f + (i % 5) * 0.25f;
+        float by = h - fmodf(frame * speed + i * 53, (float)h);
+        float br = 1.0f + (i % 3);
+        DrawCircleLines((int)bx, (int)by, br, (Color){255, 255, 255, 40});
+    }
 }
 
 // Environment functions
@@ -258,44 +288,79 @@ void c_step(ClickEnv* env) {
 void c_render(ClickEnv* env) {
 
     if (env->client == NULL) {
-        InitWindow(env->width, env->height, "Click Environment");
+        InitWindow(env->width, env->height, "Click Environment - Pufferfish");
         SetTargetFPS(60);
         env->client = (Client*)malloc(sizeof(Client));
-        env->client->width = env->width;
+        env->client->width  = env->width;
         env->client->height = env->height;
-    }
+        env->client->frame  = 0;
+        env->client->puffer = LoadTexture("resources/click/puffer.png");
+        env->client->puffer_loaded = (env->client->puffer.id != 0);
 
-    Client* client = env->client;
-    
-    BeginDrawing();
-    ClearBackground(RAYWHITE);
-    
-    // Draw targets
-    for (int i = 0; i < MAX_TARGETS; i++) {
-        if (env->targets[i].spawn_time >= 0) {
-            DrawCircle(env->targets[i].x, env->targets[i].y, env->targets[i].radius, CYAN);
+        // Smooth scaling when the sprite is drawn small/large
+        if (env->client->puffer_loaded) {
+            SetTextureFilter(env->client->puffer, TEXTURE_FILTER_BILINEAR);
         }
     }
 
-    // Draw agent (mouse cursor)
-    Color c = (env->agent.status == 1) ? BLUE : BLACK;
+    Client* client = env->client;
+    client->frame++;
+
+    BeginDrawing();
+    draw_ocean(env->width, env->height, client->frame);
+    // Draw targets
+    for (int i = 0; i < MAX_TARGETS; i++) {
+        if (env->targets[i].spawn_time >= 0) {
+            float r = env->targets[i].radius;
+
+            float inflate = clipf(
+                (r - TARGET_RADIUS_MIN) /
+                (float)(TARGET_RADIUS_MAX * 2 - TARGET_RADIUS_MIN),
+                0.0f, 1.0f);
+
+            if (client->puffer_loaded) {
+                // Draw the sprite so its on-screen size grows with the
+                // target radius. The fish ~fills the 423px frame, so we
+                // want drawn size a bit larger than the hit circle (2*r)
+                // for the body to visually cover the target.
+                float texW   = (float)client->puffer.width;
+                float drawSz  = 2.0f * r * 1.4f;
+                float scale   = drawSz / texW;
+
+                // Center the image on the target center.
+                Vector2 pos = {
+                    env->targets[i].x - drawSz * 0.5f,
+                    env->targets[i].y - drawSz * 0.5f
+                };
+
+                Color tint = (Color){
+                    255,
+                    (unsigned char)(255 - 50 * inflate),
+                    (unsigned char)(255 - 60 * inflate),
+                    255
+                };
+
+                DrawTextureEx(client->puffer, pos, 0.0f, scale, tint);
+            } 
+        }
+    }
+
+    // Agent (mouse cursor)
+    Color c = (env->agent.status == 1) ? YELLOW : WHITE;
     float x = env->agent.x;
     float y = env->agent.y;
-
-    // Classic arrow cursor, tip anchored at agent position
     Vector2 tip   = { x,      y      };
     Vector2 left  = { x,      y + 16 };
     Vector2 notch = { x + 4,  y + 12 };
     Vector2 right = { x + 11, y + 11 };
-
     DrawTriangle(tip, left, right, c);
     DrawTriangle(left, notch, right, c);
     DrawTriangleLines(tip, left, right, BLACK);
     DrawTriangleLines(left, notch, right, BLACK);
 
-    DrawText(TextFormat("Timestep: %d", env->tick), 10, 10, 20, BLACK);
-    DrawText(TextFormat("Targets hit: %d", env->targets_hit), 200, 10, 20, GREEN);
-    DrawText(TextFormat("Reward: %.2f", env->rewards[0]), 420, 10, 20, BLUE);
+    DrawText(TextFormat("Timestep: %d", env->tick), 10, 10, 20, RAYWHITE);
+    DrawText(TextFormat("Targets hit: %d", env->targets_hit), 200, 10, 20,
+             (Color){180, 255, 180, 255});
 
     EndDrawing();
 }
@@ -303,6 +368,9 @@ void c_render(ClickEnv* env) {
 void c_close(ClickEnv* env) {
     if (env->client != NULL) {
         Client* client = env->client;
+        if (client->puffer_loaded) {
+            UnloadTexture(client->puffer);
+        }
         CloseWindow();
         free(client);
     }
