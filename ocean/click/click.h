@@ -78,6 +78,7 @@ typedef struct {
     int episode_return;
     int targets_hit;
     int targets_total;
+    int lives;
     Vector2 prev_mouse;
     int human_input;
     int action_type;
@@ -176,6 +177,7 @@ void c_reset(ClickEnv* env) {
     env->targets_hit = 0;
     env->prev_mouse = (Vector2){ -1.0f, -1.0f };  
     env->targets_total = NUM_START_TARGETS;
+    env->lives = 3;
 
     // Spawn a number of targets at random locations
     for (int i = 0; i < NUM_START_TARGETS; i++) {
@@ -244,21 +246,28 @@ void c_step(ClickEnv* env) {
     }
     
     // Check if the agent position (mouse cursor) is within the radius of any target and if the click status is 1 (clicked)
-    for (int j = 0; j < MAX_TARGETS; j++) {
-        if (env->targets[j].spawn_time >= 0) {
-            float dist_x = env->agent.x - env->targets[j].x;
-            float dist_y = env->agent.y - env->targets[j].y;
-            float distance = sqrt(dist_x * dist_x + dist_y * dist_y);
-            if (distance <= env->targets[j].radius && click_status == 1) {
-                // Target is hit
-                env->targets_hit += 1;
-                env->rewards[0] += 1.0f;
-                env->targets[j].spawn_time = -1; // Mark target for removal
-                //printf("%d", env->targets_hit);
+    if (click_status == 1) {
+        int new_targets_hit = 0;
+        
+        for (int j = 0; j < MAX_TARGETS; j++) {
+            if (env->targets[j].spawn_time >= 0) {
+                float dist_x = env->agent.x - env->targets[j].x;
+                float dist_y = env->agent.y - env->targets[j].y;
+                float distance = sqrt(dist_x * dist_x + dist_y * dist_y);
+                if (distance <= env->targets[j].radius) {
+                    new_targets_hit += 1;
+                    env->targets_hit += 1;
+                    env->rewards[0] += 1.0f;
+                    env->targets[j].spawn_time = -1; // Mark target for removal
+                }
             }
         }
+        if (new_targets_hit == 0) {
+            // Misclicked, give penalty
+            env->rewards[0] -= 1;
+            env->lives -= 1;
+        }
     }
-
     // Increase target size
     for (int i = 0; i < MAX_TARGETS; i++) {
         if (env->targets[i].spawn_time >= 0) {
@@ -266,20 +275,14 @@ void c_step(ClickEnv* env) {
         }
     }
 
-    if (env->tick >= env->episode_length) {
+    if ((env->tick >= env->episode_length) || (env->lives <= -1)) {
         env->terminals[0] = 1; 
         add_log(env);
         c_reset(env);
-        //printf("%s\n", "reset");
     } else {
         env->terminals[0] = 0; 
     }
 
-    // printf("%d\n", env->tick);
-    // printf("%d\n", env->targets_hit);
-    // printf("%d\n", env->targets_total);
-
-    // Update environment stats
     env->tick += 1;    
 
     compute_observations(env);
@@ -307,7 +310,10 @@ void c_render(ClickEnv* env) {
     client->frame++;
 
     BeginDrawing();
+    
+    // Background
     draw_ocean(env->width, env->height, client->frame);
+
     // Draw targets
     for (int i = 0; i < MAX_TARGETS; i++) {
         if (env->targets[i].spawn_time >= 0) {
@@ -359,6 +365,7 @@ void c_render(ClickEnv* env) {
     DrawTriangleLines(left, notch, right, BLACK);
 
     DrawText(TextFormat("Timestep: %d", env->tick), 10, 10, 20, RAYWHITE);
+    DrawText(TextFormat("Lives: %d", env->lives), 10, 35, 20, RAYWHITE);
     DrawText(TextFormat("Targets hit: %d", env->targets_hit), 200, 10, 20,
              (Color){180, 255, 180, 255});
 
