@@ -12,7 +12,6 @@ void my_init(Env* env, Dict* kwargs) {
     env->height = 600;
     env->target_spawn_duration = dict_get(kwargs, "target_spawn_duration")->value;
     env->episode_length = dict_get(kwargs, "episode_length")->value;
-    env->action_type = dict_get(kwargs, "action_type")->value;
     init(env);
 }
 

@@ -19,7 +19,7 @@ Misclicking is penalized.
 #define TARGET_RADIUS_MAX 10
 
 // Action space: 2D movement (delta x, delta y) and click status (0 or 1)
-#define CONTINUOUS 1
+#define CONTINUOUS 0 // Set to 1 for continuous actions; 0 is discrete
 #define NUM_BINS 5
 static float DELTA_X[NUM_BINS] = {-10.0f, -5.0f, 0.0f, 5.0f, 10.0f};
 static float DELTA_Y[NUM_BINS] = {-10.0f, -5.0f, 0.0f, 5.0f, 10.0f};
@@ -79,7 +79,6 @@ typedef struct {
     int lives;
     Vector2 prev_mouse;
     int human_input;
-    int action_type;
 } ClickEnv;
 
 // Util functions
@@ -207,7 +206,7 @@ void c_step(ClickEnv* env) {
         env->agent.y = env->actions[1];
         env->agent.status = env->actions[2];
     } else {
-        if (env->action_type == CONTINUOUS) {
+        if (CONTINUOUS) {
             env->agent.x += env->actions[0];
             env->agent.y += env->actions[1];
             env->agent.status = env->actions[2];
