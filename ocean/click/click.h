@@ -294,7 +294,7 @@ void c_render(ClickEnv* env) {
         env->client->width  = env->width;
         env->client->height = env->height;
         env->client->frame  = 0;
-        env->client->puffer = LoadTexture("resources/click/puffer.png");
+        env->client->puffer = LoadTexture("resources/shared/puffer.png");
         env->client->puffer_loaded = (env->client->puffer.id != 0);
 
         // Smooth scaling when the sprite is drawn small/large
