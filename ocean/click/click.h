@@ -180,7 +180,7 @@ void c_reset(ClickEnv* env) {
     for (int i = 0; i < NUM_START_TARGETS; i++) {
         env->targets[i].x = rand_r(&env->rng) % env->width;
         env->targets[i].y = rand_r(&env->rng) % env->height;
-        env->targets[i].radius = TARGET_RADIUS_MIN + rand_r(&env->rng) % (TARGET_RADIUS_MAX - TARGET_RADIUS_MIN + 1);
+        env->targets[i].radius = TARGET_RADIUS_MIN;
         env->targets[i].spawn_time = 0;
     };
 
@@ -236,7 +236,7 @@ void c_step(ClickEnv* env) {
         if (env->targets[i].spawn_time == -1 && rand_r(&env->rng) % 100 < 20) { // 20% chance to spawn a new target
             env->targets[i].x = rand_r(&env->rng) % env->width;
             env->targets[i].y = rand_r(&env->rng) % env->height;
-            env->targets[i].radius = TARGET_RADIUS_MIN + rand_r(&env->rng) % (TARGET_RADIUS_MAX - TARGET_RADIUS_MIN + 1);
+            env->targets[i].radius = TARGET_RADIUS_MIN;
             env->targets[i].spawn_time = 0; 
             env->targets_total += 1;
         }
@@ -316,11 +316,6 @@ void c_render(ClickEnv* env) {
         if (env->targets[i].spawn_time >= 0) {
             float r = env->targets[i].radius;
 
-            float inflate = clipf(
-                (r - TARGET_RADIUS_MIN) /
-                (float)(TARGET_RADIUS_MAX * 2 - TARGET_RADIUS_MIN),
-                0.0f, 1.0f);
-
             if (client->puffer_loaded) {
                 // Draw the sprite so its on-screen size grows with the
                 // target radius. The fish ~fills the 423px frame, so we
@@ -336,14 +331,7 @@ void c_render(ClickEnv* env) {
                     env->targets[i].y - drawSz * 0.5f
                 };
 
-                Color tint = (Color){
-                    255,
-                    (unsigned char)(255 - 50 * inflate),
-                    (unsigned char)(255 - 60 * inflate),
-                    255
-                };
-
-                DrawTextureEx(client->puffer, pos, 0.0f, scale, tint);
+                DrawTextureEx(client->puffer, pos, 0.0f, scale, WHITE);
             } 
         }
     }
