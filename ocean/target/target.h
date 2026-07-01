@@ -15,7 +15,7 @@ typedef struct {
     float score; // Recommended unnormalized single real number perf metric
     float episode_return; // Recommended metric: sum of agent rewards over episode
     float episode_length; // Recommended metric: number of steps of agent episode
-    // Any extra fields you add here may be exported to Python in binding.c
+    // Any extra fields you add here may be exported to Python in binding.
     float n; // Required as the last field
 } Log;
 
