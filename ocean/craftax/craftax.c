@@ -40,6 +40,7 @@ int main(int argc, char** argv) {
 
     c_init(&env);
     c_reset(&env);
+    c_render(&env);
 
     uint32_t action_rng = (uint32_t)(seed ^ 0x9E3779B9u);
     bool human_control = false;
@@ -68,6 +69,7 @@ int main(int argc, char** argv) {
     }
 
     c_close(&env);
+    if (IsWindowReady()) CloseWindow();
     free(env.observations);
     free(env.actions);
     free(env.rewards);
