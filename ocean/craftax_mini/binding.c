@@ -122,7 +122,7 @@ void my_init(Env* env, Dict* kwargs) {
     env->seed = seed_offset + (uint64_t)env->rng;
 
     item = dict_get_unsafe(kwargs, "current_goal_block");
-    g_craftax_mini_current_goal_block = item != NULL
+    g_craftax_mini_config_goal_block = item != NULL
         ? (int32_t)item->value
         : CRAFTAX_BLOCK_DIAMOND;
 

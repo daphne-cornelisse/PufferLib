@@ -36,9 +36,27 @@
 #define CRAFTAX_MINI_NUM_ACTIONS 5
 #define CRAFTAX_MINI_DEFAULT_MAX_TIMESTEPS 200
 
-static int32_t g_craftax_mini_current_goal_block = CRAFTAX_BLOCK_DIAMOND;
+// Positive values select a fixed goal block. Non-positive values cycle the
+// three human-task goals across env slots.
+static int32_t g_craftax_mini_config_goal_block = CRAFTAX_BLOCK_DIAMOND;
 static int32_t g_craftax_mini_max_timesteps = CRAFTAX_MINI_DEFAULT_MAX_TIMESTEPS;
 static bool g_craftax_mini_use_human_maps = true;
+
+static inline int32_t craftax_mini_goal_block_for_slot(uint32_t slot) {
+    static const int32_t goal_blocks[3] = {
+        CRAFTAX_BLOCK_DIAMOND,
+        CRAFTAX_BLOCK_SAPPHIRE,
+        CRAFTAX_BLOCK_RUBY,
+    };
+    return goal_blocks[slot % 3u];
+}
+
+static inline int32_t craftax_mini_current_goal_block(const Craftax* env) {
+    if (g_craftax_mini_config_goal_block > 0) {
+        return g_craftax_mini_config_goal_block;
+    }
+    return craftax_mini_goal_block_for_slot(env->rng);
+}
 
 static inline int32_t craftax_mini_action_to_full(int32_t action) {
     switch (action) {
@@ -123,9 +141,10 @@ static inline float craftax_mini_gameplay_step_native(
 ) {
     CraftaxState* state = env->state;
     int32_t action = craftax_mini_action_to_full(mini_action);
+    int32_t goal_block = craftax_mini_current_goal_block(env);
     int32_t initial_goal_count = craftax_mini_inventory_count_for_goal(
         state,
-        g_craftax_mini_current_goal_block
+        goal_block
     );
 
     action = state->is_sleeping ? CRAFTAX_ACTION_NOOP : action;
@@ -171,16 +190,17 @@ static inline float craftax_mini_gameplay_step_native(
 
     int32_t current_goal_count = craftax_mini_inventory_count_for_goal(
         state,
-        g_craftax_mini_current_goal_block
+        goal_block
     );
     return current_goal_count > initial_goal_count ? 1.0f : 0.0f;
 }
 
 static inline bool craftax_mini_is_game_over_native(const Craftax* env) {
     const CraftaxState* state = env->state;
+    int32_t goal_block = craftax_mini_current_goal_block(env);
     bool reached_goal = craftax_mini_inventory_count_for_goal(
         state,
-        g_craftax_mini_current_goal_block
+        goal_block
     ) > 0;
     int32_t max_timesteps = g_craftax_mini_max_timesteps > 0
         ? g_craftax_mini_max_timesteps
