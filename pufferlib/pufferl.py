@@ -10,8 +10,10 @@ import glob
 import json
 import ast
 import time
+import ctypes
 import argparse
 import configparser
+import subprocess
 from collections import defaultdict
 import multiprocessing as mp
 from copy import deepcopy
@@ -168,6 +170,50 @@ def validate_config(args):
     assert minibatch_size <= horizon * total_agents, \
         f'minibatch_size {minibatch_size} > total_agents {total_agents} * horizon {horizon}'
 
+GIF_LOG_FPS = 12
+GIF_LOG_KEY = 'media/policy_rollout'
+
+def _should_log_policy_gif(args, epoch, train_epochs, is_final):
+    interval = int(args.get('gif_log_interval', 0) or 0)
+    frames = int(args.get('gif_log_frames', 0) or 0)
+    return frames > 0 and (is_final or (interval > 0 and epoch > 0 and epoch % interval == 0))
+
+def _log_policy_gif(env_name, args, model_path, step, run_id):
+    import wandb
+
+    gif_dir = os.path.join(args['log_dir'], args['env_name'], run_id, 'gifs')
+    os.makedirs(gif_dir, exist_ok=True)
+    gif_path = os.path.join(gif_dir, f'{step:016d}.gif')
+
+    # Use a minimal eval config for media rendering so training doesn't appear
+    # to freeze while a second full-scale 16k-agent run spins up just to record
+    # a short rollout from env 0.
+    cmd = [
+        sys.executable, '-m', 'pufferlib.pufferl', 'eval', env_name,
+        '--load-model-path', model_path,
+        '--num-frames', str(args['gif_log_frames']),
+        '--gif-path', gif_path,
+        '--fps', str(GIF_LOG_FPS),
+        '--vec.total-agents', '1',
+        '--vec.num-buffers', '1',
+        '--vec.num-threads', '1',
+        '--train.minibatch-size', '1',
+        '--train.total-timesteps', '1',
+        '--cudagraphs', '-1',
+    ]
+    start = time.time()
+    print(f'Rendering policy gif at step {step} to {gif_path}')
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f'WARNING: failed to render policy gif at step {step}\n{e.stdout}')
+        return
+    print(f'Rendered policy gif at step {step} in {time.time() - start:.1f}s')
+
+    wandb.log({
+        GIF_LOG_KEY: wandb.Video(gif_path, format='gif'),
+    }, step=step)
+
 def _resolve_backend(args):
     compiled_env = getattr(_C, 'env_name', None)
     assert compiled_env is None or compiled_env == args['env_name'], \
@@ -176,6 +222,13 @@ def _resolve_backend(args):
         from pufferlib.torch_pufferl import PuffeRL
         return PuffeRL
     return _C
+
+def _env_is_done(pufferl, env_id=0):
+    vec = getattr(pufferl, 'vec', None)
+    terminals_ptr = getattr(vec, 'terminals_ptr', None)
+    if terminals_ptr is None:
+        return False
+    return bool(ctypes.c_float.from_address(terminals_ptr + 4 * env_id).value)
 
 def _train_worker(args):
     backend = _resolve_backend(args)
@@ -244,6 +297,7 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
 
     model_path = ''
     flat_logs = {}
+    last_gif_step = -1
     train_epochs = int(total_timesteps // (args['vec']['total_agents'] * args['train']['horizon']))
     eval_epochs = train_epochs // 2
     for epoch in range(train_epochs + eval_epochs):
@@ -254,9 +308,16 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
 
         # In match-sweep mode we need the final checkpoint to feed into match().
         is_final = epoch == train_epochs - 1
+        should_log_gif = (
+            rank == 0
+            and args['wandb']
+            and sweep_obj is None
+            and epoch < train_epochs
+            and _should_log_policy_gif(args, epoch, train_epochs, is_final)
+        )
         should_save = (sweep_obj is None
             and (epoch % args['checkpoint_interval'] == 0 or is_final)
-        ) or (match_mode and is_final)
+        ) or (match_mode and is_final) or should_log_gif
         if should_save:
             model_path = os.path.join(checkpoint_dir, f'{pufferl.global_step:016d}.bin')
             backend.save_weights(pufferl, model_path)
@@ -279,6 +340,10 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
 
         if args['wandb']:
             wandb.log(flat_logs, step=flat_logs['agent_steps'])
+
+            if should_log_gif and flat_logs['agent_steps'] != last_gif_step:
+                _log_policy_gif(env_name, args, model_path, flat_logs['agent_steps'], run_id)
+                last_gif_step = flat_logs['agent_steps']
 
         if epoch < train_epochs:
             all_logs.append(flat_logs)
@@ -488,11 +553,53 @@ def eval(env_name, args=None, load_path=None):
         backend.load_weights(pufferl, load_path)
         print(f'Loaded weights from {load_path}')
 
-    while True:
-        backend.render(pufferl, 0)
-        backend.rollouts(pufferl)
+    frame_count = 0
+    ffmpeg = None
+    num_frames = args.get('num_frames', args.get('save_frames', 0))
+    if num_frames:
+        for name in ('pipe_frame_fd', 'screen_width', 'screen_height'):
+            if not hasattr(_C, name):
+                raise RuntimeError(f'Current native backend does not expose {name}; rebuild _C')
+        out_dir = os.path.dirname(args['gif_path'])
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
 
-    backend.close(pufferl)
+    try:
+        while True:
+            backend.render(pufferl, 0)
+            if num_frames:
+                if ffmpeg is None:
+                    try:
+                        ffmpeg = subprocess.Popen([
+                            'ffmpeg', '-y', '-loglevel', 'warning',
+                            '-f', 'rawvideo',
+                            '-pix_fmt', 'rgba',
+                            '-s', f'{_C.screen_width()}x{_C.screen_height()}',
+                            '-r', str(args['fps']),
+                            '-i', '-',
+                            args['gif_path'],
+                        ], stdin=subprocess.PIPE)
+                    except FileNotFoundError as e:
+                        raise RuntimeError('ffmpeg is required for GIF export but was not found in PATH') from e
+                _C.pipe_frame_fd(ffmpeg.stdin.fileno())
+                frame_count += 1
+                if frame_count % 100 == 0:
+                    if num_frames == -1:
+                        print(f'Recorded {frame_count} frames to {args["gif_path"]}')
+                    else:
+                        percent = 100.0 * frame_count / num_frames
+                        print(f'Recorded {frame_count}/{num_frames} frames [{percent:.3f}%] to {args["gif_path"]}')
+                if num_frames != -1 and frame_count >= num_frames:
+                    break
+            backend.rollouts(pufferl)
+            if num_frames and _env_is_done(pufferl, 0):
+                print(f'Render stopped early at terminal state after {frame_count} frames')
+                break
+    finally:
+        if ffmpeg is not None:
+            ffmpeg.stdin.close()
+            ffmpeg.wait()
+        backend.close(pufferl)
 
 def match(env_name, policy_a_path, policy_b_path, num_games=4096, args=None, verbose=True):
     '''Head-to-head match between two trained policies in a 2-agent selfplay env.
@@ -603,11 +710,17 @@ def load_config(env_name):
     parser.add_argument('--wandb-group', type=str, default='debug')
     parser.add_argument('--tag', type=str, default=None, help='Tag for experiment')
     parser.add_argument('--slowly', action='store_true', help='Use PyTorch training backend')
-    parser.add_argument('--save-frames', type=int, default=0)
+    parser.add_argument('--save-frames', '--num-frames', dest='num_frames', type=int, default=0,
+        help='Number of rendered frames to save to --gif-path with ffmpeg. Set to -1 to record until interrupted.')
     parser.add_argument('--gif-path', type=str, default='eval.gif')
     parser.add_argument('--fps', type=float, default=15)
+    parser.add_argument('--gif-log-interval', type=int, default=0,
+        help='During training, render and log a policy rollout GIF to wandb every N training epochs. 0 disables it.')
+    parser.add_argument('--gif-log-frames', type=int, default=0,
+        help='Number of frames per periodically logged policy rollout GIF during training. 0 disables it.')
     parser.description = f':blowfish: PufferLib [bright_cyan]{pufferlib.__version__}[/]' \
         ' demo options. Shows valid args for your env and policy'
+    existing_option_strings = {opt for action in parser._actions for opt in action.option_strings}
 
     repo_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     puffer_config_dir = os.path.join(repo_dir, 'config/**/*.ini')
@@ -633,11 +746,17 @@ def load_config(env_name):
 
             #TODO: Can clean up with default sections in 3.13+
             fmt = f'--{key}' if section == 'base' else f'--{section}.{key}'
+            dest = key if section == 'base' else f'{section}.{key}'
             dtype = type(value)
+            option = fmt.replace('_', '-')
+            if option in existing_option_strings:
+                parser.set_defaults(**{dest: value})
+                continue
             parser.add_argument(
-                fmt.replace('_', '-'), default=value,
+                option, default=value,
                 type=lambda v, t=dtype: v if v == 'auto' else t(v),
             )
+            existing_option_strings.add(option)
 
     parser.add_argument('-h', '--help', default=argparse.SUPPRESS,
         action='help', help='Show this help message and exit')

@@ -10,18 +10,21 @@ set -e
 #   ./build.sh breakout --fast       # Standalone executable (optimized)
 #   ./build.sh breakout --web        # Emscripten web build
 #   ./build.sh breakout --profile    # Kernel profiling binary
+#   ./build.sh breakout --headless   # Use raylib 6.0 PLATFORM_MEMORY software renderer
 #   ./build.sh all                   # Build all envs with default and --float
 
 if [ -z "$1" ]; then
-    echo "Usage: ./build.sh ENV_NAME [--float] [--debug] [--local|--fast|--web|--profile|--cpu|--all]"
+    echo "Usage: ./build.sh ENV_NAME [--float] [--headless] [--debug] [--local|--fast|--web|--profile|--cpu|--all]"
     exit 1
 fi
 ENV=$1
 shift
 
+HEADLESS=0
 for arg in "$@"; do
     case $arg in
         --float) PRECISION="-DPRECISION_FLOAT" ;;
+        --headless) HEADLESS=1 ;;
         --debug) DEBUG=1 ;;
         --local) MODE=local ;;
         --fast)  MODE=fast ;;
@@ -50,20 +53,73 @@ if [ "$ENV" = "all" ]; then
     exit 0
 fi
 
+RAYLIB_VERSION="6.0"
+RAYLIB_RELEASE_PATH="6.0"
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python)}"
+
+has_lib() {
+    printf 'int main(void) { return 0; }\n' | ${CC:-cc} -x c - -o /tmp/pufferlib_libcheck "$1" >/dev/null 2>&1
+}
+
+append_if_lib_exists() {
+    local lib=$1
+    if has_lib "$lib"; then
+        RAYLIB_DESKTOP_LINUX_LIBS+=("$lib")
+    fi
+}
+
+download_file() {
+    local url=$1 out=$2
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsL "$url" -o "$out"
+    else
+        python3 - "$url" "$out" <<'PY'
+import sys
+import urllib.request
+
+urllib.request.urlretrieve(sys.argv[1], sys.argv[2])
+PY
+    fi
+}
+
 # Linux/mac
 PLATFORM="$(uname -s)"
 if [ "$PLATFORM" = "Linux" ]; then
-    RAYLIB_NAME='raylib-5.5_linux_amd64'
+    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_linux_amd64"
     OMP_LIB=-lomp5
     SANITIZE_FLAGS=(-fsanitize=address,undefined,bounds,pointer-overflow,leak -fno-omit-frame-pointer)
-    STANDALONE_LDFLAGS=(-lGL)
-    SHARED_LDFLAGS=(-Bsymbolic-functions)
+    RAYLIB_DESKTOP_LINUX_LIBS=(-ldl)
+    append_if_lib_exists -lGL
+    append_if_lib_exists -lX11
+    append_if_lib_exists -lXrandr
+    append_if_lib_exists -lXinerama
+    append_if_lib_exists -lXi
+    append_if_lib_exists -lXcursor
+    STANDALONE_LDFLAGS=("${RAYLIB_DESKTOP_LINUX_LIBS[@]}")
+    SHARED_LDFLAGS=(-Bsymbolic-functions "${RAYLIB_DESKTOP_LINUX_LIBS[@]}")
 else
-    RAYLIB_NAME='raylib-5.5_macos'
+    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_macos"
     OMP_LIB=-lomp
     SANITIZE_FLAGS=()
     STANDALONE_LDFLAGS=(-framework Cocoa -framework IOKit -framework CoreVideo -framework OpenGL)
     SHARED_LDFLAGS=(-framework Cocoa -framework OpenGL -framework IOKit -undefined dynamic_lookup)
+fi
+
+RAYLIB_PLATFORM="-DPLATFORM_DESKTOP"
+RAYLIB_LINK_LDFLAGS=("${STANDALONE_LDFLAGS[@]}")
+if [ "$HEADLESS" = "1" ]; then
+    if [ "$MODE" = "web" ]; then
+        echo "Error: --headless is not compatible with --web"
+        exit 1
+    fi
+    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_memory"
+    RAYLIB_PLATFORM="-DPLATFORM_MEMORY"
+    RAYLIB_LINK_LDFLAGS=()
+    if [ "$PLATFORM" = "Linux" ]; then
+        SHARED_LDFLAGS=(-Bsymbolic-functions)
+    else
+        SHARED_LDFLAGS=(-undefined dynamic_lookup)
+    fi
 fi
 
 CLANG_WARN=(
@@ -81,21 +137,60 @@ download() {
     [ -d "$name" ] && return
     echo "Downloading $name..."
     case "$url" in
-        *.zip) curl -sL "$url" -o "$name.zip" && unzip -q "$name.zip" && rm "$name.zip" ;;
-        *)     curl -sL "$url" -o "$name.tar.gz" && tar xf "$name.tar.gz" && rm "$name.tar.gz" ;;
+        *.zip) download_file "$url" "$name.zip" && unzip -q "$name.zip" && rm "$name.zip" ;;
+        *)     download_file "$url" "$name.tar.gz" && tar xf "$name.tar.gz" && rm "$name.tar.gz" ;;
     esac
 }
 
-RAYLIB_URL="https://github.com/raysan5/raylib/releases/download/5.5"
-if [ "$MODE" = "web" ]; then
-    RAYLIB_NAME='raylib-5.5_webassembly'
-    download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.zip"
+build_raylib_from_source() {
+    local name=$1 platform=$2
+    if [ ! -d "$name" ]; then
+        echo "Downloading raylib ${RAYLIB_VERSION} source for $platform..."
+        download_file "$RAYLIB_SOURCE_URL" "$name.tar.gz"
+        tar xf "$name.tar.gz"
+        rm "$name.tar.gz"
+        mv "raylib-${RAYLIB_RELEASE_PATH}" "$name"
+    fi
+    if [ ! -f "$name/src/libraylib.a" ] || [ ! -f "$name/src/.pufferlib_pic" ]; then
+        echo "Building raylib ${RAYLIB_VERSION} $platform..."
+        make -C "$name/src" clean >/dev/null 2>&1 || true
+        local custom_cflags="-fPIC"
+        if [ "$platform" = "PLATFORM_MEMORY" ]; then
+            custom_cflags="$custom_cflags -Wno-unused-label -Wno-unused-variable"
+        fi
+        make -C "$name/src" PLATFORM="$platform" RAYLIB_BUILD_MODE=RELEASE CUSTOM_CFLAGS="$custom_cflags"
+        touch "$name/src/.pufferlib_pic"
+    fi
+}
+
+RAYLIB_URL="https://github.com/raysan5/raylib/releases/download/${RAYLIB_RELEASE_PATH}"
+RAYLIB_SOURCE_URL="https://github.com/raysan5/raylib/archive/refs/tags/${RAYLIB_RELEASE_PATH}.tar.gz"
+if [ "$HEADLESS" = "1" ]; then
+    build_raylib_from_source "$RAYLIB_NAME" PLATFORM_MEMORY
+    RAYLIB_A="$RAYLIB_NAME/src/libraylib.a"
+    INCLUDES=(-I./$RAYLIB_NAME/src -I./$RAYLIB_NAME/src/external -I./src -I./vendor)
+elif [ "$MODE" = "web" ]; then
+    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_webassembly"
+    if download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.zip"; then
+        RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
+        INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
+    else
+        echo "Error: prebuilt web raylib ${RAYLIB_VERSION} archive not found"
+        exit 1
+    fi
 else
-    download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.tar.gz"
+    if download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.tar.gz"; then
+        RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
+        INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
+    else
+        echo "Prebuilt raylib ${RAYLIB_VERSION} archive not found; building from source..."
+        RAYLIB_NAME="raylib-${RAYLIB_VERSION}_desktop_source"
+        build_raylib_from_source "$RAYLIB_NAME" PLATFORM_DESKTOP
+        RAYLIB_A="$RAYLIB_NAME/src/libraylib.a"
+        INCLUDES=(-I./$RAYLIB_NAME/src -I./$RAYLIB_NAME/src/external -I./src -I./vendor)
+    fi
 fi
 
-RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
-INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
 LINK_ARCHIVES=("$RAYLIB_A")
 EXTRA_SRC=""
 EXTRA_LDFLAGS=()
@@ -165,9 +260,9 @@ if [ "$MODE" = "local" ] || [ "$MODE" = "fast" ]; then
         "$SRC_DIR/$ENV.c" $EXTRA_SRC -o "$OUTPUT_NAME"
         "${LINK_ARCHIVES[@]}"
         "${EXTRA_LDFLAGS[@]}"
-        "${STANDALONE_LDFLAGS[@]}"
+        "${RAYLIB_LINK_LDFLAGS[@]}"
         -lm -lpthread
-        -DPLATFORM_DESKTOP
+        "$RAYLIB_PLATFORM"
     )
     echo "Compiling $ENV..."
     ${CC:-clang} "${CLANG_OPT[@]}" "${FLAGS[@]}"
@@ -211,10 +306,10 @@ for dir in /usr/local/cuda/lib64 /usr/lib/x86_64-linux-gnu; do
     fi
 done
 if [ -z "$CUDNN_IFLAG" ]; then
-    CUDNN_IFLAG=$(python -c "import nvidia.cudnn, os; print('-I' + os.path.join(nvidia.cudnn.__path__[0], 'include'))" 2>/dev/null || echo "")
+    CUDNN_IFLAG=$("$PYTHON_BIN" -c "import nvidia.cudnn, os; print('-I' + os.path.join(nvidia.cudnn.__path__[0], 'include'))" 2>/dev/null || echo "")
 fi
 if [ -z "$CUDNN_LFLAG" ]; then
-    CUDNN_LFLAG=$(python -c "import nvidia.cudnn, os; print('-L' + os.path.join(nvidia.cudnn.__path__[0], 'lib'))" 2>/dev/null || echo "")
+    CUDNN_LFLAG=$("$PYTHON_BIN" -c "import nvidia.cudnn, os; print('-L' + os.path.join(nvidia.cudnn.__path__[0], 'lib'))" 2>/dev/null || echo "")
 fi
 
 # NCCL include/lib fallback (mirrors the cuDNN fallback above).
@@ -228,10 +323,10 @@ for dir in /usr/lib/x86_64-linux-gnu /usr/local/cuda/lib64; do
     if [ -f "$dir/libnccl.so" ] || [ -f "$dir/libnccl.so.2" ]; then NCCL_LFLAG="-L$dir"; break; fi
 done
 if [ -z "$NCCL_IFLAG" ]; then
-    NCCL_IFLAG=$(python -c "import nvidia.nccl, os; print('-I' + os.path.join(nvidia.nccl.__path__[0], 'include'))" 2>/dev/null || echo "")
+    NCCL_IFLAG=$("$PYTHON_BIN" -c "import nvidia.nccl, os; print('-I' + os.path.join(nvidia.nccl.__path__[0], 'include'))" 2>/dev/null || echo "")
 fi
 if [ -z "$NCCL_LFLAG" ]; then
-    NCCL_LFLAG=$(python -c "import nvidia.nccl, os; print('-L' + os.path.join(nvidia.nccl.__path__[0], 'lib'))" 2>/dev/null || echo "")
+    NCCL_LFLAG=$("$PYTHON_BIN" -c "import nvidia.nccl, os; print('-L' + os.path.join(nvidia.nccl.__path__[0], 'lib'))" 2>/dev/null || echo "")
 fi
 
 WHEEL_RPATH_FLAGS=()
@@ -248,10 +343,10 @@ NVCC="ccache $CUDA_HOME/bin/nvcc"
 CC="${CC:-$(command -v ccache >/dev/null && echo 'ccache clang' || echo 'clang')}"
 ARCH=${NVCC_ARCH:-native}
 
-PYTHON_INCLUDE=$(python -c "import sysconfig; print(sysconfig.get_path('include'))")
-PYBIND_INCLUDE=$(python -c "import pybind11; print(pybind11.get_include())")
-NUMPY_INCLUDE=$(python -c "import numpy; print(numpy.get_include())")
-EXT_SUFFIX=$(python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
+PYTHON_INCLUDE=$("$PYTHON_BIN" -c "import sysconfig; print(sysconfig.get_path('include'))")
+PYBIND_INCLUDE=$("$PYTHON_BIN" -c "import pybind11; print(pybind11.get_include())")
+NUMPY_INCLUDE=$("$PYTHON_BIN" -c "import numpy; print(numpy.get_include())")
+EXT_SUFFIX=$("$PYTHON_BIN" -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 OUTPUT="pufferlib/_C${EXT_SUFFIX}"
 
 BINDING_SRC="$SRC_DIR/binding.c"
@@ -265,11 +360,11 @@ if [ ! -f "$BINDING_SRC" ]; then
 fi
 
 echo "Compiling static library for $ENV..."
-${CC:-clang} -c "${CLANG_OPT[@]}" $EXTRA_CFLAGS \
+${CC:-clang} -c "${CLANG_OPT[@]}" \
     -I. -Isrc -I$SRC_DIR -Ivendor \
     "${INCLUDES[@]}" \
-    -I./$RAYLIB_NAME/include -I$CUDA_HOME/include \
-    -DPLATFORM_DESKTOP \
+    -I$CUDA_HOME/include \
+    "$RAYLIB_PLATFORM" \
     -fno-semantic-interposition -fvisibility=hidden \
     -fPIC -fopenmp \
     "$BINDING_SRC" -o "$STATIC_OBJ"
@@ -287,11 +382,11 @@ if [ -z "$MODE" ]; then
     $NVCC -c -arch=$ARCH -Xcompiler -fPIC \
         -Xcompiler=-D_GLIBCXX_USE_CXX11_ABI=1 \
         -Xcompiler=-DNPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION \
-        -Xcompiler=-DPLATFORM_DESKTOP \
+        -Xcompiler=$RAYLIB_PLATFORM \
         -std=c++17 \
         -I. -Isrc \
         -I$PYTHON_INCLUDE -I$PYBIND_INCLUDE -I$NUMPY_INCLUDE \
-        -I$CUDA_HOME/include $CUDNN_IFLAG $NCCL_IFLAG -I$RAYLIB_NAME/include \
+        -I$CUDA_HOME/include $CUDNN_IFLAG $NCCL_IFLAG "${INCLUDES[@]}" \
         -Xcompiler=-fopenmp \
         -DOBS_TENSOR_T=$OBS_TENSOR_T \
         -DENV_NAME=$ENV \
@@ -316,10 +411,11 @@ elif [ "$MODE" = "cpu" ]; then
     echo "Compiling CPU training backend..."
     ${CXX:-g++} -c -fPIC -fopenmp \
         -D_GLIBCXX_USE_CXX11_ABI=1 \
-        -DPLATFORM_DESKTOP \
+        "$RAYLIB_PLATFORM" \
         -std=c++17 \
         -I. -Isrc \
         -I$PYTHON_INCLUDE -I$PYBIND_INCLUDE \
+        "${INCLUDES[@]}" \
         -DOBS_TENSOR_T=$OBS_TENSOR_T \
         -DENV_NAME=$ENV \
         $PRECISION $LINK_OPT \
@@ -339,10 +435,10 @@ elif [ "$MODE" = "profile" ]; then
     echo "Compiling profile binary ($ARCH)..."
     $NVCC $NVCC_OPT -arch=$ARCH -std=c++17 \
         -I. -Isrc -I$SRC_DIR -Ivendor \
-        -I$CUDA_HOME/include $CUDNN_IFLAG $NCCL_IFLAG -I$RAYLIB_NAME/include \
+        -I$CUDA_HOME/include $CUDNN_IFLAG $NCCL_IFLAG "${INCLUDES[@]}" \
         -DOBS_TENSOR_T=$OBS_TENSOR_T \
         -DENV_NAME=$ENV \
-        -Xcompiler=-DPLATFORM_DESKTOP \
+        -Xcompiler=$RAYLIB_PLATFORM \
         $PRECISION \
         -Xcompiler=-fopenmp \
         tests/profile_kernels.cu vendor/ini.c \
