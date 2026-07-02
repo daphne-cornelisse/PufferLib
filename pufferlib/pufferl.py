@@ -172,6 +172,7 @@ def validate_config(args):
 
 GIF_LOG_FPS = 12
 GIF_LOG_KEY = 'media/policy_rollout'
+GIF_LOG_EXT = '.mp4'
 
 def _should_log_policy_gif(args, epoch, train_epochs, is_final):
     interval = int(args.get('gif_log_interval', 0) or 0)
@@ -183,7 +184,7 @@ def _log_policy_gif(env_name, args, model_path, step, run_id):
 
     gif_dir = os.path.join(args['log_dir'], args['env_name'], run_id, 'gifs')
     os.makedirs(gif_dir, exist_ok=True)
-    gif_path = os.path.join(gif_dir, f'{step:016d}.gif')
+    gif_path = os.path.join(gif_dir, f'{step:016d}{GIF_LOG_EXT}')
 
     # Use a minimal eval config for media rendering so training doesn't appear
     # to freeze while a second full-scale 16k-agent run spins up just to record
@@ -203,16 +204,37 @@ def _log_policy_gif(env_name, args, model_path, step, run_id):
     ]
     start = time.time()
     print(f'Rendering policy gif at step {step} to {gif_path}')
+    render_stdout = ''
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        completed = subprocess.run(
+            cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        render_stdout = completed.stdout or ''
+        render_rc = completed.returncode
     except subprocess.CalledProcessError as e:
-        print(f'WARNING: failed to render policy gif at step {step}\n{e.stdout}')
+        render_stdout = e.stdout or ''
+        render_rc = e.returncode
+    except Exception as e:
+        print(f'WARNING: failed to launch policy gif render at step {step}: {e}')
         return
-    print(f'Rendered policy gif at step {step} in {time.time() - start:.1f}s')
 
-    wandb.log({
-        GIF_LOG_KEY: wandb.Video(gif_path, format='gif'),
-    }, step=step)
+    file_exists = os.path.exists(gif_path)
+    file_size = os.path.getsize(gif_path) if file_exists else 0
+    if render_rc != 0 and file_size == 0:
+        print(f'WARNING: failed to render policy video at step {step}\n{render_stdout}')
+        return
+    if file_size == 0:
+        print(f'WARNING: policy video render produced no output at step {step}\n{render_stdout}')
+        return
+    if render_rc != 0:
+        print(f'Policy video render exited with status {render_rc} but produced {file_size} bytes; continuing')
+    print(f'Rendered policy video at step {step} in {time.time() - start:.1f}s')
+
+    try:
+        wandb.log({
+            GIF_LOG_KEY: wandb.Video(gif_path, format='mp4'),
+        }, step=step)
+    except Exception as e:
+        print(f'WARNING: failed to log policy video to wandb at step {step}: {e}')
 
 def _resolve_backend(args):
     compiled_env = getattr(_C, 'env_name', None)
@@ -229,6 +251,17 @@ def _env_is_done(pufferl, env_id=0):
     if terminals_ptr is None:
         return False
     return bool(ctypes.c_float.from_address(terminals_ptr + 4 * env_id).value)
+
+def _write_render_frame(ffmpeg, frame_count, num_frames, gif_path):
+    _C.pipe_frame_fd(ffmpeg.stdin.fileno())
+    frame_count += 1
+    if frame_count % 100 == 0:
+        if num_frames == -1:
+            print(f'Recorded {frame_count} frames to {gif_path}')
+        else:
+            percent = 100.0 * frame_count / num_frames
+            print(f'Recorded {frame_count}/{num_frames} frames [{percent:.3f}%] to {gif_path}')
+    return frame_count
 
 def _train_worker(args):
     backend = _resolve_backend(args)
@@ -570,29 +603,38 @@ def eval(env_name, args=None, load_path=None):
             if num_frames:
                 if ffmpeg is None:
                     try:
-                        ffmpeg = subprocess.Popen([
+                        ffmpeg_cmd = [
                             'ffmpeg', '-y', '-loglevel', 'warning',
                             '-f', 'rawvideo',
                             '-pix_fmt', 'rgba',
                             '-s', f'{_C.screen_width()}x{_C.screen_height()}',
                             '-r', str(args['fps']),
                             '-i', '-',
-                            args['gif_path'],
-                        ], stdin=subprocess.PIPE)
+                        ]
+                        if args['gif_path'].lower().endswith('.mp4'):
+                            ffmpeg_cmd += [
+                                '-c:v', 'libx264',
+                                '-pix_fmt', 'yuv420p',
+                                '-preset', 'veryfast',
+                                '-crf', '23',
+                            ]
+                        else:
+                            ffmpeg_cmd += [
+                                '-filter_complex',
+                                '[0:v]split[a][b];[b]palettegen[p];[a][p]paletteuse',
+                            ]
+                        ffmpeg_cmd.append(args['gif_path'])
+                        ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
                     except FileNotFoundError as e:
                         raise RuntimeError('ffmpeg is required for GIF export but was not found in PATH') from e
-                _C.pipe_frame_fd(ffmpeg.stdin.fileno())
-                frame_count += 1
-                if frame_count % 100 == 0:
-                    if num_frames == -1:
-                        print(f'Recorded {frame_count} frames to {args["gif_path"]}')
-                    else:
-                        percent = 100.0 * frame_count / num_frames
-                        print(f'Recorded {frame_count}/{num_frames} frames [{percent:.3f}%] to {args["gif_path"]}')
+                frame_count = _write_render_frame(ffmpeg, frame_count, num_frames, args['gif_path'])
                 if num_frames != -1 and frame_count >= num_frames:
                     break
             backend.rollouts(pufferl)
             if num_frames and _env_is_done(pufferl, 0):
+                if ffmpeg is not None and (num_frames == -1 or frame_count < num_frames):
+                    backend.render(pufferl, 0)
+                    frame_count = _write_render_frame(ffmpeg, frame_count, num_frames, args['gif_path'])
                 print(f'Render stopped early at terminal state after {frame_count} frames')
                 break
     finally:
@@ -712,7 +754,7 @@ def load_config(env_name):
     parser.add_argument('--slowly', action='store_true', help='Use PyTorch training backend')
     parser.add_argument('--save-frames', '--num-frames', dest='num_frames', type=int, default=0,
         help='Number of rendered frames to save to --gif-path with ffmpeg. Set to -1 to record until interrupted.')
-    parser.add_argument('--gif-path', type=str, default='eval.gif')
+    parser.add_argument('--gif-path', type=str, default='eval.mp4')
     parser.add_argument('--fps', type=float, default=15)
     parser.add_argument('--gif-log-interval', type=int, default=0,
         help='During training, render and log a policy rollout GIF to wandb every N training epochs. 0 disables it.')

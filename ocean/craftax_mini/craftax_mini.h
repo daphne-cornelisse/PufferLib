@@ -351,8 +351,18 @@ static void c_render(Craftax* env) {
     const int hud_pad = 6;
 
     if (!IsWindowReady()) {
+        if (!craftax_ensure_render_display(env)) {
+            fprintf(stderr, "WARNING: failed to initialize display for Craftax rendering\n");
+            return;
+        }
+        Client* client = craftax_get_client(env);
+        if (client != NULL && client->headless_display) {
+            SetConfigFlags(FLAG_WINDOW_HIDDEN);
+            SetTargetFPS(6000);
+        } else {
+            SetTargetFPS(30);
+        }
         InitWindow(view_w, view_h + hud_h, "PufferLib Craftax");
-        SetTargetFPS(30);
     }
     if (!craftax_textures_loaded) craftax_load_textures();
     if (IsKeyDown(KEY_ESCAPE)) exit(0);

@@ -12,6 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 // ============================================================
 // Optional step profiling (compile with -DCRAFTAX_PROFILE)
@@ -571,7 +574,9 @@ typedef struct Log {
 } Log;
 
 typedef struct Client {
-    int unused;
+    pid_t xvfb_pid;
+    int xvfb_display_num;
+    bool headless_display;
 } Client;
 
 typedef struct Craftax {
@@ -659,6 +664,81 @@ static inline void craftax_reset_state_from_reset_key(
 static int g_craftax_reset_pool_size = 0;
 static CraftaxState* g_craftax_reset_pool = NULL;
 static int g_craftax_reset_pool_ready = 0;
+
+static inline Client* craftax_get_client(Craftax* env) {
+    if (env->client == NULL) {
+        env->client = (Client*)calloc(1, sizeof(Client));
+    }
+    return env->client;
+}
+
+static inline int craftax_ensure_render_display(Craftax* env) {
+#if defined(PLATFORM_MEMORY)
+    (void)env;
+    return 1;
+#else
+    Client* client = craftax_get_client(env);
+    if (client == NULL) {
+        return 0;
+    }
+
+    if (getenv("DISPLAY") != NULL) {
+        return 1;
+    }
+
+    client->headless_display = true;
+    if (client->xvfb_display_num == 0) {
+        client->xvfb_display_num = 99;
+    }
+
+    char display_name[16];
+    char lock_path[64];
+    char socket_path[64];
+    snprintf(display_name, sizeof(display_name), ":%d", client->xvfb_display_num);
+    snprintf(lock_path, sizeof(lock_path), "/tmp/.X%d-lock", client->xvfb_display_num);
+    snprintf(socket_path, sizeof(socket_path), "/tmp/.X11-unix/X%d", client->xvfb_display_num);
+
+    FILE* f = fopen(lock_path, "r");
+    if (f != NULL) {
+        pid_t pid = -1;
+        fscanf(f, "%d", &pid);
+        fclose(f);
+        if (pid > 0 && kill(pid, 0) == 0) {
+            setenv("DISPLAY", display_name, 1);
+            return 1;
+        }
+        unlink(lock_path);
+    }
+
+    if (access(socket_path, F_OK) == 0) {
+        setenv("DISPLAY", display_name, 1);
+        return 1;
+    }
+
+    pid_t child = fork();
+    if (child == 0) {
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
+        execlp("Xvfb", "Xvfb", display_name, "-screen", "0",
+            "1280x720x24", "+extension", "GLX", "-ac", "-noreset", NULL);
+        _exit(1);
+    }
+    if (child < 0) {
+        return 0;
+    }
+
+    client->xvfb_pid = child;
+    setenv("DISPLAY", display_name, 1);
+    for (int i = 0; i < 20 && access(lock_path, F_OK) != 0; i++) {
+        usleep(100000);
+    }
+    usleep(200000);
+    if (access(lock_path, F_OK) != 0 && access(socket_path, F_OK) != 0) {
+        return 0;
+    }
+    return 1;
+#endif
+}
 
 // Called from my_init which runs single-threaded during env creation
 // (vecenv.h iterates envs sequentially). First caller populates the
@@ -1002,6 +1082,14 @@ static void c_step(Craftax* env) {
 }
 
 static void c_close(Craftax* env) {
+    if (env->client != NULL) {
+        if (env->client->xvfb_pid > 0) {
+            kill(env->client->xvfb_pid, SIGTERM);
+            waitpid(env->client->xvfb_pid, NULL, 0);
+        }
+        free(env->client);
+        env->client = NULL;
+    }
     if (!env->owns_state_storage || env->arena == NULL) {
         return;
     }
@@ -1102,8 +1190,18 @@ static void c_render(Craftax* env) {
     const int hud_h = 80;
 
     if (!IsWindowReady()) {
+        if (!craftax_ensure_render_display(env)) {
+            fprintf(stderr, "WARNING: failed to initialize display for Craftax rendering\n");
+            return;
+        }
+        Client* client = craftax_get_client(env);
+        if (client != NULL && client->headless_display) {
+            SetConfigFlags(FLAG_WINDOW_HIDDEN);
+            SetTargetFPS(6000);
+        } else {
+            SetTargetFPS(30);
+        }
         InitWindow(view_w, view_h + hud_h, "PufferLib Craftax");
-        SetTargetFPS(30);
     }
     if (!craftax_textures_loaded) craftax_load_textures();
     if (IsKeyDown(KEY_ESCAPE)) exit(0);
