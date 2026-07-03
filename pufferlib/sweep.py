@@ -149,15 +149,24 @@ def _params_from_puffer_sweep(sweep_config, only_include=None):
                     'sweep_only', 'max_suggestion_cost', 'early_stop_quantile', 'gpus', 'max_runs'):
             continue
 
-        assert isinstance(param, dict), f'Param {name} is not a dict'
-        if any(isinstance(param[k], dict) for k in param):
-            param_spaces[name] = _params_from_puffer_sweep(param, only_include)
+        # Fixed scalar values may live alongside true sweep specs under [sweep].
+        # Only recurse into nested dicts and only materialize leaves with a
+        # distribution definition.
+        if not isinstance(param, dict):
+            continue
+
+        if any(isinstance(v, dict) for v in param.values()):
+            nested_spaces = _params_from_puffer_sweep(param, only_include)
+            if nested_spaces:
+                param_spaces[name] = nested_spaces
             continue
  
         if only_include and not any(k in name for k in only_include):
             continue
 
-        assert 'distribution' in param
+        if 'distribution' not in param:
+            continue
+
         distribution = param['distribution']
         kwargs = dict(
             min=param['min'],

@@ -34,6 +34,8 @@ int main(int argc, char** argv) {
 
     // Minimal buffers for a single agent
     env.observations = calloc(CRAFTAX_OBS_SIZE, sizeof(float));
+
+    printf("obs dim: %d\n", CRAFTAX_OBS_SIZE);
     env.actions = calloc(1, sizeof(float));
     env.rewards = calloc(1, sizeof(float));
     env.terminals = calloc(1, sizeof(float));

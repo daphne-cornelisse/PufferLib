@@ -17,6 +17,34 @@ try:
 except:
     pass
 
+def test_params_from_puffer_sweep_ignores_fixed_scalar_entries():
+    sweep_config = {
+        'method': 'Protein',
+        'metric': 'score',
+        'metric_distribution': 'linear',
+        'goal': 'maximize',
+        'downsample': 5,
+        'match_enemy_model_path': 'resources/chess/10b_weights.bin',
+        'match_num_games': 4096,
+        'match_enemy_hidden_size': 512,
+        'match_enemy_num_layers': 3,
+        'train': {
+            'total_timesteps': {
+                'distribution': 'log_normal',
+                'min': 1e8,
+                'max': 1e10,
+                'scale': 'time',
+            },
+        },
+    }
+
+    spaces = pufferlib.sweep._params_from_puffer_sweep(sweep_config)
+
+    assert 'train' in spaces
+    assert 'total_timesteps' in spaces['train']
+    assert 'match_enemy_model_path' not in spaces
+    assert 'match_num_games' not in spaces
+
 def synthetic_basic_task(args):
     train_args = args['train']
     learning_rate = train_args['learning_rate']

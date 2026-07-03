@@ -1113,9 +1113,9 @@ static void c_close(Craftax* env) {
 #define CRAFTAX_TEX_DRAW_PX (CRAFTAX_TEX_TILE_PX * CRAFTAX_TEX_SCALE)
 #define CRAFTAX_TEX_NUM (37 + 5 + 5 + 3 + 4)
 
-// Render viewport (independent of agent obs window)
-#define CRAFTAX_RENDER_ROWS 16
-#define CRAFTAX_RENDER_COLS 16
+// Match the upstream pixel observation crop for logged renders.
+#define CRAFTAX_RENDER_ROWS CRAFTAX_OBS_ROWS
+#define CRAFTAX_RENDER_COLS CRAFTAX_OBS_COLS
 
 #define CRAFTAX_TEX_PLAYER_DOWN 37
 #define CRAFTAX_TEX_PLAYER_UP 38
@@ -1176,18 +1176,146 @@ static int craftax_player_tex_id(int32_t direction, bool sleeping) {
     }
 }
 
-static void craftax_draw_tile(int tex_id, int dst_x, int dst_y, float tint_alpha) {
+static void craftax_draw_tile_tint(int tex_id, int dst_x, int dst_y, Color tint) {
     if (tex_id < 0 || tex_id >= CRAFTAX_TEX_NUM) return;
     Rectangle src = {0, 0, CRAFTAX_TEX_TILE_PX, CRAFTAX_TEX_TILE_PX};
     Rectangle dst = {(float)dst_x, (float)dst_y, CRAFTAX_TEX_DRAW_PX, CRAFTAX_TEX_DRAW_PX};
-    Color tint = {255, 255, 255, (unsigned char)(tint_alpha * 255.0f)};
     DrawTexturePro(craftax_textures[tex_id], src, dst, (Vector2){0, 0}, 0.0f, tint);
+}
+
+static void craftax_draw_tile(int tex_id, int dst_x, int dst_y, float tint_alpha) {
+    Color tint = {255, 255, 255, (unsigned char)(tint_alpha * 255.0f)};
+    craftax_draw_tile_tint(tex_id, dst_x, dst_y, tint);
+}
+
+static int craftax_mob_tex_id(bool passive, bool ranged) {
+    if (passive) return 49; // cow
+    if (ranged) return 48;  // skeleton
+    return 47;              // zombie
+}
+
+static int craftax_projectile_tex_id(const int32_t direction[2]) {
+    if (direction[0] < 0) return 51; // up
+    if (direction[0] > 0) return 50; // down
+    if (direction[1] < 0) return 52; // left
+    if (direction[1] > 0) return 53; // right
+    return 50;
+}
+
+static Color craftax_projectile_tint(int32_t type_id, bool hostile) {
+    switch (type_id) {
+        case CRAFTAX_PROJECTILE_FIREBALL:
+        case CRAFTAX_PROJECTILE_FIREBALL2:
+            return hostile ? (Color){255, 170, 80, 235} : (Color){255, 220, 120, 235};
+        case CRAFTAX_PROJECTILE_ICEBALL:
+        case CRAFTAX_PROJECTILE_ICEBALL2:
+            return hostile ? (Color){120, 220, 255, 235} : (Color){180, 240, 255, 235};
+        case CRAFTAX_PROJECTILE_SLIMEBALL:
+            return (Color){120, 255, 140, 235};
+        case CRAFTAX_PROJECTILE_DAGGER:
+            return (Color){220, 220, 220, 235};
+        default:
+            return hostile ? (Color){255, 255, 255, 235} : (Color){255, 245, 160, 235};
+    }
+}
+
+static void craftax_draw_world_entity(
+    int tex_id,
+    int32_t entity_row,
+    int32_t entity_col,
+    int32_t top_row,
+    int32_t left_col,
+    Color tint
+) {
+    int vr = entity_row - top_row;
+    int vc = entity_col - left_col;
+    if (vr < 0 || vr >= CRAFTAX_RENDER_ROWS || vc < 0 || vc >= CRAFTAX_RENDER_COLS) {
+        return;
+    }
+    craftax_draw_tile_tint(
+        tex_id,
+        vc * CRAFTAX_TEX_DRAW_PX,
+        vr * CRAFTAX_TEX_DRAW_PX,
+        tint
+    );
+}
+
+static void craftax_draw_mob_overlays(
+    const CraftaxState* s,
+    int lvl,
+    int top_row,
+    int left_col
+) {
+    const Color white = {255, 255, 255, 255};
+    for (int i = 0; i < CRAFTAX_MAX_PASSIVE_MOBS; i++) {
+        if (!s->passive_mobs.mask[lvl][i]) continue;
+        craftax_draw_world_entity(
+            craftax_mob_tex_id(true, false),
+            s->passive_mobs.position[lvl][i][0],
+            s->passive_mobs.position[lvl][i][1],
+            top_row,
+            left_col,
+            white
+        );
+    }
+    for (int i = 0; i < CRAFTAX_MAX_MELEE_MOBS; i++) {
+        if (!s->melee_mobs.mask[lvl][i]) continue;
+        craftax_draw_world_entity(
+            craftax_mob_tex_id(false, false),
+            s->melee_mobs.position[lvl][i][0],
+            s->melee_mobs.position[lvl][i][1],
+            top_row,
+            left_col,
+            white
+        );
+    }
+    for (int i = 0; i < CRAFTAX_MAX_RANGED_MOBS; i++) {
+        if (!s->ranged_mobs.mask[lvl][i]) continue;
+        craftax_draw_world_entity(
+            craftax_mob_tex_id(false, true),
+            s->ranged_mobs.position[lvl][i][0],
+            s->ranged_mobs.position[lvl][i][1],
+            top_row,
+            left_col,
+            white
+        );
+    }
+}
+
+static void craftax_draw_projectile_overlays(
+    const CraftaxState* s,
+    int lvl,
+    int top_row,
+    int left_col
+) {
+    for (int i = 0; i < CRAFTAX_MAX_MOB_PROJECTILES; i++) {
+        if (!s->mob_projectiles.mask[lvl][i]) continue;
+        craftax_draw_world_entity(
+            craftax_projectile_tex_id(s->mob_projectile_directions[lvl][i]),
+            s->mob_projectiles.position[lvl][i][0],
+            s->mob_projectiles.position[lvl][i][1],
+            top_row,
+            left_col,
+            craftax_projectile_tint(s->mob_projectiles.type_id[lvl][i], true)
+        );
+    }
+    for (int i = 0; i < CRAFTAX_MAX_PLAYER_PROJECTILES; i++) {
+        if (!s->player_projectiles.mask[lvl][i]) continue;
+        craftax_draw_world_entity(
+            craftax_projectile_tex_id(s->player_projectile_directions[lvl][i]),
+            s->player_projectiles.position[lvl][i][0],
+            s->player_projectiles.position[lvl][i][1],
+            top_row,
+            left_col,
+            craftax_projectile_tint(s->player_projectiles.type_id[lvl][i], false)
+        );
+    }
 }
 
 static void c_render(Craftax* env) {
     const int view_w = CRAFTAX_RENDER_COLS * CRAFTAX_TEX_DRAW_PX;
     const int view_h = CRAFTAX_RENDER_ROWS * CRAFTAX_TEX_DRAW_PX;
-    const int hud_h = 80;
+    const int hud_h = 96;
 
     if (!IsWindowReady()) {
         if (!craftax_ensure_render_display(env)) {
@@ -1212,20 +1340,27 @@ static void c_render(Craftax* env) {
     int pc = s->player_position[1];
     int half_r = CRAFTAX_RENDER_ROWS / 2;
     int half_c = CRAFTAX_RENDER_COLS / 2;
+    int top_row = pr - half_r;
+    int left_col = pc - half_c;
 
     BeginDrawing();
     ClearBackground(BLACK);
 
     for (int vr = 0; vr < CRAFTAX_RENDER_ROWS; vr++) {
         for (int vc = 0; vc < CRAFTAX_RENDER_COLS; vc++) {
-            int wr = pr - half_r + vr;
-            int wc = pc - half_c + vc;
+            int wr = top_row + vr;
+            int wc = left_col + vc;
             int dst_x = vc * CRAFTAX_TEX_DRAW_PX;
             int dst_y = vr * CRAFTAX_TEX_DRAW_PX;
 
             int blk = CRAFTAX_BLOCK_OUT_OF_BOUNDS;
             if (wr >= 0 && wr < CRAFTAX_MAP_SIZE && wc >= 0 && wc < CRAFTAX_MAP_SIZE) {
                 blk = s->map[lvl][wr][wc];
+                if (blk == CRAFTAX_BLOCK_NECROMANCER
+                        && craftax_wg_is_boss_vulnerable(
+                            (const CraftaxWorldState*)s)) {
+                    blk = CRAFTAX_BLOCK_NECROMANCER_VULNERABLE;
+                }
                 if (s->light_map[lvl][wr][wc] <= 12) blk = CRAFTAX_BLOCK_DARKNESS;
             }
             if (blk < 0 || blk >= CRAFTAX_NUM_BLOCK_TYPES) blk = 0;
@@ -1235,11 +1370,18 @@ static void c_render(Craftax* env) {
             if (wr >= 0 && wr < CRAFTAX_MAP_SIZE && wc >= 0 && wc < CRAFTAX_MAP_SIZE) {
                 int it = s->item_map[lvl][wr][wc];
                 if (it > 0 && it < 5) {
+                    if (it == CRAFTAX_ITEM_LADDER_DOWN
+                            && s->monsters_killed[lvl] < CRAFTAX_MONSTERS_KILLED_TO_CLEAR_LEVEL) {
+                        it = CRAFTAX_ITEM_LADDER_DOWN_BLOCKED;
+                    }
                     craftax_draw_tile(CRAFTAX_TEX_ITEM_BASE + it, dst_x, dst_y, 1.0f);
                 }
             }
         }
     }
+
+    craftax_draw_mob_overlays(s, lvl, top_row, left_col);
+    craftax_draw_projectile_overlays(s, lvl, top_row, left_col);
 
     // player in center
     int pid = craftax_player_tex_id(s->player_direction, s->is_sleeping);
@@ -1254,19 +1396,30 @@ static void c_render(Craftax* env) {
     // HUD
     int hud_y = view_h;
     DrawRectangle(0, hud_y, view_w, hud_h, (Color){20, 20, 20, 255});
-    DrawText(TextFormat("HP:%.0f  F:%d  D:%d  E:%d  M:%d  L:%d  t:%d",
+    DrawText(TextFormat("HP:%.0f  F:%d  D:%d  E:%d  M:%d  XP:%d  lvl:%d  t:%d",
              s->player_health, s->player_food, s->player_drink,
-             s->player_energy, s->player_mana, s->player_level, s->timestep),
+             s->player_energy, s->player_mana, s->player_xp,
+             s->player_level, s->timestep),
              4, hud_y + 4, 14, WHITE);
-    DrawText(TextFormat("XP:%d  DEX:%d  STR:%d  INT:%d  light:%.2f",
-             s->player_xp, s->player_dexterity, s->player_strength,
-             s->player_intelligence, s->light_level),
+    DrawText(TextFormat("DEX:%d  STR:%d  INT:%d  light:%.2f  floor_kills:%d/%d",
+             s->player_dexterity, s->player_strength,
+             s->player_intelligence, s->light_level,
+             s->monsters_killed[lvl], CRAFTAX_MONSTERS_KILLED_TO_CLEAR_LEVEL),
              4, hud_y + 22, 14, (Color){200, 200, 200, 255});
+    DrawText(TextFormat("inv W:%d S:%d C:%d I:%d D:%d Sa:%d R:%d Sp:%d T:%d Ar:%d B:%d",
+             s->inventory.wood, s->inventory.stone, s->inventory.coal,
+             s->inventory.iron, s->inventory.diamond, s->inventory.sapphire,
+             s->inventory.ruby, s->inventory.sapling, s->inventory.torches,
+             s->inventory.arrows, s->inventory.books),
+             4, hud_y + 40, 14, (Color){220, 220, 220, 255});
     int ach_count = 0;
     for (int i = 0; i < CRAFTAX_NUM_ACHIEVEMENTS; i++) ach_count += s->achievements[i] ? 1 : 0;
-    DrawText(TextFormat("achievements: %d / %d", ach_count, CRAFTAX_NUM_ACHIEVEMENTS),
-             4, hud_y + 40, 14, (Color){180, 220, 180, 255});
-    DrawText(TextFormat("ret:%.2f len:%d", env->episode_return_accum, env->episode_length_accum),
+    DrawText(TextFormat("equip pick:%d sword:%d bow:%d armour:[%d %d %d %d] ach:%d/%d ret:%.2f len:%d",
+             s->inventory.pickaxe, s->inventory.sword, s->inventory.bow,
+             s->inventory.armour[0], s->inventory.armour[1],
+             s->inventory.armour[2], s->inventory.armour[3],
+             ach_count, CRAFTAX_NUM_ACHIEVEMENTS,
+             env->episode_return_accum, env->episode_length_accum),
              4, hud_y + 58, 14, (Color){200, 200, 140, 255});
 
     EndDrawing();

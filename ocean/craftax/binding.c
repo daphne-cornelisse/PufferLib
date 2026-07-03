@@ -139,11 +139,8 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "episode_return", log->episode_return);
     dict_set(out, "episode_length", log->episode_length);
 
-    // Log 8 checkpoint achievements that form the tech / exploration curve.
-    // perf (above) already aggregates all 67 into a normalized score; the
-    // individual lines here are the milestones worth watching on a dashboard.
-    // The env still tracks all 67 internally for reward and perf; we just
-    // don't send every one through the log Dict.
+    // Log tech and floor progression checkpoints. Values are per-window means
+    // over completed episodes, so each line is a reach/unlock rate.
     struct { const char* name; int idx; } checkpoints[] = {
         {"collect_wood",         0},
         {"make_wood_pickaxe",    5},
@@ -151,7 +148,14 @@ void my_log(Log* log, Dict* out) {
         {"collect_iron",        18},
         {"make_iron_pickaxe",   20},
         {"collect_diamond",     19},
-        {"enter_gnomish_mines", 28},
+        {"floor_1_dungeon",       29},
+        {"floor_2_gnomish_mines", 28},
+        {"floor_3_sewers",        30},
+        {"floor_4_vault",         31},
+        {"floor_5_troll_mines",   32},
+        {"floor_6_fire_realm",    33},
+        {"floor_7_ice_realm",     34},
+        {"floor_8_graveyard",     35},
         {"defeat_necromancer",  48},
     };
     for (int i = 0; i < (int)(sizeof(checkpoints) / sizeof(checkpoints[0])); i++) {
