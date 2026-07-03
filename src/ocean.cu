@@ -2,6 +2,7 @@
 // Included by pufferlib.cu — requires precision_t, PrecisionTensor, Allocator, puf_mm, etc.
 
 #include "cudnn_conv2d.cu"
+#include "craftax.cu" 
 
 // ---- NMMO3 constants ----
 
@@ -572,6 +573,22 @@ static void nmmo3_encoder_free_activations(void* activations) { free(activations
 
 // Override encoder vtable for known ocean environments. No-op for unknown envs.
 static void create_custom_encoder(const std::string& env_name, Encoder* enc) {
+    if (env_name == "craftax") {
+        *enc = Encoder{
+            .forward = craftax_encoder_forward,
+            .backward = craftax_encoder_backward,
+            .init_weights = craftax_encoder_init_weights,
+            .reg_params = craftax_encoder_reg_params,
+            .reg_train = craftax_encoder_reg_train,
+            .reg_rollout = craftax_encoder_reg_rollout,
+            .create_weights = craftax_encoder_create_weights,
+            .free_weights = craftax_encoder_free_weights,
+            .free_activations = craftax_encoder_free_activations,
+            .in_dim = enc->in_dim, .out_dim = enc->out_dim,
+            .activation_size = sizeof(CraftaxEncoderActivations),
+        };
+        return;
+    }
     if (env_name == "nmmo3") {
         *enc = Encoder{
             .forward = nmmo3_encoder_forward,
