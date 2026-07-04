@@ -173,11 +173,12 @@ def validate_config(args):
 GIF_LOG_FPS = 12
 GIF_LOG_KEY = 'media/policy_rollout'
 GIF_LOG_EXT = '.mp4'
+GIF_LOG_MAX_FRAMES = 2000
 
 def _should_log_policy_gif(args, epoch, train_epochs, is_final):
     interval = int(args.get('gif_log_interval', 0) or 0)
     frames = int(args.get('gif_log_frames', 0) or 0)
-    return frames > 0 and (is_final or (interval > 0 and epoch > 0 and epoch % interval == 0))
+    return is_final and (interval > 0 or frames != 0)
 
 def _log_policy_gif(env_name, args, model_path, step, run_id):
     import wandb
@@ -192,7 +193,7 @@ def _log_policy_gif(env_name, args, model_path, step, run_id):
     cmd = [
         sys.executable, '-m', 'pufferlib.pufferl', 'eval', env_name,
         '--load-model-path', model_path,
-        '--num-frames', str(args['gif_log_frames']),
+        '--num-frames', str(GIF_LOG_MAX_FRAMES),
         '--gif-path', gif_path,
         '--fps', str(GIF_LOG_FPS),
         '--vec.total-agents', '1',
@@ -203,7 +204,7 @@ def _log_policy_gif(env_name, args, model_path, step, run_id):
         '--cudagraphs', '-1',
     ]
     start = time.time()
-    print(f'Rendering policy gif at step {step} to {gif_path}')
+    print(f'Rendering final policy video at step {step} to {gif_path}')
     render_stdout = ''
     try:
         completed = subprocess.run(
@@ -227,7 +228,7 @@ def _log_policy_gif(env_name, args, model_path, step, run_id):
         return
     if render_rc != 0:
         print(f'Policy video render exited with status {render_rc} but produced {file_size} bytes; continuing')
-    print(f'Rendered policy video at step {step} in {time.time() - start:.1f}s')
+    print(f'Rendered final policy video at step {step} in {time.time() - start:.1f}s')
 
     try:
         wandb.log({
@@ -757,9 +758,9 @@ def load_config(env_name):
     parser.add_argument('--gif-path', type=str, default='eval.mp4')
     parser.add_argument('--fps', type=float, default=15)
     parser.add_argument('--gif-log-interval', type=int, default=0,
-        help='During training, render and log a policy rollout GIF to wandb every N training epochs. 0 disables it.')
+        help='Legacy enable flag for final rollout video logging. Set > 0 to render one full terminal episode to wandb after training.')
     parser.add_argument('--gif-log-frames', type=int, default=0,
-        help='Number of frames per periodically logged policy rollout GIF during training. 0 disables it.')
+        help='Legacy enable flag for final rollout video logging. Nonzero enables one full terminal episode render after training.')
     parser.description = f':blowfish: PufferLib [bright_cyan]{pufferlib.__version__}[/]' \
         ' demo options. Shows valid args for your env and policy'
     existing_option_strings = {opt for action in parser._actions for opt in action.option_strings}

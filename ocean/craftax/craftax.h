@@ -619,6 +619,7 @@ static const float CRAFTAX_ACHIEVEMENT_REWARD_MAP[CRAFTAX_NUM_ACHIEVEMENTS] = {
     5.0f, 5.0f, 5.0f, 3.0f, 3.0f, 3.0f, 3.0f, 5.0f,
     5.0f, 5.0f, 5.0f,
 };
+static const float CRAFTAX_MAX_EPISODE_RETURN = 226.0f;
 
 static inline CraftaxThreefryKey craftax_step_native_next_key(
     CraftaxThreefryKey* rng
@@ -850,7 +851,7 @@ static void add_log(Craftax* env) {
             env->log.achievements[i] += 1.0f;
         }
     }
-    env->log.perf += (float)unlocked / (float)CRAFTAX_NUM_ACHIEVEMENTS;
+    env->log.perf += env->episode_return_accum / CRAFTAX_MAX_EPISODE_RETURN;
     env->log.score += env->episode_return_accum;
     env->log.episode_return += env->episode_return_accum;
     env->log.episode_length += (float)env->episode_length_accum;
@@ -865,7 +866,6 @@ static float craftax_gameplay_step_native(
     CRAFTAX_PROFILE_START();
     bool init_achievements[CRAFTAX_NUM_ACHIEVEMENTS];
     memcpy(init_achievements, state->achievements, sizeof(init_achievements));
-    float init_health = state->player_health;
 
     action = state->is_sleeping ? CRAFTAX_ACTION_NOOP : action;
     action = state->is_resting ? CRAFTAX_ACTION_NOOP : action;
@@ -927,7 +927,6 @@ static float craftax_gameplay_step_native(
             - (int32_t)init_achievements[i];
         reward += (float)delta * CRAFTAX_ACHIEVEMENT_REWARD_MAP[i];
     }
-    reward += (state->player_health - init_health) * 0.1f;
 
     subkey = craftax_step_native_next_key(&rng);
     state->timestep += 1;
