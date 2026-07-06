@@ -20,7 +20,7 @@ static double wall_clock() {
 enum LossIdx {
     LOSS_PG = 0, LOSS_VF = 1, LOSS_ENT = 2, LOSS_TOTAL = 3,
     LOSS_OLD_APPROX_KL = 4, LOSS_APPROX_KL = 5, LOSS_CLIPFRAC = 6,
-    LOSS_N = 7, NUM_LOSSES = 8,
+    LOSS_REG_KL = 7, LOSS_N = 8, NUM_LOSSES = 9,
 };
 
 enum ProfileIdx {
@@ -142,12 +142,14 @@ void register_train_buffers(TrainGraph& bufs, Allocator* alloc, int B, int T, in
 struct PPOGraphArgs {
     precision_t* out_ratio;
     precision_t* out_newvalue;
+    const precision_t* observations;
     const precision_t* actions;
     const precision_t* old_logprobs;
     const precision_t* advantages;
     const precision_t* prio;
     const precision_t* values;
     const precision_t* returns;
+    int obs_dim;
 };
 
 struct PPOKernelArgs {
@@ -156,6 +158,7 @@ struct PPOKernelArgs {
     float* grad_values_pred;
     const precision_t* logits;
     const precision_t* logstd; // Continuous only
+    const precision_t* anchor_logits;
     const precision_t* values_pred;
     const float* adv_mean;
     const float* adv_var;
@@ -163,7 +166,7 @@ struct PPOKernelArgs {
     const precision_t* action_mask; // (N, T, A_total) or nullptr
     int mask_stride_n, mask_stride_t;
     int num_atns;
-    float clip_coef, vf_clip_coef, vf_coef;
+    float clip_coef, vf_clip_coef, vf_coef, reg_coef;
     const float* ent_coef; // device ptr, by-value args get baked into the cuda graph
     int T_seq, A_total, N;
     int logits_stride_n, logits_stride_t, logits_stride_a;
@@ -314,6 +317,9 @@ typedef struct {
     // Threading
     int num_threads;
     int seed;
+    // Regularization
+    bool use_reg;
+    float reg_coef;
 } HypersT;
 
 // A frozen weight bank: same shape as the primary, but its own params buffer
@@ -335,9 +341,13 @@ typedef struct {
 
 typedef struct {
     Policy policy;
+    Policy anchor;
     PolicyWeights weights;       // current precision_t weights (structured)
+    PolicyWeights anchor_weights;
     PolicyActivations train_activations;
+    PolicyActivations anchor_train_activations;
     Allocator params_alloc;
+    Allocator anchor_params_alloc;
     Allocator grads_alloc;
     Allocator activations_alloc;
     StaticVec* vec;
@@ -361,7 +371,9 @@ typedef struct {
     PPOBuffersPuf ppo_bufs_puf; // Pre-allocated buffers for ppo_loss_fwd_bwd
     PrioBuffers prio_bufs;      // Pre-allocated buffers for prio_replay
     FloatTensor master_weights;  // fp32 master weights (flat); same buffer as param_puf in fp32 mode
+    FloatTensor anchor_master_weights;
     PrecisionTensor param_puf;
+    PrecisionTensor anchor_param_puf;
     PrecisionTensor grad_puf;
     LongTensor rng_offset_puf;   // (num_buffers+1,) int64 CUDA device counters
     ProfileT profile;
@@ -374,6 +386,7 @@ typedef struct {
     int train_warmup;
     bool rollout_captured;
     bool train_captured;
+    bool has_anchor;
     ulong seed;
     curandStatePhilox4_32_10_t** rng_states;  // per-buffer persistent RNG states [num_buffers]
     // Optional frozen weight banks for match / league.
@@ -784,6 +797,49 @@ __device__ __forceinline__ void ppo_continuous_head(
     *out_entropy = HALF_1_PLUS_LOG_2PI + log_std;
 }
 
+__device__ __forceinline__ float discrete_head_logsumexp(
+        const precision_t* logits,
+        int logits_base, int logits_stride_a, int logits_offset, int A,
+        const precision_t* mask, int mask_base) {
+    float max_logit = -CUDART_INF_F;
+    for (int j = 0; j < A; ++j) {
+        float logit = load_logit_masked(
+            logits, logits_base, logits_stride_a, logits_offset, j, mask, mask_base);
+        max_logit = fmaxf(max_logit, logit);
+    }
+
+    float sum = 0.0f;
+    for (int j = 0; j < A; ++j) {
+        float logit = load_logit_masked(
+            logits, logits_base, logits_stride_a, logits_offset, j, mask, mask_base);
+        sum += __expf(logit - max_logit);
+    }
+    return max_logit + __logf(sum);
+}
+
+__device__ __forceinline__ float discrete_head_kl(
+        const precision_t* logits,
+        const precision_t* anchor_logits,
+        int logits_base, int logits_stride_a, int logits_offset, int A,
+        const precision_t* mask, int mask_base,
+        float policy_lse, float* anchor_lse_out) {
+    float anchor_lse = discrete_head_logsumexp(
+        anchor_logits, logits_base, logits_stride_a, logits_offset, A, mask, mask_base);
+    float head_kl = 0.0f;
+    for (int j = 0; j < A; ++j) {
+        float logit = load_logit_masked(
+            logits, logits_base, logits_stride_a, logits_offset, j, mask, mask_base);
+        float logp = logit - policy_lse;
+        float p = __expf(logp);
+        float anchor_logit = load_logit_masked(
+            anchor_logits, logits_base, logits_stride_a, logits_offset, j, mask, mask_base);
+        float anchor_logp = anchor_logit - anchor_lse;
+        head_kl += p * (logp - anchor_logp);
+    }
+    *anchor_lse_out = anchor_lse;
+    return head_kl;
+}
+
 __global__ void ppo_loss_compute(
         float* __restrict__ ppo_partials,
         PPOKernelArgs a, PPOGraphArgs g) {
@@ -809,6 +865,8 @@ __global__ void ppo_loss_compute(
     int logits_base = n * a.logits_stride_n + t * a.logits_stride_t;
     int values_idx = n * a.values_stride_n + t * a.values_stride_t;
     int grad_logits_base = nt * a.A_total;
+    const precision_t* obs_flat = g.observations + nt * g.obs_dim;
+    (void)obs_flat;
 
     // Shared computation (used by both forward and backward)
 
@@ -830,12 +888,12 @@ __global__ void ppo_loss_compute(
     float d_entropy_term = dL * (-ent_coef);
 
     // Value loss (forward) + value gradient (backward)
-
     float v_error = val_pred - val;
     float v_clipped = val + fmaxf(-a.vf_clip_coef, fminf(a.vf_clip_coef, v_error));
     float v_loss_unclipped = (val_pred - ret) * (val_pred - ret);
     float v_loss_clipped = (v_clipped - ret) * (v_clipped - ret);
     float v_loss = 0.5f * fmaxf(v_loss_unclipped, v_loss_clipped);
+    float reg_kl = 0.0f;
 
     // Value gradient
     bool use_clipped_vf = (v_loss_clipped > v_loss_unclipped);
@@ -850,7 +908,6 @@ __global__ void ppo_loss_compute(
     a.grad_values_pred[nt] = dL * a.vf_coef * d_val_pred;
 
     // Policy loss + gradients
-
     float pg_loss, total_entropy, logratio, ratio;
     float total_log_prob = 0.0f;
     total_entropy = 0.0f;
@@ -858,6 +915,7 @@ __global__ void ppo_loss_compute(
     // Discrete-only: per-head arrays needed across forward + backward
     float head_logsumexp[MAX_ATN_HEADS];
     float head_entropy[MAX_ATN_HEADS];
+    float head_reg_kl[MAX_ATN_HEADS];
     int head_act[MAX_ATN_HEADS];
 
     int mask_base = (a.action_mask != nullptr)
@@ -874,8 +932,20 @@ __global__ void ppo_loss_compute(
                               a.action_mask, mask_base, &lse, &ent, &lp);
             head_logsumexp[h] = lse;
             head_entropy[h] = ent;
+            head_reg_kl[h] = 0.0f;
             total_log_prob += lp;
             total_entropy += ent;
+
+            if (a.reg_coef != 0.0f && a.anchor_logits != nullptr) {
+                float anchor_lse;
+                float head_kl = discrete_head_kl(
+                    a.logits, a.anchor_logits,
+                    logits_base, a.logits_stride_a, logits_offset, A,
+                    a.action_mask, mask_base,
+                    lse, &anchor_lse);
+                head_reg_kl[h] = head_kl;
+                reg_kl += head_kl;
+            }
             logits_offset += A;
         }
     } else {
@@ -915,6 +985,14 @@ __global__ void ppo_loss_compute(
             int act = head_act[h];
             float logsumexp = head_logsumexp[h];
             float ent = head_entropy[h];
+            float head_kl = head_reg_kl[h];
+
+            float anchor_lse = 0.0f;
+            if (a.reg_coef != 0.0f && a.anchor_logits != nullptr) {
+                anchor_lse = discrete_head_logsumexp(
+                    a.anchor_logits, logits_base, a.logits_stride_a, logits_offset, A,
+                    a.action_mask, mask_base);
+            }
 
             for (int j = 0; j < A; ++j) {
                 float l = load_logit_masked(a.logits, logits_base, a.logits_stride_a,
@@ -924,6 +1002,12 @@ __global__ void ppo_loss_compute(
                 float d_logit = (j == act) ? d_new_logp : 0.0f;
                 d_logit -= p * d_new_logp;
                 d_logit += d_entropy_term * p * (-ent - logp);
+                if (a.reg_coef != 0.0f && a.anchor_logits != nullptr) {
+                    float anchor_logit = load_logit_masked(a.anchor_logits, logits_base, a.logits_stride_a,
+                        logits_offset, j, a.action_mask, mask_base);
+                    float anchor_logp = anchor_logit - anchor_lse;
+                    d_logit += dL * a.reg_coef * p * ((logp - anchor_logp) - head_kl);
+                }
                 a.grad_logits[grad_logits_base + logits_offset + j] = d_logit;
             }
             logits_offset += A;
@@ -937,13 +1021,16 @@ __global__ void ppo_loss_compute(
             float action = finite_or_clamp(float(g.actions[nt * a.num_atns + h]), -1.0e6f, 1.0e6f);
             float diff = action - mean;
 
-            a.grad_logits[grad_logits_base + h] = d_new_logp * diff / var;
-            a.grad_logstd[nt * a.num_atns + h] = d_new_logp * (diff * diff / var - 1.0f) + d_entropy_term;
+            float d_mean = d_new_logp * diff / var;
+            float d_log_std = d_new_logp * (diff * diff / var - 1.0f) + d_entropy_term;
+
+            a.grad_logits[grad_logits_base + h] = d_mean;
+            a.grad_logstd[nt * a.num_atns + h] = d_log_std;
         }
     }
 
     // Forward: loss partials
-    float thread_loss = (pg_loss + a.vf_coef * v_loss - ent_coef * total_entropy) * inv_NT;
+    float thread_loss = (pg_loss + a.vf_coef * v_loss - ent_coef * total_entropy + a.reg_coef * reg_kl) * inv_NT;
     block_losses[LOSS_PG][tid] = pg_loss * inv_NT;
     block_losses[LOSS_VF][tid] = v_loss * inv_NT;
     block_losses[LOSS_ENT][tid] = total_entropy * inv_NT;
@@ -951,6 +1038,7 @@ __global__ void ppo_loss_compute(
     block_losses[LOSS_OLD_APPROX_KL][tid] = (-logratio) * inv_NT;
     block_losses[LOSS_APPROX_KL][tid] = ((ratio - 1.0f) - logratio) * inv_NT;
     block_losses[LOSS_CLIPFRAC][tid] = (fabsf(ratio - 1.0f) > a.clip_coef ? 1.0f : 0.0f) * inv_NT;
+    block_losses[LOSS_REG_KL][tid] = reg_kl * inv_NT;
     } // end if (idx < total_elements)
 
 // Deterministic aggregation
@@ -1048,9 +1136,10 @@ __global__ void ppo_var_mean(const precision_t* __restrict__ src,
 void ppo_loss_fwd_bwd(
         PrecisionTensor& dec_out,    // (N, T, fused_cols) — fused logits+value from decoder
         PrecisionTensor& logstd,     // continuous logstd or empty
+        PrecisionTensor* anchor_dec_out,
         TrainGraph& graph,
         IntTensor& act_sizes, FloatTensor& losses_acc,
-        float clip_coef, float vf_clip_coef, float vf_coef, const float* ent_coef,
+        float clip_coef, float vf_clip_coef, float vf_coef, float reg_coef, const float* ent_coef,
         PPOBuffersPuf& bufs, bool is_continuous,
         cudaStream_t stream) {
     int N = dec_out.shape[0], T = dec_out.shape[1], fused_cols = dec_out.shape[2];
@@ -1081,12 +1170,14 @@ void ppo_loss_fwd_bwd(
     PPOGraphArgs graph_args = {
         .out_ratio = graph.mb_ratio.data,
         .out_newvalue = graph.mb_newvalue.data,
+        .observations = graph.mb_obs.data,
         .actions = graph.mb_actions.data,
         .old_logprobs = graph.mb_logprobs.data,
         .advantages = graph.mb_advantages.data,
         .prio = graph.mb_prio.data,
         .values = graph.mb_values.data,
         .returns = graph.mb_returns.data,
+        .obs_dim = graph.mb_obs.shape[2],
     };
 
     bool has_mask = (graph.mb_action_mask.data != nullptr);
@@ -1096,6 +1187,7 @@ void ppo_loss_fwd_bwd(
         .grad_values_pred = bufs.grad_values.data,
         .logits = logits_ptr,
         .logstd = is_continuous ? logstd.data : nullptr,
+        .anchor_logits = anchor_dec_out ? anchor_dec_out->data : nullptr,
         .values_pred = logits_ptr + A_total,
         .adv_mean = adv_mean_ptr,
         .adv_var = adv_var_ptr,
@@ -1105,7 +1197,7 @@ void ppo_loss_fwd_bwd(
         .mask_stride_t = has_mask ? A_total : 0,
         .num_atns = (int)numel(act_sizes.shape),
         .clip_coef = clip_coef, .vf_clip_coef = vf_clip_coef,
-        .vf_coef = vf_coef, .ent_coef = ent_coef,
+        .vf_coef = vf_coef, .reg_coef = reg_coef, .ent_coef = ent_coef,
         .T_seq = T, .A_total = A_total, .N = N,
         .logits_stride_n = T * fused_cols, .logits_stride_t = fused_cols, .logits_stride_a = 1,
         .values_stride_n = T * fused_cols, .values_stride_t = fused_cols,
@@ -1633,9 +1725,18 @@ void train_impl(PuffeRL& pufferl) {
                 p_logstd = dw_train->logstd;
             }
 
-            ppo_loss_fwd_bwd(dec_puf, p_logstd, graph,
+            PrecisionTensor anchor_dec_puf;
+            PrecisionTensor* anchor_dec_ptr = nullptr;
+            // Anchor KL is discrete-only for now; skip it on continuous policies.
+            if (!pufferl.is_continuous && hypers.use_reg && hypers.reg_coef != 0.0f) {
+                anchor_dec_puf = policy_forward_train(&pufferl.anchor, pufferl.anchor_weights,
+                    pufferl.anchor_train_activations, obs_puf, state_puf, stream);
+                anchor_dec_ptr = &anchor_dec_puf;
+            }
+
+            ppo_loss_fwd_bwd(dec_puf, p_logstd, anchor_dec_ptr, graph,
                 pufferl.act_sizes_puf, pufferl.losses_puf,
-                hypers.clip_coef, hypers.vf_clip_coef, hypers.vf_coef,
+                hypers.clip_coef, hypers.vf_clip_coef, hypers.vf_coef, hypers.reg_coef,
                 pufferl.ppo_bufs_puf.ent_coef.data,
                 pufferl.ppo_bufs_puf, pufferl.is_continuous, stream);
 
@@ -2010,6 +2111,37 @@ std::unique_ptr<PuffeRL> create_pufferl_impl(HypersT& hypers,
     pufferl->policy = build_policy(env_name.c_str(), input_size, hidden_size,
         num_layers, decoder_output_size, act_n, is_continuous, hypers.horizon);
 
+    // Build a frozen anchor policy for regularization.
+    if (hypers.use_reg) {
+        pufferl->anchor = build_policy(env_name.c_str(), input_size, hidden_size,
+            num_layers, decoder_output_size, act_n, is_continuous, hypers.horizon);
+        pufferl->anchor_weights = policy_weights_create(&pufferl->anchor, &pufferl->anchor_params_alloc);
+        if (alloc_create(&pufferl->anchor_params_alloc) != cudaSuccess) {
+            return nullptr;
+        }
+
+        pufferl->anchor_param_puf = {
+            .data = (precision_t*)pufferl->anchor_params_alloc.mem,
+            .shape = {pufferl->anchor_params_alloc.total_elems},
+        };
+
+        ulong anchor_seed = hypers.seed + 1;
+        policy_init_weights(&pufferl->anchor, pufferl->anchor_weights, &anchor_seed, pufferl->default_stream);
+        pufferl->anchor_master_weights = {
+            .data = (float*)pufferl->anchor_param_puf.data,
+            .shape = {pufferl->anchor_params_alloc.total_elems},
+        };
+        if (USE_BF16) {
+            pufferl->anchor_master_weights = {.shape = {pufferl->anchor_params_alloc.total_elems}};
+            cudaMalloc(&pufferl->anchor_master_weights.data, pufferl->anchor_params_alloc.total_elems * sizeof(float));
+            int n = numel(pufferl->anchor_param_puf.shape);
+            cast<<<grid_size(n), BLOCK_SIZE, 0, pufferl->default_stream>>>(
+                pufferl->anchor_master_weights.data, pufferl->anchor_param_puf.data, n);
+        }
+        pufferl->has_anchor = true;
+    }
+
+
     // Create and allocate params
     Allocator* params = &pufferl->params_alloc;
     Allocator* acts = &pufferl->activations_alloc;
@@ -2018,6 +2150,10 @@ std::unique_ptr<PuffeRL> create_pufferl_impl(HypersT& hypers,
     // Buffers for weights, grads, and activations
     pufferl->weights = policy_weights_create(&pufferl->policy, params);
     pufferl->train_activations = policy_reg_train(&pufferl->policy, pufferl->weights, acts, grads, B_TT);
+    if (hypers.use_reg) {
+        pufferl->anchor_train_activations = policy_reg_train(
+            &pufferl->anchor, pufferl->anchor_weights, acts, grads, B_TT);
+    }
     pufferl->buffer_activations = (PolicyActivations*)calloc(num_buffers, sizeof(PolicyActivations));
     pufferl->buffer_states = (PrecisionTensor*)calloc(num_buffers, sizeof(PrecisionTensor));
     for (int i = 0; i < num_buffers; i++) {
@@ -2248,6 +2384,14 @@ void close_impl(PuffeRL& pufferl) {
 
     if (USE_BF16) {
         cudaFree(pufferl.master_weights.data);
+    }
+    if (pufferl.has_anchor) {
+        policy_weights_free(&pufferl.anchor, &pufferl.anchor_weights);
+        policy_activations_free(&pufferl.anchor, pufferl.anchor_train_activations);
+        if (USE_BF16) {
+            cudaFree(pufferl.anchor_master_weights.data);
+        }
+        alloc_free(&pufferl.anchor_params_alloc);
     }
 
     alloc_free(&pufferl.params_alloc);

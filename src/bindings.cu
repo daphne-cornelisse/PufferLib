@@ -52,6 +52,7 @@ pybind11::dict puf_log(pybind11::object pufferl_obj) {
         losses_dict["old_kl"] = losses_host[LOSS_OLD_APPROX_KL] * inv_n;
         losses_dict["kl"] = losses_host[LOSS_APPROX_KL] * inv_n;
         losses_dict["clipfrac"] = losses_host[LOSS_CLIPFRAC] * inv_n;
+        losses_dict["reg_kl"] = losses_host[LOSS_REG_KL] * inv_n;
     }
     cudaMemset(pufferl.losses_puf.data, 0, numel(pufferl.losses_puf.shape) * sizeof(float));
     result["loss"] = losses_dict;
@@ -447,6 +448,9 @@ std::unique_ptr<PuffeRL> create_pufferl(py::dict args) {
     hypers.nccl_id = args["nccl_id"].cast<std::string>();
     // Seed
     hypers.seed = get_config(args, "seed");
+    // Regularization
+    hypers.use_reg = get_config(train_kwargs, "use_reg");
+    hypers.reg_coef = get_config(train_kwargs, "reg_coef");
 
     int device_count = 0;
     int err = cudaGetDeviceCount(&device_count);
@@ -569,6 +573,8 @@ PYBIND11_MODULE(_C, m) {
         .def_readwrite("vtrace_c_clip", &HypersT::vtrace_c_clip)
         .def_readwrite("prio_alpha", &HypersT::prio_alpha)
         .def_readwrite("prio_beta0", &HypersT::prio_beta0)
+        .def_readwrite("use_reg", &HypersT::use_reg)
+        .def_readwrite("reg_coef", &HypersT::reg_coef)
         .def_readwrite("cudagraphs", &HypersT::cudagraphs)
         .def_readwrite("profile", &HypersT::profile)
         .def_readwrite("rank", &HypersT::rank)
