@@ -99,6 +99,60 @@ _TORCH_TO_CTYPE = {
     torch.float32: ctypes.c_float,
 }
 
+def _copy_native_flat_weights(policy, path):
+    flat = torch.from_numpy(np.fromfile(path, dtype=np.float32))
+    offset = 0
+
+    def take(param):
+        nonlocal offset
+        n = param.numel()
+        value = flat[offset:offset + n].reshape(param.shape).to(param.device)
+        param.data.copy_(value)
+        offset += n
+
+    take(policy.encoder.encoder.weight)
+    if getattr(policy.encoder.encoder, 'bias', None) is not None:
+        policy.encoder.encoder.bias.data.zero_()
+
+    decoder = policy.decoder
+    if not hasattr(decoder, 'decoder'):
+        raise RuntimeError('Native anchor loading only supports discrete DefaultDecoder policies')
+    take(decoder.decoder.weight)
+    if getattr(decoder.decoder, 'bias', None) is not None:
+        decoder.decoder.bias.data.zero_()
+    if getattr(decoder.value_function, 'bias', None) is not None:
+        decoder.value_function.bias.data.zero_()
+
+    # Native decoder stores logits and value in one fused matrix.
+    value_n = decoder.value_function.weight.numel()
+    value = flat[offset:offset + value_n].reshape(decoder.value_function.weight.shape).to(
+        decoder.value_function.weight.device)
+    decoder.value_function.weight.data.copy_(value)
+    offset += value_n
+
+    for layer in policy.network.layers:
+        take(layer.weight)
+        if getattr(layer, 'bias', None) is not None:
+            layer.bias.data.zero_()
+
+    if offset != flat.numel():
+        raise RuntimeError(f'Anchor weight size mismatch: consumed {offset}, file has {flat.numel()} floats')
+
+def _discrete_logits_kl(logits, anchor_logits):
+    if isinstance(logits, torch.Tensor):
+        logp = torch.log_softmax(logits, dim=-1)
+        anchor_logp = torch.log_softmax(anchor_logits, dim=-1)
+        p = logp.exp()
+        return (p * (logp - anchor_logp)).sum(dim=-1).mean()
+
+    total = 0.0
+    for l, a in zip(logits, anchor_logits):
+        logp = torch.log_softmax(l, dim=-1)
+        anchor_logp = torch.log_softmax(a, dim=-1)
+        p = logp.exp()
+        total = total + (p * (logp - anchor_logp)).sum(dim=-1).mean()
+    return total
+
 def _actions_for_vec_step(action):
     if action.dim() == 1:
         action = action.unsqueeze(-1)
@@ -163,6 +217,15 @@ class PuffeRL:
         self.total_epochs = max(1, config['total_timesteps'] // self.batch_size)
 
         self.policy = policy
+        self.anchor_policy = None
+        anchor_path = config.get('anchor_model_path')
+        if config.get('use_reg') and anchor_path:
+            self.anchor_policy = load_policy(args, vec, load_checkpoint=False)
+            _copy_native_flat_weights(self.anchor_policy, anchor_path)
+            self.anchor_policy.eval()
+            for param in self.anchor_policy.parameters():
+                param.requires_grad_(False)
+
         self.optimizer = Muon(
             self.policy.parameters(),
             lr=config['learning_rate'],
@@ -333,6 +396,12 @@ class PuffeRL:
 
             entropy_loss = entropy.mean()
             loss = pg_loss + config['vf_coef']*v_loss - config['ent_coef']*entropy_loss
+            if self.anchor_policy is not None and config['reg_coef'] != 0:
+                with torch.no_grad():
+                    anchor_logits, _ = self.anchor_policy(mb_obs)
+                reg_kl = _discrete_logits_kl(logits, anchor_logits)
+                loss = loss + config['reg_coef'] * reg_kl
+                losses['reg_kl'] += reg_kl
             val[idx] = newvalue.detach().float()
 
             losses['policy_loss'] += pg_loss
@@ -472,7 +541,7 @@ class Profile:
         self.accum = [0.0] * Profile.NUM
         return out
 
-def load_policy(args, vec):
+def load_policy(args, vec, load_checkpoint=True):
     import pufferlib.models
     policy_kwargs = args['policy']
     network_cls = getattr(pufferlib.models, args['torch']['network'])
@@ -486,6 +555,9 @@ def load_policy(args, vec):
 
     device = 'cuda' if _C.gpu else 'cpu'
     policy = policy.to(device)
+
+    if not load_checkpoint:
+        return policy
 
     load_id = args['load_id']
     if load_id is not None:
@@ -513,4 +585,3 @@ def load_policy(args, vec):
         policy.load_state_dict(state_dict)
 
     return policy
-

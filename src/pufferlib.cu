@@ -320,6 +320,7 @@ typedef struct {
     // Regularization
     bool use_reg;
     float reg_coef;
+    std::string anchor_model_path;
 } HypersT;
 
 // A frozen weight bank: same shape as the primary, but its own params buffer
@@ -1994,6 +1995,35 @@ extern "C" void pufferl_load_frozen_bank(PuffeRL* pufferl, int bank_idx, const c
     cudaDeviceSynchronize();
 }
 
+static void load_anchor_weights(PuffeRL* pufferl, const std::string& path) {
+    int64_t nbytes = numel(pufferl->anchor_master_weights.shape) * sizeof(float);
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) {
+        throw std::runtime_error("Failed to open anchor model " + path + " for reading");
+    }
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (file_size != nbytes) {
+        fclose(f);
+        throw std::runtime_error("Anchor weight file size mismatch: expected " +
+            std::to_string(nbytes) + " bytes, got " + std::to_string(file_size));
+    }
+    std::vector<char> buf(nbytes);
+    size_t nread = fread(buf.data(), 1, nbytes, f);
+    fclose(f);
+    if ((int64_t)nread != nbytes) {
+        throw std::runtime_error("Failed to read anchor model " + path);
+    }
+    cudaMemcpy(pufferl->anchor_master_weights.data, buf.data(), nbytes, cudaMemcpyHostToDevice);
+    if (USE_BF16) {
+        int n = numel(pufferl->anchor_param_puf.shape);
+        cast<<<grid_size(n), BLOCK_SIZE, 0, pufferl->default_stream>>>(
+            pufferl->anchor_param_puf.data, pufferl->anchor_master_weights.data, n);
+    }
+    cudaDeviceSynchronize();
+}
+
 // Set the agent permutation. Validates that the perm respects buffer boundaries:
 // each buffer's range [buf_start, buf_start+buf_size) must map onto itself (no
 // cross-buffer writes, since each worker only owns its physical chunk).
@@ -2137,6 +2167,9 @@ std::unique_ptr<PuffeRL> create_pufferl_impl(HypersT& hypers,
             int n = numel(pufferl->anchor_param_puf.shape);
             cast<<<grid_size(n), BLOCK_SIZE, 0, pufferl->default_stream>>>(
                 pufferl->anchor_master_weights.data, pufferl->anchor_param_puf.data, n);
+        }
+        if (!hypers.anchor_model_path.empty()) {
+            load_anchor_weights(pufferl, hypers.anchor_model_path);
         }
         pufferl->has_anchor = true;
     }

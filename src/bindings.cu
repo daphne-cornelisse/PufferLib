@@ -451,6 +451,7 @@ std::unique_ptr<PuffeRL> create_pufferl(py::dict args) {
     // Regularization
     hypers.use_reg = get_config(train_kwargs, "use_reg");
     hypers.reg_coef = get_config(train_kwargs, "reg_coef");
+    hypers.anchor_model_path = train_kwargs["anchor_model_path"].cast<std::string>();
 
     int device_count = 0;
     int err = cudaGetDeviceCount(&device_count);
@@ -575,6 +576,7 @@ PYBIND11_MODULE(_C, m) {
         .def_readwrite("prio_beta0", &HypersT::prio_beta0)
         .def_readwrite("use_reg", &HypersT::use_reg)
         .def_readwrite("reg_coef", &HypersT::reg_coef)
+        .def_readwrite("anchor_model_path", &HypersT::anchor_model_path)
         .def_readwrite("cudagraphs", &HypersT::cudagraphs)
         .def_readwrite("profile", &HypersT::profile)
         .def_readwrite("rank", &HypersT::rank)
