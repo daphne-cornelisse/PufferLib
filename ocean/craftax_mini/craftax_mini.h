@@ -21,8 +21,8 @@
 #define c_render craftax_full_c_render
 #include "../craftax/craftax.h"
 #include "../craftax/step_crafting.h"
-#include "../craftax/step_update_mobs.h"
-#include "../craftax/step_spawn_mobs.h"
+#include "../craftax/step_mobs.h"
+#include "../craftax/step_spawning.h"
 #include "human_maps.h"
 #undef c_init
 #undef c_reset

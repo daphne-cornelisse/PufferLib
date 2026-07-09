@@ -1,8 +1,8 @@
 #define CRAFTAX_ENABLE_ENV_IMPL
 #include "craftax.h"
 #include "step_crafting.h"
-#include "step_update_mobs.h"
-#include "step_spawn_mobs.h"
+#include "step_mobs.h"
+#include "step_spawning.h"
 
 #define OBS_SIZE CRAFTAX_OBS_SIZE
 #define NUM_ATNS 1
@@ -31,7 +31,7 @@ void craftax_vec_step(StaticVec* vec) {
         if (end > size) end = size;
         for (int i = tile; i < end; i++) {
             c_step_gameplay(&envs[i]);
-            c_step_encode(&envs[i]);
+            craftax_encode_native_observation(envs[i].state, envs[i].observations);
         }
     }
 }
@@ -45,7 +45,7 @@ void craftax_vec_step_range(StaticVec* vec, int env_start, int env_count, int nu
         if (end > env_end) end = env_end;
         for (int i = tile; i < end; i++) {
             c_step_gameplay(&envs[i]);
-            c_step_encode(&envs[i]);
+            craftax_encode_native_observation(envs[i].state, envs[i].observations);
         }
     }
 }

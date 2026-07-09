@@ -7,10 +7,11 @@
 //   ./craftax
 
 #define CRAFTAX_ENABLE_ENV_IMPL
+#define CRAFTAX_ENABLE_RENDERING
 #include "craftax.h"
 #include "step_crafting.h"
-#include "step_update_mobs.h"
-#include "step_spawn_mobs.h"
+#include "step_mobs.h"
+#include "step_spawning.h"
 
 #include <stdio.h>
 #include <stdlib.h>

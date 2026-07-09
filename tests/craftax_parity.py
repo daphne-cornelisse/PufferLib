@@ -362,8 +362,8 @@ class ResetVerifier:
         #define CRAFTAX_ENABLE_ENV_IMPL
         #include "ocean/craftax/craftax.h"
         #include "ocean/craftax/step_crafting.h"
-        #include "ocean/craftax/step_update_mobs.h"
-        #include "ocean/craftax/step_spawn_mobs.h"
+        #include "ocean/craftax/step_mobs.h"
+        #include "ocean/craftax/step_spawning.h"
 
         void reset_from_key(
             uint32_t key0,

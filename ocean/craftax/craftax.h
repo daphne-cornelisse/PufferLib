@@ -8,91 +8,15 @@
 #include <string.h>
 
 #include "worldgen.h"
-#include "raylib.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
+
+#ifdef CRAFTAX_ENABLE_RENDERING
+#include "raylib.h"
 #include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
-
-// ============================================================
-// Optional step profiling (compile with -DCRAFTAX_PROFILE)
-// ============================================================
-#ifdef CRAFTAX_PROFILE
-
-#define CRAFTAX_NUM_PROFILE_ZONES 18
-
-typedef struct {
-    const char* name;
-    uint64_t total_ns;
-    uint64_t count;
-} CraftaxProfileZone;
-
-static CraftaxProfileZone craftax_profile_zones[CRAFTAX_NUM_PROFILE_ZONES] = {
-    {"change_floor", 0, 0},
-    {"crafting", 0, 0},
-    {"do_action", 0, 0},
-    {"place+shoot+spell+potion", 0, 0},
-    {"read_book", 0, 0},
-    {"enchant", 0, 0},
-    {"boss+attr+move", 0, 0},
-    {"update_mobs", 0, 0},
-    {"spawn_mobs", 0, 0},
-    {"plants+intrinsics+achieve", 0, 0},
-    {"reward+bookkeeping", 0, 0},
-    {"encode_obs", 0, 0},
-    {"rng_split", 0, 0},
-    {"is_game_over", 0, 0},
-    {"reset_on_done", 0, 0},
-    {"copy_achievements", 0, 0},
-    {"reward_bookkeeping", 0, 0},
-    {"unprofiled", 0, 0},
-};
-
-static inline uint64_t craftax_profile_now(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
-
-static inline void craftax_profile_record(int zone, uint64_t start) {
-    craftax_profile_zones[zone].total_ns += craftax_profile_now() - start;
-    craftax_profile_zones[zone].count++;
-}
-
-static inline void craftax_profile_report(void) {
-    fprintf(stderr, "\n=== Craftax Step Profile ===\n");
-    uint64_t total = 0;
-    for (int i = 0; i < CRAFTAX_NUM_PROFILE_ZONES; i++) {
-        total += craftax_profile_zones[i].total_ns;
-    }
-    for (int i = 0; i < CRAFTAX_NUM_PROFILE_ZONES; i++) {
-        CraftaxProfileZone* z = &craftax_profile_zones[i];
-        if (z->count == 0) continue;
-        double pct = total > 0 ? (100.0 * (double)z->total_ns / (double)total) : 0.0;
-        double avg_us = (double)z->total_ns / (double)z->count / 1000.0;
-        fprintf(stderr, "%-28s %8.3f%%  %10.2f us/step  (%lu calls)\n",
-                z->name, pct, avg_us, (unsigned long)z->count);
-    }
-    fprintf(stderr, "%-28s %8.3f%%  %10.2f us/step\n",
-            "TOTAL", 100.0, (double)total / (double)craftax_profile_zones[0].count / 1000.0);
-}
-
-#define CRAFTAX_PROFILE_START() uint64_t _prof_start = craftax_profile_now(); uint64_t _prof_zone_start;
-#define CRAFTAX_PROFILE_ZONE(n) do { _prof_zone_start = craftax_profile_now(); } while(0)
-#define CRAFTAX_PROFILE_END(n) craftax_profile_record((n), _prof_zone_start)
-#define CRAFTAX_PROFILE_FINAL(n) craftax_profile_record((n), _prof_start)
-
-#else
-
-#define CRAFTAX_PROFILE_START() ((void)0)
-#define CRAFTAX_PROFILE_ZONE(n) ((void)0)
-#define CRAFTAX_PROFILE_END(n) ((void)0)
-#define CRAFTAX_PROFILE_FINAL(n) ((void)0)
-#define craftax_profile_report() ((void)0)
-
-#endif // CRAFTAX_PROFILE
+#endif
 
 // ============================================================
 // Constants
@@ -573,11 +497,15 @@ typedef struct Log {
     float n;
 } Log;
 
+#ifdef CRAFTAX_ENABLE_RENDERING
 typedef struct Client {
     pid_t xvfb_pid;
     int xvfb_display_num;
     bool headless_display;
 } Client;
+#else
+typedef struct Client Client;
+#endif
 
 typedef struct Craftax {
     Client* client;
@@ -666,6 +594,7 @@ static int g_craftax_reset_pool_size = 0;
 static CraftaxState* g_craftax_reset_pool = NULL;
 static int g_craftax_reset_pool_ready = 0;
 
+#ifdef CRAFTAX_ENABLE_RENDERING
 static inline Client* craftax_get_client(Craftax* env) {
     if (env->client == NULL) {
         env->client = (Client*)calloc(1, sizeof(Client));
@@ -740,6 +669,7 @@ static inline int craftax_ensure_render_display(Craftax* env) {
     return 1;
 #endif
 }
+#endif
 
 // Called from my_init which runs single-threaded during env creation
 // (vecenv.h iterates envs sequentially). First caller populates the
@@ -863,68 +793,47 @@ static float craftax_gameplay_step_native(
     int32_t action,
     CraftaxThreefryKey rng
 ) {
-    CRAFTAX_PROFILE_START();
     bool init_achievements[CRAFTAX_NUM_ACHIEVEMENTS];
     memcpy(init_achievements, state->achievements, sizeof(init_achievements));
 
     action = state->is_sleeping ? CRAFTAX_ACTION_NOOP : action;
     action = state->is_resting ? CRAFTAX_ACTION_NOOP : action;
 
-    CRAFTAX_PROFILE_ZONE(0);
     craftax_change_floor_native(state, action);
     craftax_do_crafting_native(state, action);
-    CRAFTAX_PROFILE_END(0);
 
     CraftaxThreefryKey subkey = craftax_step_native_next_key(&rng);
-    CRAFTAX_PROFILE_ZONE(2);
     craftax_do_action_native(state, action, subkey);
-    CRAFTAX_PROFILE_END(2);
 
-    CRAFTAX_PROFILE_ZONE(3);
     craftax_place_block_native(state, action);
     craftax_shoot_projectile_native(state, action);
     craftax_cast_spell_native(state, action);
     craftax_drink_potion_native(state, action);
-    CRAFTAX_PROFILE_END(3);
 
     subkey = craftax_step_native_next_key(&rng);
-    CRAFTAX_PROFILE_ZONE(4);
     craftax_read_book_native(state, subkey.word, action);
-    CRAFTAX_PROFILE_END(4);
 
     subkey = craftax_step_native_next_key(&rng);
-    CRAFTAX_PROFILE_ZONE(5);
     craftax_enchant_native(state, action, subkey);
-    CRAFTAX_PROFILE_END(5);
 
-    CRAFTAX_PROFILE_ZONE(6);
     craftax_boss_logic_native(state);
     craftax_level_up_attributes_native(state, action, CRAFTAX_MAX_ATTRIBUTE);
     craftax_move_player_native(state, action, false);
-    CRAFTAX_PROFILE_END(6);
 
     subkey = craftax_step_native_next_key(&rng);
-    CRAFTAX_PROFILE_ZONE(7);
     craftax_update_mobs_native(state, subkey);
-    CRAFTAX_PROFILE_END(7);
 
     subkey = craftax_step_native_next_key(&rng);
-    CRAFTAX_PROFILE_ZONE(8);
     craftax_spawn_mobs_native(state, subkey);
-    CRAFTAX_PROFILE_END(8);
 
-    CRAFTAX_PROFILE_ZONE(9);
     craftax_update_plants_native(state);
     craftax_update_player_intrinsics_native(state, action);
     craftax_clip_inventory_and_intrinsics_native(state, false);
     craftax_calculate_inventory_achievements_native(state);
-    CRAFTAX_PROFILE_END(9);
 
-    CRAFTAX_PROFILE_ZONE(10);
     float reward = 0.0f;
     for (int i = 0; i < CRAFTAX_NUM_ACHIEVEMENTS; i++) {
-        int32_t delta = (int32_t)state->achievements[i]
-            - (int32_t)init_achievements[i];
+        int32_t delta = (int32_t)state->achievements[i] - (int32_t)init_achievements[i];
         reward += (float)delta * CRAFTAX_ACHIEVEMENT_REWARD_MAP[i];
     }
 
@@ -933,7 +842,6 @@ static float craftax_gameplay_step_native(
     state->light_level = craftax_calculate_light_level_native(state->timestep);
     state->state_rng[0] = subkey.word[0];
     state->state_rng[1] = subkey.word[1];
-    CRAFTAX_PROFILE_END(10);
 
     return reward;
 }
@@ -968,77 +876,6 @@ static void c_reset(Craftax* env) {
     craftax_encode_native_observation(env->state, env->observations);
 }
 
-#ifdef CRAFTAX_PROFILE
-static void c_step_native(Craftax* env) {
-    CRAFTAX_PROFILE_START();
-    env->rewards[0] = 0.0f;
-    env->terminals[0] = 0.0f;
-
-    int action = (int)env->actions[0];
-    if (action < 0) {
-        action = CRAFTAX_ACTION_NOOP;
-    }
-    if (action >= CRAFTAX_NUM_ACTIONS) {
-        action = CRAFTAX_NUM_ACTIONS - 1;
-    }
-
-    CRAFTAX_PROFILE_ZONE(12);
-    CraftaxThreefryKey step_key;
-    craftax_threefry_split(env->rng_key, &env->rng_key, &step_key);
-
-    CraftaxThreefryKey step_rng;
-    CraftaxThreefryKey reset_key;
-    craftax_threefry_split(step_key, &step_rng, &reset_key);
-    CRAFTAX_PROFILE_END(12);
-
-    float reward = craftax_gameplay_step_native(env->state, action, step_rng);
-
-    CRAFTAX_PROFILE_ZONE(13);
-    bool done = craftax_is_game_over_native(env->state);
-    CRAFTAX_PROFILE_END(13);
-
-    CRAFTAX_PROFILE_ZONE(15);
-    craftax_copy_achievements_to_env(env, env->state);
-    CRAFTAX_PROFILE_END(15);
-
-    CRAFTAX_PROFILE_ZONE(16);
-    env->rewards[0] = reward;
-    env->terminals[0] = done ? 1.0f : 0.0f;
-    env->episode_return_accum += reward;
-    env->episode_length_accum += 1;
-    CRAFTAX_PROFILE_END(16);
-
-    if (done) {
-        add_log(env);
-        env->episode_return_accum = 0.0f;
-        env->episode_length_accum = 0;
-        memset(env->achievements, 0, sizeof(env->achievements));
-        CRAFTAX_PROFILE_ZONE(14);
-        craftax_reset_state_on_done(env->state, reset_key);
-        CRAFTAX_PROFILE_END(14);
-    }
-
-    CRAFTAX_PROFILE_ZONE(11);
-    craftax_encode_native_observation(env->state, env->observations);
-    CRAFTAX_PROFILE_END(11);
-
-    // Record unprofiled time
-    CRAFTAX_PROFILE_ZONE(17);
-    CRAFTAX_PROFILE_END(17);
-
-#ifdef CRAFTAX_PROFILE
-    static int profile_step_count = 0;
-    profile_step_count++;
-    if (profile_step_count >= 100000) {
-        craftax_profile_report();
-        profile_step_count = 0;
-    }
-
-#endif
-}
-
-#endif
-
 static void c_step_gameplay(Craftax* env) {
     env->rewards[0] = 0.0f;
     env->terminals[0] = 0.0f;
@@ -1071,16 +908,13 @@ static void c_step_gameplay(Craftax* env) {
     }
 }
 
-static void c_step_encode(Craftax* env) {
+static void c_step(Craftax* env) {
+    c_step_gameplay(env);
     craftax_encode_native_observation(env->state, env->observations);
 }
 
-static void c_step(Craftax* env) {
-    c_step_gameplay(env);
-    c_step_encode(env);
-}
-
 static void c_close(Craftax* env) {
+#ifdef CRAFTAX_ENABLE_RENDERING
     if (env->client != NULL) {
         if (env->client->xvfb_pid > 0) {
             kill(env->client->xvfb_pid, SIGTERM);
@@ -1089,6 +923,7 @@ static void c_close(Craftax* env) {
         free(env->client);
         env->client = NULL;
     }
+#endif
     if (!env->owns_state_storage || env->arena == NULL) {
         return;
     }
@@ -1099,10 +934,11 @@ static void c_close(Craftax* env) {
     env->owns_state_storage = false;
 }
 
+#ifdef CRAFTAX_ENABLE_RENDERING
 // ------------------------------------------------------------
 // Tile-based renderer using upstream Craftax 16x16 PNG assets
 // ------------------------------------------------------------
-// Packed layout (see ocean/craftax/pack_textures.py):
+// Packed layout in resources/craftax/textures.bin:
 //   [0..36] block textures (indexed by CraftaxBlockType)
 //   [37..41] player: down, up, left, right, sleep
 //   [42..46] items: none, torch, ladder_down, ladder_up, ladder_down_blocked
@@ -1139,7 +975,7 @@ static void craftax_load_textures(void) {
         if (f) break;
     }
     if (!f) {
-        fprintf(stderr, "craftax: textures.bin not found in resources/craftax -- run ocean/craftax/pack_textures.py\n");
+        fprintf(stderr, "craftax: textures.bin not found in resources/craftax\n");
         exit(1);
     }
     const size_t tile_bytes = CRAFTAX_TEX_TILE_PX * CRAFTAX_TEX_TILE_PX * 4;
@@ -1423,5 +1259,6 @@ static void c_render(Craftax* env) {
 
     EndDrawing();
 }
+#endif
 
 #endif

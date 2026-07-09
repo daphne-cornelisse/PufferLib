@@ -1,4 +1,4 @@
-// Standalone native ports of simple Craftax step subsystems.
+// Shared Craftax step helpers.
 //
 // These helpers intentionally are not integrated into c_step yet. They mutate a
 // full CraftaxState in place so tests can compare each subsystem directly

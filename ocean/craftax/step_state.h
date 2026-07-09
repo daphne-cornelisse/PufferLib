@@ -1,4 +1,4 @@
-// Standalone native ports of medium Craftax step subsystems.
+// Shared Craftax state transition helpers.
 //
 // These helpers intentionally are not integrated into c_step yet. They mutate a
 // full CraftaxState, or an Inventory plus read-only state context, so tests can
@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "step_simple.h"
+#include "step_common.h"
 
 static inline CraftaxThreefryKey craftax_medium_next_random_key(
     CraftaxThreefryKey* rng

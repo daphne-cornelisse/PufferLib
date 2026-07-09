@@ -13,7 +13,7 @@
 
 #pragma once
 
-#include "step_medium.h"
+#include "step_state.h"
 
 #define CRAFTAX_SPAWN_MAP_CELLS (CRAFTAX_MAP_SIZE * CRAFTAX_MAP_SIZE)
 #define CRAFTAX_SPAWN_BBOX_MAX_CELLS 729  // (2*DESPAWN-1)^2 at 14 = 27*27

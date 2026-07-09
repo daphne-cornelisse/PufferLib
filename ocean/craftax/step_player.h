@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "step_medium.h"
+#include "step_state.h"
 
 #define CRAFTAX_DO_ACTION_BOSS_FIGHT_SPAWN_TURNS 7
 

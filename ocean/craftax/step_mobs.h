@@ -1,4 +1,4 @@
-// Standalone native port of Craftax update_mobs.
+// Craftax mob and projectile update logic.
 //
 // This helper intentionally is not integrated into c_step yet. It mutates a
 // full CraftaxState in place so tests can compare the subsystem directly
@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "step_do_action.h"
+#include "step_player.h"
 
 #define CRAFTAX_UPDATE_BOSS_FIGHT_EXTRA_DAMAGE 0.5f
 

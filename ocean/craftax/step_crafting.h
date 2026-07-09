@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "step_simple.h"
+#include "step_common.h"
 
 static inline bool craftax_crafting_is_near_block(
     const CraftaxState* state,
