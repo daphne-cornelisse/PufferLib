@@ -1,4 +1,4 @@
-// Goal-conditioned Craftax variant used for Multitask Preplay human-data parity.
+// Goal-conditioned Craftax variant for the reduced-action human-map task.
 //
 // This env intentionally reuses the full Craftax state/worldgen implementation
 // and only changes the experiment-facing surface: 5 actions, easier reset
@@ -7,6 +7,9 @@
 #pragma once
 
 #define CRAFTAX_ENABLE_ENV_IMPL
+#ifndef CRAFTAX_ENABLE_RENDERING
+#define CRAFTAX_ENABLE_RENDERING
+#endif
 
 // Include the full implementation under private public-entrypoint names so this
 // sibling env can provide its own c_init/c_reset/c_step while still reusing the
@@ -274,6 +277,9 @@ static void c_init(Craftax* env) {
     memset(&env->log, 0, sizeof(env->log));
     craftax_mini_reset_state_from_seed(env);
     craftax_mini_apply_reset_settings(env);
+#ifdef CRAFTAX_ENABLE_RENDERING
+    craftax_reset_player_trail(env);
+#endif
 }
 
 static void c_reset(Craftax* env) {
@@ -285,6 +291,9 @@ static void c_reset(Craftax* env) {
 
     craftax_mini_reset_state_from_seed(env);
     craftax_mini_apply_reset_settings(env);
+#ifdef CRAFTAX_ENABLE_RENDERING
+    craftax_reset_player_trail(env);
+#endif
     craftax_encode_observation(env->state, env->observations);
 }
 
@@ -310,6 +319,9 @@ static void c_step_gameplay(Craftax* env) {
     env->terminals[0] = done ? 1.0f : 0.0f;
     env->episode_return_accum += reward;
     env->episode_length_accum += 1;
+#ifdef CRAFTAX_ENABLE_RENDERING
+    craftax_record_player_position(env);
+#endif
 
     if (done) {
         add_log(env);
@@ -322,6 +334,9 @@ static void c_step_gameplay(Craftax* env) {
             craftax_mini_apply_human_map_for_seed(env->state, seed);
         }
         craftax_mini_apply_reset_settings(env);
+#ifdef CRAFTAX_ENABLE_RENDERING
+        craftax_reset_player_trail(env);
+#endif
     }
 }
 
@@ -338,101 +353,13 @@ static void c_close(Craftax* env) {
     craftax_full_c_close(env);
 }
 
+#include "render_mini.h"
+
+static void c_render_mode(Craftax* env, int view_mode) {
+    craftax_set_view_mode(env, view_mode);
+    craftax_render_mini(env);
+}
+
 static void c_render(Craftax* env) {
-    const int view_w = CRAFTAX_RENDER_COLS * CRAFTAX_TEX_DRAW_PX;
-    const int view_h = CRAFTAX_RENDER_ROWS * CRAFTAX_TEX_DRAW_PX;
-    const int hud_h = 136;
-    const int hud_font = 18;
-    const int hud_title_font = 24;
-    const int hud_line = 24;
-    const int hud_pad = 6;
-
-    if (!IsWindowReady()) {
-        if (!craftax_ensure_render_display(env)) {
-            fprintf(stderr, "WARNING: failed to initialize display for Craftax rendering\n");
-            return;
-        }
-        Client* client = craftax_get_client(env);
-        if (client != NULL && client->headless_display) {
-            SetConfigFlags(FLAG_WINDOW_HIDDEN);
-            SetTargetFPS(6000);
-        } else {
-            SetTargetFPS(30);
-        }
-        InitWindow(view_w, view_h + hud_h, "PufferLib Craftax");
-    }
-    if (!craftax_textures_loaded) craftax_load_textures();
-    if (IsKeyDown(KEY_ESCAPE)) exit(0);
-
-    CraftaxState* s = env->state;
-    int lvl = s->player_level;
-    int pr = s->player_position[0];
-    int pc = s->player_position[1];
-    int half_r = CRAFTAX_RENDER_ROWS / 2;
-    int half_c = CRAFTAX_RENDER_COLS / 2;
-
-    BeginDrawing();
-    ClearBackground(BLACK);
-
-    for (int vr = 0; vr < CRAFTAX_RENDER_ROWS; vr++) {
-        for (int vc = 0; vc < CRAFTAX_RENDER_COLS; vc++) {
-            int wr = pr - half_r + vr;
-            int wc = pc - half_c + vc;
-            int dst_x = vc * CRAFTAX_TEX_DRAW_PX;
-            int dst_y = vr * CRAFTAX_TEX_DRAW_PX;
-
-            int blk = CRAFTAX_BLOCK_OUT_OF_BOUNDS;
-            if (wr >= 0 && wr < CRAFTAX_MAP_SIZE && wc >= 0 && wc < CRAFTAX_MAP_SIZE) {
-                blk = s->map[lvl][wr][wc];
-                if (s->light_map[lvl][wr][wc] <= 12) blk = CRAFTAX_BLOCK_DARKNESS;
-            }
-            if (blk < 0 || blk >= CRAFTAX_NUM_BLOCK_TYPES) blk = 0;
-            craftax_draw_tile(blk, dst_x, dst_y, 1.0f);
-
-            if (wr >= 0 && wr < CRAFTAX_MAP_SIZE && wc >= 0 && wc < CRAFTAX_MAP_SIZE) {
-                int it = s->item_map[lvl][wr][wc];
-                if (it > 0 && it < 5) {
-                    craftax_draw_tile(CRAFTAX_TEX_ITEM_BASE + it, dst_x, dst_y, 1.0f);
-                }
-            }
-        }
-    }
-
-    int pid = craftax_player_tex_id(s->player_direction, s->is_sleeping);
-    craftax_draw_tile(pid, half_c * CRAFTAX_TEX_DRAW_PX, half_r * CRAFTAX_TEX_DRAW_PX, 1.0f);
-
-    if (s->light_level < 1.0f) {
-        unsigned char a = (unsigned char)((1.0f - s->light_level) * 140.0f);
-        DrawRectangle(0, 0, view_w, view_h, (Color){0, 0, 40, a});
-    }
-
-    int hud_y = view_h;
-    int32_t goal_block = craftax_mini_current_goal_block(env);
-    int goal_count = craftax_mini_inventory_count_for_goal(s, goal_block);
-    bool found_goal_gemstone = goal_count > 0;
-    Color goal_color = craftax_mini_goal_color(goal_block);
-
-    DrawRectangle(0, hud_y, view_w, hud_h, (Color){20, 20, 20, 255});
-    DrawText(TextFormat("task: collect %s", craftax_mini_goal_name(goal_block)),
-             4, hud_y + hud_pad, hud_title_font, goal_color);
-    DrawText(TextFormat("progress: %d  status: %s",
-             goal_count, found_goal_gemstone ? "complete" : "searching"),
-             4, hud_y + hud_pad + hud_line + 2, hud_font,
-             found_goal_gemstone ? (Color){120, 255, 120, 255} : (Color){220, 220, 220, 255});
-    DrawText(TextFormat("ret: %.2f  len: %d / %d",
-             env->episode_return_accum, env->episode_length_accum, g_craftax_mini_max_timesteps),
-             4, hud_y + hud_pad + 2 * hud_line + 4, hud_font, (Color){220, 210, 140, 255});
-    DrawText(TextFormat("HP: %.0f  food: %d  drink: %d  energy: %d  light: %.2f",
-             s->player_health, s->player_food, s->player_drink,
-             s->player_energy, s->light_level),
-             4, hud_y + hud_pad + 3 * hud_line + 4, hud_font, WHITE);
-    DrawText(TextFormat("pos: (%d, %d)  level: %d  step: %d",
-             s->player_position[0], s->player_position[1], s->player_level, s->timestep),
-             4, hud_y + hud_pad + 4 * hud_line + 4, hud_font, (Color){190, 190, 190, 255});
-
-    if (found_goal_gemstone) {
-        DrawText("goal item acquired", view_w - 220, hud_y + hud_pad + 2, 22, (Color){120, 255, 120, 255});
-    }
-
-    EndDrawing();
+    craftax_render_mini(env);
 }

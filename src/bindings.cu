@@ -132,6 +132,14 @@ void render(pybind11::object pufferl_obj, int env_id) {
     static_vec_render(pufferl.vec, env_id);
 }
 
+bool env_done(pybind11::object pufferl_obj, int env_id) {
+    PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
+    if (pufferl.vec == nullptr || env_id < 0 || env_id >= pufferl.vec->total_agents) {
+        return false;
+    }
+    return pufferl.vec->terminals[env_id] > 0.5f;
+}
+
 void pipe_frame_fd(int fd) {
     if (!static_vec_pipe_frame_fd(fd)) {
         throw std::runtime_error("Failed to pipe frame to ffmpeg");
@@ -522,6 +530,7 @@ PYBIND11_MODULE(_C, m) {
     m.def("log", &puf_log);
     m.def("eval_log", &puf_eval_log);
     m.def("render", &render);
+    m.def("env_done", &env_done);
     m.def("rollouts", &rollouts);
     m.def("train", &train);
     m.def("close", &puf_close);

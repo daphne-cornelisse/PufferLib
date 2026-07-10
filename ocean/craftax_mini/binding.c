@@ -107,6 +107,7 @@ void my_vec_close(Env* envs) {
 
 void my_init(Env* env, Dict* kwargs) {
     env->num_agents = 1;
+    env->render_view_mode = CRAFTAX_VIEW_MODE_AGENT;
 
     uint64_t seed_offset = 0;
     DictItem* item = dict_get_unsafe(kwargs, "seed_offset");
@@ -132,6 +133,11 @@ void my_init(Env* env, Dict* kwargs) {
     item = dict_get_unsafe(kwargs, "reset_pool_size");
     if (item != NULL) reset_pool_size = (int)item->value;
     craftax_set_reset_pool_size(reset_pool_size);
+
+    item = dict_get_unsafe(kwargs, "view_mode");
+    if (item != NULL) {
+        env->render_view_mode = (int32_t)item->value;
+    }
 
     c_init(env);
 }

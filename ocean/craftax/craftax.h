@@ -11,13 +11,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#ifdef CRAFTAX_ENABLE_RENDERING
-#include "raylib.h"
-#include <unistd.h>
-#include <signal.h>
-#include <sys/wait.h>
-#endif
-
 // ============================================================
 // Constants
 // ============================================================
@@ -490,15 +483,7 @@ typedef struct Log {
     float n;
 } Log;
 
-#ifdef CRAFTAX_ENABLE_RENDERING
-typedef struct Client {
-    pid_t xvfb_pid;
-    int xvfb_display_num;
-    bool headless_display;
-} Client;
-#else
 typedef struct Client Client;
-#endif
 
 typedef struct Craftax {
     Client* client;
@@ -516,11 +501,16 @@ typedef struct Craftax {
     CraftaxArena* arena;
     CraftaxState* state;
     bool owns_state_storage;
+    int32_t render_view_mode;
 
     float achievements[CRAFTAX_NUM_ACHIEVEMENTS];
     float episode_return_accum;
     int32_t episode_length_accum;
 } Craftax;
+
+#ifdef CRAFTAX_ENABLE_RENDERING
+#include "render.h"
+#endif
 
 #ifdef CRAFTAX_ENABLE_ENV_IMPL
 
@@ -584,83 +574,6 @@ static int g_craftax_reset_pool_size = 0;
 static CraftaxState* g_craftax_reset_pool = NULL;
 static int g_craftax_reset_pool_ready = 0;
 
-#ifdef CRAFTAX_ENABLE_RENDERING
-static inline Client* craftax_get_client(Craftax* env) {
-    if (env->client == NULL) {
-        env->client = (Client*)calloc(1, sizeof(Client));
-    }
-    return env->client;
-}
-
-static inline int craftax_ensure_render_display(Craftax* env) {
-#if defined(PLATFORM_MEMORY)
-    (void)env;
-    return 1;
-#else
-    Client* client = craftax_get_client(env);
-    if (client == NULL) {
-        return 0;
-    }
-
-    if (getenv("DISPLAY") != NULL) {
-        return 1;
-    }
-
-    client->headless_display = true;
-    if (client->xvfb_display_num == 0) {
-        client->xvfb_display_num = 99;
-    }
-
-    char display_name[16];
-    char lock_path[64];
-    char socket_path[64];
-    snprintf(display_name, sizeof(display_name), ":%d", client->xvfb_display_num);
-    snprintf(lock_path, sizeof(lock_path), "/tmp/.X%d-lock", client->xvfb_display_num);
-    snprintf(socket_path, sizeof(socket_path), "/tmp/.X11-unix/X%d", client->xvfb_display_num);
-
-    FILE* f = fopen(lock_path, "r");
-    if (f != NULL) {
-        pid_t pid = -1;
-        fscanf(f, "%d", &pid);
-        fclose(f);
-        if (pid > 0 && kill(pid, 0) == 0) {
-            setenv("DISPLAY", display_name, 1);
-            return 1;
-        }
-        unlink(lock_path);
-    }
-
-    if (access(socket_path, F_OK) == 0) {
-        setenv("DISPLAY", display_name, 1);
-        return 1;
-    }
-
-    pid_t child = fork();
-    if (child == 0) {
-        close(STDOUT_FILENO);
-        close(STDERR_FILENO);
-        execlp("Xvfb", "Xvfb", display_name, "-screen", "0",
-            "1280x720x24", "+extension", "GLX", "-ac", "-noreset", NULL);
-        _exit(1);
-    }
-    if (child < 0) {
-        return 0;
-    }
-
-    client->xvfb_pid = child;
-    setenv("DISPLAY", display_name, 1);
-    for (int i = 0; i < 20 && access(lock_path, F_OK) != 0; i++) {
-        usleep(100000);
-    }
-    usleep(200000);
-    if (access(lock_path, F_OK) != 0 && access(socket_path, F_OK) != 0) {
-        return 0;
-    }
-    return 1;
-#endif
-}
-#endif
-
 // Called from my_init which runs single-threaded during env creation
 // (vecenv.h iterates envs sequentially). First caller populates the
 // pool; subsequent callers are no-ops.
@@ -673,7 +586,7 @@ static inline void craftax_set_reset_pool_size(int n) {
             CraftaxThreefryKey init_key = craftax_prng_key((uint32_t)i);
             CraftaxThreefryKey discard, reset_key;
             craftax_threefry_split(init_key, &discard, &reset_key);
-    craftax_reset_state_from_reset_key(&g_craftax_reset_pool[i], reset_key);
+            craftax_reset_state_from_reset_key(&g_craftax_reset_pool[i], reset_key);
         }
     }
     g_craftax_reset_pool_ready = 1;
@@ -841,6 +754,9 @@ static void c_init(Craftax* env) {
     memset(env->achievements, 0, sizeof(env->achievements));
     memset(&env->log, 0, sizeof(env->log));
     craftax_reset_state_from_seed(env);
+#ifdef CRAFTAX_ENABLE_RENDERING
+    craftax_reset_player_trail(env);
+#endif
 }
 
 static void c_reset(Craftax* env) {
@@ -855,6 +771,9 @@ static void c_reset(Craftax* env) {
     memset(env->achievements, 0, sizeof(env->achievements));
 
     craftax_reset_state_from_seed(env);
+#ifdef CRAFTAX_ENABLE_RENDERING
+    craftax_reset_player_trail(env);
+#endif
     craftax_encode_observation(env->state, env->observations);
 }
 
@@ -880,6 +799,9 @@ static void c_step_gameplay(Craftax* env) {
     env->terminals[0] = done ? 1.0f : 0.0f;
     env->episode_return_accum += reward;
     env->episode_length_accum += 1;
+#ifdef CRAFTAX_ENABLE_RENDERING
+    craftax_record_player_position(env);
+#endif
 
     if (done) {
         add_log(env);
@@ -887,6 +809,9 @@ static void c_step_gameplay(Craftax* env) {
         env->episode_length_accum = 0;
         memset(env->achievements, 0, sizeof(env->achievements));
         craftax_reset_state_on_done(env->state, reset_key);
+#ifdef CRAFTAX_ENABLE_RENDERING
+        craftax_reset_player_trail(env);
+#endif
     }
 }
 
@@ -897,14 +822,7 @@ static void c_step(Craftax* env) {
 
 static void c_close(Craftax* env) {
 #ifdef CRAFTAX_ENABLE_RENDERING
-    if (env->client != NULL) {
-        if (env->client->xvfb_pid > 0) {
-            kill(env->client->xvfb_pid, SIGTERM);
-            waitpid(env->client->xvfb_pid, NULL, 0);
-        }
-        free(env->client);
-        env->client = NULL;
-    }
+    craftax_close_client(env);
 #endif
     if (!env->owns_state_storage || env->arena == NULL) {
         return;
@@ -917,446 +835,20 @@ static void c_close(Craftax* env) {
 }
 
 #ifdef CRAFTAX_ENABLE_RENDERING
-// ------------------------------------------------------------
-// Tile-based renderer using upstream Craftax 16x16 PNG assets
-// ------------------------------------------------------------
-// Packed layout in resources/craftax/textures.bin:
-//   [0..36] block textures (indexed by CraftaxBlockType)
-//   [37..41] player: down, up, left, right, sleep
-//   [42..46] items: none, torch, ladder_down, ladder_up, ladder_down_blocked
-
-#define CRAFTAX_TEX_TILE_PX 16
-#define CRAFTAX_TEX_SCALE 4   // on-screen px = 64
-#define CRAFTAX_TEX_DRAW_PX (CRAFTAX_TEX_TILE_PX * CRAFTAX_TEX_SCALE)
-#define CRAFTAX_TEX_NUM (37 + 5 + 5 + 3 + 4)
-
-// Match the upstream pixel observation crop for logged renders.
-#define CRAFTAX_RENDER_ROWS CRAFTAX_OBS_ROWS
-#define CRAFTAX_RENDER_COLS CRAFTAX_OBS_COLS
-
-#define CRAFTAX_TEX_PLAYER_DOWN 37
-#define CRAFTAX_TEX_PLAYER_UP 38
-#define CRAFTAX_TEX_PLAYER_LEFT 39
-#define CRAFTAX_TEX_PLAYER_RIGHT 40
-#define CRAFTAX_TEX_PLAYER_SLEEP 41
-#define CRAFTAX_TEX_ITEM_BASE 42
-#define CRAFTAX_TEX_MOB_BASE 47
-
-static Texture2D craftax_textures[CRAFTAX_TEX_NUM];
-static bool craftax_textures_loaded = false;
-
-static void craftax_load_textures(void) {
-    if (craftax_textures_loaded) return;
-    const char* candidates[] = {
-        "resources/craftax/textures.bin",
-        "../resources/craftax/textures.bin",
-        "../../resources/craftax/textures.bin",
-    };
-    FILE* f = NULL;
-    for (size_t i = 0; i < sizeof(candidates)/sizeof(candidates[0]); i++) {
-        f = fopen(candidates[i], "rb");
-        if (f) break;
-    }
-    if (!f) {
-        fprintf(stderr, "craftax: textures.bin not found in resources/craftax\n");
-        exit(1);
-    }
-    const size_t tile_bytes = CRAFTAX_TEX_TILE_PX * CRAFTAX_TEX_TILE_PX * 4;
-    uint8_t* buf = (uint8_t*)malloc(tile_bytes);
-    for (int i = 0; i < CRAFTAX_TEX_NUM; i++) {
-        if (fread(buf, 1, tile_bytes, f) != tile_bytes) {
-            fprintf(stderr, "craftax: short read on textures.bin at tile %d\n", i);
-            exit(1);
-        }
-        Image img = {
-            .data = buf,
-            .width = CRAFTAX_TEX_TILE_PX,
-            .height = CRAFTAX_TEX_TILE_PX,
-            .mipmaps = 1,
-            .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
-        };
-        craftax_textures[i] = LoadTextureFromImage(img);
-        SetTextureFilter(craftax_textures[i], TEXTURE_FILTER_POINT);
-    }
-    free(buf);
-    fclose(f);
-    craftax_textures_loaded = true;
-}
-
-static int craftax_player_tex_id(int32_t direction, bool sleeping) {
-    if (sleeping) return CRAFTAX_TEX_PLAYER_SLEEP;
-    switch (direction) {
-        case 1: return CRAFTAX_TEX_PLAYER_LEFT;
-        case 2: return CRAFTAX_TEX_PLAYER_RIGHT;
-        case 3: return CRAFTAX_TEX_PLAYER_UP;
-        case 4: return CRAFTAX_TEX_PLAYER_DOWN;
-        default: return CRAFTAX_TEX_PLAYER_DOWN;
-    }
-}
-
-static void craftax_draw_tile_tint(int tex_id, int dst_x, int dst_y, Color tint) {
-    if (tex_id < 0 || tex_id >= CRAFTAX_TEX_NUM) return;
-    Rectangle src = {0, 0, CRAFTAX_TEX_TILE_PX, CRAFTAX_TEX_TILE_PX};
-    Rectangle dst = {(float)dst_x, (float)dst_y, CRAFTAX_TEX_DRAW_PX, CRAFTAX_TEX_DRAW_PX};
-    DrawTexturePro(craftax_textures[tex_id], src, dst, (Vector2){0, 0}, 0.0f, tint);
-}
-
-static void craftax_draw_tile(int tex_id, int dst_x, int dst_y, float tint_alpha) {
-    Color tint = {255, 255, 255, (unsigned char)(tint_alpha * 255.0f)};
-    craftax_draw_tile_tint(tex_id, dst_x, dst_y, tint);
-}
-
-static void craftax_draw_texture_box(
-    int tex_id,
-    int dst_x,
-    int dst_y,
-    int dst_size,
-    Color tint
-) {
-    if (tex_id < 0 || tex_id >= CRAFTAX_TEX_NUM) return;
-    Rectangle src = {0, 0, CRAFTAX_TEX_TILE_PX, CRAFTAX_TEX_TILE_PX};
-    Rectangle dst = {(float)dst_x, (float)dst_y, (float)dst_size, (float)dst_size};
-    DrawTexturePro(craftax_textures[tex_id], src, dst, (Vector2){0, 0}, 0.0f, tint);
-}
-
-static int craftax_mob_tex_id(bool passive, bool ranged) {
-    if (passive) return 49; // cow
-    if (ranged) return 48;  // skeleton
-    return 47;              // zombie
-}
-
-static int craftax_projectile_tex_id(const int32_t direction[2]) {
-    if (direction[0] < 0) return 51; // up
-    if (direction[0] > 0) return 50; // down
-    if (direction[1] < 0) return 52; // left
-    if (direction[1] > 0) return 53; // right
-    return 50;
-}
-
-static Color craftax_projectile_tint(int32_t type_id, bool hostile) {
-    switch (type_id) {
-        case CRAFTAX_PROJECTILE_FIREBALL:
-        case CRAFTAX_PROJECTILE_FIREBALL2:
-            return hostile ? (Color){255, 170, 80, 235} : (Color){255, 220, 120, 235};
-        case CRAFTAX_PROJECTILE_ICEBALL:
-        case CRAFTAX_PROJECTILE_ICEBALL2:
-            return hostile ? (Color){120, 220, 255, 235} : (Color){180, 240, 255, 235};
-        case CRAFTAX_PROJECTILE_SLIMEBALL:
-            return (Color){120, 255, 140, 235};
-        case CRAFTAX_PROJECTILE_DAGGER:
-            return (Color){220, 220, 220, 235};
-        default:
-            return hostile ? (Color){255, 255, 255, 235} : (Color){255, 245, 160, 235};
-    }
-}
-
-static void craftax_draw_world_entity(
-    int tex_id,
-    int32_t entity_row,
-    int32_t entity_col,
-    int32_t top_row,
-    int32_t left_col,
-    Color tint
-) {
-    int vr = entity_row - top_row;
-    int vc = entity_col - left_col;
-    if (vr < 0 || vr >= CRAFTAX_RENDER_ROWS || vc < 0 || vc >= CRAFTAX_RENDER_COLS) {
-        return;
-    }
-    craftax_draw_tile_tint(
-        tex_id,
-        vc * CRAFTAX_TEX_DRAW_PX,
-        vr * CRAFTAX_TEX_DRAW_PX,
-        tint
-    );
-}
-
-static void craftax_draw_mob_overlays(
-    const CraftaxState* s,
-    int lvl,
-    int top_row,
-    int left_col
-) {
-    const Color white = {255, 255, 255, 255};
-    for (int i = 0; i < CRAFTAX_MAX_PASSIVE_MOBS; i++) {
-        if (!s->passive_mobs.mask[lvl][i]) continue;
-        craftax_draw_world_entity(
-            craftax_mob_tex_id(true, false),
-            s->passive_mobs.position[lvl][i][0],
-            s->passive_mobs.position[lvl][i][1],
-            top_row,
-            left_col,
-            white
-        );
-    }
-    for (int i = 0; i < CRAFTAX_MAX_MELEE_MOBS; i++) {
-        if (!s->melee_mobs.mask[lvl][i]) continue;
-        craftax_draw_world_entity(
-            craftax_mob_tex_id(false, false),
-            s->melee_mobs.position[lvl][i][0],
-            s->melee_mobs.position[lvl][i][1],
-            top_row,
-            left_col,
-            white
-        );
-    }
-    for (int i = 0; i < CRAFTAX_MAX_RANGED_MOBS; i++) {
-        if (!s->ranged_mobs.mask[lvl][i]) continue;
-        craftax_draw_world_entity(
-            craftax_mob_tex_id(false, true),
-            s->ranged_mobs.position[lvl][i][0],
-            s->ranged_mobs.position[lvl][i][1],
-            top_row,
-            left_col,
-            white
-        );
-    }
-}
-
-static void craftax_draw_projectile_overlays(
-    const CraftaxState* s,
-    int lvl,
-    int top_row,
-    int left_col
-) {
-    for (int i = 0; i < CRAFTAX_MAX_MOB_PROJECTILES; i++) {
-        if (!s->mob_projectiles.mask[lvl][i]) continue;
-        craftax_draw_world_entity(
-            craftax_projectile_tex_id(s->mob_projectile_directions[lvl][i]),
-            s->mob_projectiles.position[lvl][i][0],
-            s->mob_projectiles.position[lvl][i][1],
-            top_row,
-            left_col,
-            craftax_projectile_tint(s->mob_projectiles.type_id[lvl][i], true)
-        );
-    }
-    for (int i = 0; i < CRAFTAX_MAX_PLAYER_PROJECTILES; i++) {
-        if (!s->player_projectiles.mask[lvl][i]) continue;
-        craftax_draw_world_entity(
-            craftax_projectile_tex_id(s->player_projectile_directions[lvl][i]),
-            s->player_projectiles.position[lvl][i][0],
-            s->player_projectiles.position[lvl][i][1],
-            top_row,
-            left_col,
-            craftax_projectile_tint(s->player_projectiles.type_id[lvl][i], false)
-        );
-    }
-}
-
-static void craftax_draw_hud_panel(int x, int y, int w, int h, const char* title) {
-    DrawRectangleRounded((Rectangle){(float)x, (float)y, (float)w, (float)h}, 0.18f, 8,
-        (Color){28, 31, 35, 235});
-    DrawRectangleLinesEx((Rectangle){(float)x, (float)y, (float)w, (float)h}, 2.0f,
-        (Color){72, 78, 88, 255});
-    if (title != NULL && title[0] != '\0') {
-        DrawText(title, x + 10, y + 8, 16, (Color){230, 232, 236, 255});
-    }
-}
-
-static void craftax_draw_hud_bar(
-    int x,
-    int y,
-    int w,
-    const char* label,
-    int value,
-    int max_value,
-    Color fill
-) {
-    if (max_value < 1) max_value = 1;
-    if (value < 0) value = 0;
-    if (value > max_value) value = max_value;
-
-    int bar_y = y + 18;
-    int bar_h = 12;
-    int fill_w = (w - 2) * value / max_value;
-
-    DrawText(label, x, y, 15, (Color){215, 217, 221, 255});
-    DrawRectangle(x, bar_y, w, bar_h, (Color){55, 60, 68, 255});
-    DrawRectangle(x + 1, bar_y + 1, fill_w, bar_h - 2, fill);
-    DrawRectangleLines(x, bar_y, w, bar_h, (Color){105, 112, 122, 255});
-    DrawText(TextFormat("%d/%d", value, max_value), x + w + 8, y + 8, 14,
-        (Color){235, 238, 242, 255});
-}
-
-static void craftax_draw_hud_slot(
-    int x,
-    int y,
-    int tex_id,
-    Color tint,
-    const char* label,
-    int value
-) {
-    const int slot = 28;
-    DrawRectangleRounded((Rectangle){(float)x, (float)y, (float)slot, (float)slot}, 0.2f, 6,
-        (Color){47, 51, 58, 255});
-    DrawRectangleLinesEx((Rectangle){(float)x, (float)y, (float)slot, (float)slot}, 1.0f,
-        (Color){88, 94, 104, 255});
-    craftax_draw_texture_box(tex_id, x + 4, y + 4, 20, tint);
-    DrawText(label, x + slot + 8, y + 2, 14, (Color){210, 214, 220, 255});
-    DrawText(TextFormat("%d", value), x + slot + 8, y + 15, 15, WHITE);
-}
-
-static void craftax_draw_hud_badge(
-    int x,
-    int y,
-    int w,
-    const char* label,
-    Color bg,
-    Color fg
-) {
-    DrawRectangleRounded((Rectangle){(float)x, (float)y, (float)w, 20.0f}, 0.3f, 6, bg);
-    DrawText(label, x + 8, y + 3, 14, fg);
+static void c_render_mode(Craftax* env, int view_mode) {
+    craftax_set_view_mode(env, view_mode);
+    craftax_render_full(env);
 }
 
 static void c_render(Craftax* env) {
-    const int view_w = CRAFTAX_RENDER_COLS * CRAFTAX_TEX_DRAW_PX;
-    const int view_h = CRAFTAX_RENDER_ROWS * CRAFTAX_TEX_DRAW_PX;
-    const int hud_h = 220;
-
-    if (!IsWindowReady()) {
-        if (!craftax_ensure_render_display(env)) {
-            fprintf(stderr, "WARNING: failed to initialize display for Craftax rendering\n");
-            return;
-        }
-        Client* client = craftax_get_client(env);
-        if (client != NULL && client->headless_display) {
-            SetConfigFlags(FLAG_WINDOW_HIDDEN);
-            SetTargetFPS(6000);
-        } else {
-            SetTargetFPS(30);
-        }
-        InitWindow(view_w, view_h + hud_h, "PufferLib Craftax");
-    }
-    if (!craftax_textures_loaded) craftax_load_textures();
-    if (IsKeyDown(KEY_ESCAPE)) exit(0);
-
-    CraftaxState* s = env->state;
-    int lvl = s->player_level;
-    int pr = s->player_position[0];
-    int pc = s->player_position[1];
-    int half_r = CRAFTAX_RENDER_ROWS / 2;
-    int half_c = CRAFTAX_RENDER_COLS / 2;
-    int top_row = pr - half_r;
-    int left_col = pc - half_c;
-
-    BeginDrawing();
-    ClearBackground(BLACK);
-
-    for (int vr = 0; vr < CRAFTAX_RENDER_ROWS; vr++) {
-        for (int vc = 0; vc < CRAFTAX_RENDER_COLS; vc++) {
-            int wr = top_row + vr;
-            int wc = left_col + vc;
-            int dst_x = vc * CRAFTAX_TEX_DRAW_PX;
-            int dst_y = vr * CRAFTAX_TEX_DRAW_PX;
-
-            int blk = CRAFTAX_BLOCK_OUT_OF_BOUNDS;
-            if (wr >= 0 && wr < CRAFTAX_MAP_SIZE && wc >= 0 && wc < CRAFTAX_MAP_SIZE) {
-                blk = s->map[lvl][wr][wc];
-                if (blk == CRAFTAX_BLOCK_NECROMANCER
-                        && craftax_wg_is_boss_vulnerable(
-                            (const CraftaxWorldState*)s)) {
-                    blk = CRAFTAX_BLOCK_NECROMANCER_VULNERABLE;
-                }
-                if (s->light_map[lvl][wr][wc] <= 12) blk = CRAFTAX_BLOCK_DARKNESS;
-            }
-            if (blk < 0 || blk >= CRAFTAX_NUM_BLOCK_TYPES) blk = 0;
-            craftax_draw_tile(blk, dst_x, dst_y, 1.0f);
-
-            // item overlay
-            if (wr >= 0 && wr < CRAFTAX_MAP_SIZE && wc >= 0 && wc < CRAFTAX_MAP_SIZE) {
-                int it = s->item_map[lvl][wr][wc];
-                if (it > 0 && it < 5) {
-                    if (it == CRAFTAX_ITEM_LADDER_DOWN
-                            && s->monsters_killed[lvl] < CRAFTAX_MONSTERS_KILLED_TO_CLEAR_LEVEL) {
-                        it = CRAFTAX_ITEM_LADDER_DOWN_BLOCKED;
-                    }
-                    craftax_draw_tile(CRAFTAX_TEX_ITEM_BASE + it, dst_x, dst_y, 1.0f);
-                }
-            }
-        }
-    }
-
-    craftax_draw_mob_overlays(s, lvl, top_row, left_col);
-    craftax_draw_projectile_overlays(s, lvl, top_row, left_col);
-
-    // player in center
-    int pid = craftax_player_tex_id(s->player_direction, s->is_sleeping);
-    craftax_draw_tile(pid, half_c * CRAFTAX_TEX_DRAW_PX, half_r * CRAFTAX_TEX_DRAW_PX, 1.0f);
-
-    // night dim overlay
-    if (s->light_level < 1.0f) {
-        unsigned char a = (unsigned char)((1.0f - s->light_level) * 140.0f);
-        DrawRectangle(0, 0, view_w, view_h, (Color){0, 0, 40, a});
-    }
-
-    // HUD
-    int hud_y = view_h;
-    DrawRectangle(0, hud_y, view_w, hud_h, (Color){14, 16, 19, 255});
-    craftax_draw_hud_panel(12, hud_y + 12, 256, 132, "Vitals");
-    craftax_draw_hud_bar(24, hud_y + 40, 140, "Health", (int)(s->player_health + 0.5f), 10,
-        (Color){198, 58, 62, 255});
-    craftax_draw_hud_bar(24, hud_y + 64, 140, "Food", s->player_food, 10,
-        (Color){196, 142, 56, 255});
-    craftax_draw_hud_bar(24, hud_y + 88, 140, "Drink", s->player_drink, 10,
-        (Color){70, 150, 224, 255});
-    craftax_draw_hud_bar(24, hud_y + 112, 140, "Energy", s->player_energy, 10,
-        (Color){120, 196, 94, 255});
-    craftax_draw_hud_bar(24, hud_y + 136, 140, "Mana", s->player_mana, 10,
-        (Color){168, 112, 222, 255});
-
-    craftax_draw_hud_panel(280, hud_y + 12, 220, 132, "Resources");
-    craftax_draw_hud_slot(292, hud_y + 40, CRAFTAX_BLOCK_WOOD, WHITE, "Wood", s->inventory.wood);
-    craftax_draw_hud_slot(292, hud_y + 72, CRAFTAX_BLOCK_STONE, WHITE, "Stone", s->inventory.stone);
-    craftax_draw_hud_slot(292, hud_y + 104, CRAFTAX_BLOCK_COAL, WHITE, "Coal", s->inventory.coal);
-    craftax_draw_hud_slot(392, hud_y + 40, CRAFTAX_BLOCK_IRON, WHITE, "Iron", s->inventory.iron);
-    craftax_draw_hud_slot(392, hud_y + 72, CRAFTAX_BLOCK_DIAMOND, WHITE, "Diamond", s->inventory.diamond);
-    craftax_draw_hud_slot(392, hud_y + 104, CRAFTAX_BLOCK_PLANT, WHITE, "Sapling", s->inventory.sapling);
-    DrawText(TextFormat("Ruby %d   Sapphire %d", s->inventory.ruby, s->inventory.sapphire),
-        292, hud_y + 130, 14, (Color){210, 214, 220, 255});
-
-    craftax_draw_hud_panel(512, hud_y + 12, 188, 132, "Tools");
-    craftax_draw_hud_slot(524, hud_y + 40, CRAFTAX_TEX_ITEM_BASE + CRAFTAX_ITEM_TORCH, WHITE,
-        "Torch", s->inventory.torches);
-    craftax_draw_hud_slot(524, hud_y + 72, craftax_projectile_tex_id((int32_t[2]){1, 0}),
-        (Color){255, 245, 160, 255}, "Arrow", s->inventory.arrows);
-    craftax_draw_hud_slot(524, hud_y + 104, CRAFTAX_BLOCK_CHEST, WHITE, "Book", s->inventory.books);
-    DrawText(TextFormat("Pickaxe %d", s->inventory.pickaxe), 624, hud_y + 44, 15, WHITE);
-    DrawText(TextFormat("Sword %d", s->inventory.sword), 624, hud_y + 68, 15, WHITE);
-    DrawText(TextFormat("Bow %d", s->inventory.bow), 624, hud_y + 92, 15, WHITE);
-    DrawText(TextFormat("Armour %d %d %d %d",
-        s->inventory.armour[0], s->inventory.armour[1],
-        s->inventory.armour[2], s->inventory.armour[3]),
-        624, hud_y + 118, 15, (Color){210, 214, 220, 255});
-
-    craftax_draw_hud_panel(12, hud_y + 152, view_w - 24, 60, "Status");
-    int ach_count = 0;
-    for (int i = 0; i < CRAFTAX_NUM_ACHIEVEMENTS; i++) ach_count += s->achievements[i] ? 1 : 0;
-    DrawText(TextFormat("XP %d   DEX %d   STR %d   INT %d   Floor %d   Timestep %d",
-        s->player_xp, s->player_dexterity, s->player_strength,
-        s->player_intelligence, s->player_level, s->timestep),
-        24, hud_y + 176, 16, WHITE);
-    DrawText(TextFormat("Light %.2f   Kills %d/%d   Achievements %d/%d   Return %.2f   Length %d",
-        s->light_level, s->monsters_killed[lvl], CRAFTAX_MONSTERS_KILLED_TO_CLEAR_LEVEL,
-        ach_count, CRAFTAX_NUM_ACHIEVEMENTS, env->episode_return_accum, env->episode_length_accum),
-        24, hud_y + 196, 15, (Color){215, 218, 222, 255});
-
-    int badge_x = 360;
-    craftax_draw_hud_badge(badge_x, hud_y + 170, 78,
-        s->is_sleeping ? "Sleeping" : "Awake",
-        s->is_sleeping ? (Color){74, 88, 134, 255} : (Color){58, 96, 68, 255}, WHITE);
-    craftax_draw_hud_badge(badge_x + 86, hud_y + 170, 78,
-        s->is_resting ? "Resting" : "Active",
-        s->is_resting ? (Color){126, 96, 52, 255} : (Color){64, 72, 80, 255}, WHITE);
-    craftax_draw_hud_badge(badge_x + 172, hud_y + 170, 78,
-        s->learned_spells[0] ? "Fireball" : "No Fire",
-        s->learned_spells[0] ? (Color){150, 74, 40, 255} : (Color){54, 58, 62, 255}, WHITE);
-    craftax_draw_hud_badge(badge_x + 258, hud_y + 170, 78,
-        s->learned_spells[1] ? "Iceball" : "No Ice",
-        s->learned_spells[1] ? (Color){54, 112, 160, 255} : (Color){54, 58, 62, 255}, WHITE);
-
-    EndDrawing();
+    craftax_render_full(env);
 }
 #else
+static void c_render_mode(Craftax* env, int view_mode) {
+    (void)env;
+    (void)view_mode;
+}
+
 static void c_render(Craftax* env) {
     (void)env;
 }

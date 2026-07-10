@@ -170,73 +170,6 @@ def validate_config(args):
     assert minibatch_size <= horizon * total_agents, \
         f'minibatch_size {minibatch_size} > total_agents {total_agents} * horizon {horizon}'
 
-GIF_LOG_FPS = 12
-GIF_LOG_KEY = 'media/policy_rollout'
-GIF_LOG_EXT = '.mp4'
-GIF_LOG_MAX_FRAMES = 2000
-
-def _should_log_policy_gif(args, epoch, train_epochs, is_final):
-    interval = int(args.get('gif_log_interval', 0) or 0)
-    frames = int(args.get('gif_log_frames', 0) or 0)
-    return is_final and (interval > 0 or frames != 0)
-
-def _log_policy_gif(env_name, args, model_path, step, run_id):
-    import wandb
-
-    gif_dir = os.path.join(args['log_dir'], args['env_name'], run_id, 'gifs')
-    os.makedirs(gif_dir, exist_ok=True)
-    gif_path = os.path.join(gif_dir, f'{step:016d}{GIF_LOG_EXT}')
-
-    # Use a minimal eval config for media rendering so training doesn't appear
-    # to freeze while a second full-scale 16k-agent run spins up just to record
-    # a short rollout from env 0.
-    cmd = [
-        sys.executable, '-m', 'pufferlib.pufferl', 'eval', env_name,
-        '--load-model-path', model_path,
-        '--num-frames', str(GIF_LOG_MAX_FRAMES),
-        '--gif-path', gif_path,
-        '--fps', str(GIF_LOG_FPS),
-        '--vec.total-agents', '1',
-        '--vec.num-buffers', '1',
-        '--vec.num-threads', '1',
-        '--train.minibatch-size', '1',
-        '--train.total-timesteps', '1',
-        '--cudagraphs', '-1',
-    ]
-    start = time.time()
-    print(f'Rendering final policy video at step {step} to {gif_path}')
-    render_stdout = ''
-    try:
-        completed = subprocess.run(
-            cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        render_stdout = completed.stdout or ''
-        render_rc = completed.returncode
-    except subprocess.CalledProcessError as e:
-        render_stdout = e.stdout or ''
-        render_rc = e.returncode
-    except Exception as e:
-        print(f'WARNING: failed to launch policy gif render at step {step}: {e}')
-        return
-
-    file_exists = os.path.exists(gif_path)
-    file_size = os.path.getsize(gif_path) if file_exists else 0
-    if render_rc != 0 and file_size == 0:
-        print(f'WARNING: failed to render policy video at step {step}\n{render_stdout}')
-        return
-    if file_size == 0:
-        print(f'WARNING: policy video render produced no output at step {step}\n{render_stdout}')
-        return
-    if render_rc != 0:
-        print(f'Policy video render exited with status {render_rc} but produced {file_size} bytes; continuing')
-    print(f'Rendered final policy video at step {step} in {time.time() - start:.1f}s')
-
-    try:
-        wandb.log({
-            GIF_LOG_KEY: wandb.Video(gif_path, format='mp4'),
-        }, step=step)
-    except Exception as e:
-        print(f'WARNING: failed to log policy video to wandb at step {step}: {e}')
-
 def _resolve_backend(args):
     compiled_env = getattr(_C, 'env_name', None)
     assert compiled_env is None or compiled_env == args['env_name'], \
@@ -247,6 +180,8 @@ def _resolve_backend(args):
     return _C
 
 def _env_is_done(pufferl, env_id=0):
+    if hasattr(_C, 'env_done'):
+        return bool(_C.env_done(pufferl, env_id))
     vec = getattr(pufferl, 'vec', None)
     terminals_ptr = getattr(vec, 'terminals_ptr', None)
     if terminals_ptr is None:
@@ -331,7 +266,6 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
 
     model_path = ''
     flat_logs = {}
-    last_gif_step = -1
     train_epochs = int(total_timesteps // (args['vec']['total_agents'] * args['train']['horizon']))
     eval_epochs = train_epochs // 2
     for epoch in range(train_epochs + eval_epochs):
@@ -342,16 +276,9 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
 
         # In match-sweep mode we need the final checkpoint to feed into match().
         is_final = epoch == train_epochs - 1
-        should_log_gif = (
-            rank == 0
-            and args['wandb']
-            and sweep_obj is None
-            and epoch < train_epochs
-            and _should_log_policy_gif(args, epoch, train_epochs, is_final)
-        )
         should_save = (sweep_obj is None
             and (epoch % args['checkpoint_interval'] == 0 or is_final)
-        ) or (match_mode and is_final) or should_log_gif
+        ) or (match_mode and is_final)
         if should_save:
             model_path = os.path.join(checkpoint_dir, f'{pufferl.global_step:016d}.bin')
             backend.save_weights(pufferl, model_path)
@@ -374,10 +301,6 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
 
         if args['wandb']:
             wandb.log(flat_logs, step=flat_logs['agent_steps'])
-
-            if should_log_gif and flat_logs['agent_steps'] != last_gif_step:
-                _log_policy_gif(env_name, args, model_path, flat_logs['agent_steps'], run_id)
-                last_gif_step = flat_logs['agent_steps']
 
         if epoch < train_epochs:
             all_logs.append(flat_logs)
@@ -632,11 +555,9 @@ def eval(env_name, args=None, load_path=None):
                 if num_frames != -1 and frame_count >= num_frames:
                     break
             backend.rollouts(pufferl)
-            if num_frames and _env_is_done(pufferl, 0):
-                if ffmpeg is not None and (num_frames == -1 or frame_count < num_frames):
-                    backend.render(pufferl, 0)
-                    frame_count = _write_render_frame(ffmpeg, frame_count, num_frames, args['gif_path'])
-                print(f'Render stopped early at terminal state after {frame_count} frames')
+            if _env_is_done(pufferl, 0):
+                if num_frames:
+                    print(f'Render stopped at episode end after {frame_count} frames')
                 break
     finally:
         if ffmpeg is not None:
@@ -757,10 +678,6 @@ def load_config(env_name):
         help='Number of rendered frames to save to --gif-path with ffmpeg. Set to -1 to record until interrupted.')
     parser.add_argument('--gif-path', type=str, default='eval.mp4')
     parser.add_argument('--fps', type=float, default=15)
-    parser.add_argument('--gif-log-interval', type=int, default=0,
-        help='Legacy enable flag for final rollout video logging. Set > 0 to render one full terminal episode to wandb after training.')
-    parser.add_argument('--gif-log-frames', type=int, default=0,
-        help='Legacy enable flag for final rollout video logging. Nonzero enables one full terminal episode render after training.')
     parser.description = f':blowfish: PufferLib [bright_cyan]{pufferlib.__version__}[/]' \
         ' demo options. Shows valid args for your env and policy'
     existing_option_strings = {opt for action in parser._actions for opt in action.option_strings}
@@ -800,6 +717,16 @@ def load_config(env_name):
                 type=lambda v, t=dtype: v if v == 'auto' else t(v),
             )
             existing_option_strings.add(option)
+
+    if p.has_section('env') and 'view_mode' in p['env']:
+        value = ast.literal_eval(p['env']['view_mode'])
+        parser.add_argument(
+            '--view-mode',
+            dest='env.view_mode',
+            default=value,
+            type=lambda v, t=type(value): v if v == 'auto' else t(v),
+            help='Craftax render view: 0=agent crop, 1=full floor',
+        )
 
     parser.add_argument('-h', '--help', default=argparse.SUPPRESS,
         action='help', help='Show this help message and exit')
