@@ -13,7 +13,6 @@
 // full renderer and low-level helpers.
 #define c_init craftax_full_c_init
 #define c_reset craftax_full_c_reset
-#define c_step_native craftax_full_c_step_native
 #define c_step_gameplay craftax_full_c_step_gameplay
 #define c_step_encode craftax_full_c_step_encode
 #define c_step craftax_full_c_step
@@ -26,7 +25,6 @@
 #include "human_maps.h"
 #undef c_init
 #undef c_reset
-#undef c_step_native
 #undef c_step_gameplay
 #undef c_step_encode
 #undef c_step
@@ -84,9 +82,9 @@ static inline bool craftax_mini_valid_land_position(
         && row < CRAFTAX_MAP_SIZE
         && col >= 0
         && col < CRAFTAX_MAP_SIZE;
-    int32_t level = craftax_step_jax_index(state->player_level, CRAFTAX_NUM_LEVELS);
-    int32_t map_row = craftax_step_jax_index(row, CRAFTAX_MAP_SIZE);
-    int32_t map_col = craftax_step_jax_index(col, CRAFTAX_MAP_SIZE);
+    int32_t level = craftax_clamp_index(state->player_level, CRAFTAX_NUM_LEVELS);
+    int32_t map_row = craftax_clamp_index(row, CRAFTAX_MAP_SIZE);
+    int32_t map_col = craftax_clamp_index(col, CRAFTAX_MAP_SIZE);
     int32_t block = state->map[level][map_row][map_col];
     bool in_solid_block = craftax_mini_is_solid_block(block);
     bool in_mob = craftax_step_is_in_mob(state, row, col);
@@ -99,7 +97,7 @@ static inline bool craftax_mini_valid_land_position(
     return valid_move;
 }
 
-static inline void craftax_mini_move_player_native(
+static inline void craftax_mini_move_player(
     CraftaxState* state,
     int32_t action
 ) {
@@ -152,7 +150,7 @@ static inline Color craftax_mini_goal_color(int32_t goal_block) {
     }
 }
 
-static inline float craftax_mini_gameplay_step_native(
+static inline float craftax_mini_gameplay_step(
     Craftax* env,
     int32_t mini_action,
     CraftaxThreefryKey rng
@@ -168,41 +166,41 @@ static inline float craftax_mini_gameplay_step_native(
     action = state->is_sleeping ? CRAFTAX_ACTION_NOOP : action;
     action = state->is_resting ? CRAFTAX_ACTION_NOOP : action;
 
-    craftax_change_floor_native(state, action);
-    craftax_do_crafting_native(state, action);
+    craftax_change_floor(state, action);
+    craftax_do_crafting(state, action);
 
-    CraftaxThreefryKey subkey = craftax_step_native_next_key(&rng);
-    craftax_do_action_native(state, action, subkey);
+    CraftaxThreefryKey subkey = craftax_next_key(&rng);
+    craftax_do_action(state, action, subkey);
 
-    craftax_place_block_native(state, action);
-    craftax_shoot_projectile_native(state, action);
-    craftax_cast_spell_native(state, action);
-    craftax_drink_potion_native(state, action);
+    craftax_place_block(state, action);
+    craftax_shoot_projectile(state, action);
+    craftax_cast_spell(state, action);
+    craftax_drink_potion(state, action);
 
-    subkey = craftax_step_native_next_key(&rng);
-    craftax_read_book_native(state, subkey.word, action);
+    subkey = craftax_next_key(&rng);
+    craftax_read_book(state, subkey.word, action);
 
-    subkey = craftax_step_native_next_key(&rng);
-    craftax_enchant_native(state, action, subkey);
+    subkey = craftax_next_key(&rng);
+    craftax_enchant(state, action, subkey);
 
-    craftax_boss_logic_native(state);
-    craftax_level_up_attributes_native(state, action, CRAFTAX_MAX_ATTRIBUTE);
-    craftax_mini_move_player_native(state, action);
+    craftax_boss_logic(state);
+    craftax_level_up_attributes(state, action, CRAFTAX_MAX_ATTRIBUTE);
+    craftax_mini_move_player(state, action);
 
-    subkey = craftax_step_native_next_key(&rng);
-    craftax_update_mobs_native(state, subkey);
+    subkey = craftax_next_key(&rng);
+    craftax_update_mobs(state, subkey);
 
-    subkey = craftax_step_native_next_key(&rng);
-    craftax_spawn_mobs_native(state, subkey);
+    subkey = craftax_next_key(&rng);
+    craftax_spawn_mobs(state, subkey);
 
-    craftax_update_plants_native(state);
-    craftax_update_player_intrinsics_native(state, action);
-    craftax_clip_inventory_and_intrinsics_native(state, false);
-    craftax_calculate_inventory_achievements_native(state);
+    craftax_update_plants(state);
+    craftax_update_player_intrinsics(state, action);
+    craftax_clip_inventory_and_intrinsics(state);
+    craftax_calculate_inventory_achievements(state);
 
-    subkey = craftax_step_native_next_key(&rng);
+    subkey = craftax_next_key(&rng);
     state->timestep += 1;
-    state->light_level = craftax_calculate_light_level_native(state->timestep);
+    state->light_level = craftax_calculate_light_level(state->timestep);
     state->state_rng[0] = subkey.word[0];
     state->state_rng[1] = subkey.word[1];
 
@@ -213,7 +211,7 @@ static inline float craftax_mini_gameplay_step_native(
     return current_goal_count > initial_goal_count ? 1.0f : 0.0f;
 }
 
-static inline bool craftax_mini_is_game_over_native(const Craftax* env) {
+static inline bool craftax_mini_is_game_over(const Craftax* env) {
     const CraftaxState* state = env->state;
     int32_t goal_block = craftax_mini_current_goal_block(env);
     bool reached_goal = craftax_mini_inventory_count_for_goal(
@@ -274,7 +272,6 @@ static void c_init(Craftax* env) {
     env->episode_length_accum = 0;
     memset(env->achievements, 0, sizeof(env->achievements));
     memset(&env->log, 0, sizeof(env->log));
-    craftax_wg_init_cell_templates();
     craftax_mini_reset_state_from_seed(env);
     craftax_mini_apply_reset_settings(env);
 }
@@ -288,7 +285,7 @@ static void c_reset(Craftax* env) {
 
     craftax_mini_reset_state_from_seed(env);
     craftax_mini_apply_reset_settings(env);
-    craftax_encode_native_observation(env->state, env->observations);
+    craftax_encode_observation(env->state, env->observations);
 }
 
 static void c_step_gameplay(Craftax* env) {
@@ -305,8 +302,8 @@ static void c_step_gameplay(Craftax* env) {
     CraftaxThreefryKey reset_key;
     craftax_threefry_split(step_key, &step_rng, &reset_key);
 
-    float reward = craftax_mini_gameplay_step_native(env, action, step_rng);
-    bool done = craftax_mini_is_game_over_native(env);
+    float reward = craftax_mini_gameplay_step(env, action, step_rng);
+    bool done = craftax_mini_is_game_over(env);
     craftax_copy_achievements_to_env(env, env->state);
 
     env->rewards[0] = reward;
@@ -329,7 +326,7 @@ static void c_step_gameplay(Craftax* env) {
 }
 
 static void c_step_encode(Craftax* env) {
-    craftax_encode_native_observation(env->state, env->observations);
+    craftax_encode_observation(env->state, env->observations);
 }
 
 static void c_step(Craftax* env) {

@@ -1,6 +1,6 @@
 // Fast RNG helpers for Craftax.
-// Replaces JAX Threefry with SplitMix64-based hashing for ~20-50x speedup.
-// NOT cryptographically secure and NOT JAX-compatible.
+// Uses SplitMix64-style hashing for lightweight deterministic randomness.
+// Not cryptographically secure.
 
 #pragma once
 
@@ -19,10 +19,6 @@ static inline uint64_t craftax_key_to_u64(CraftaxThreefryKey key) {
 static inline CraftaxThreefryKey craftax_u64_to_key(uint64_t x) {
     CraftaxThreefryKey key = {{(uint32_t)x, (uint32_t)(x >> 32)}};
     return key;
-}
-
-static inline uint32_t craftax_rotl32(uint32_t x, uint32_t k) {
-    return (uint32_t)((x << k) | (x >> (32u - k)));
 }
 
 static inline CraftaxThreefryKey craftax_prng_key(uint32_t seed) {
@@ -45,17 +41,6 @@ static inline uint64_t craftax_fast_hash64(CraftaxThreefryKey key, uint64_t coun
     uint64_t x = craftax_key_to_u64(key);
     x ^= counter;
     return craftax_mix64(x);
-}
-
-static inline void craftax_threefry2x32(
-    CraftaxThreefryKey key,
-    uint32_t count0,
-    uint32_t count1,
-    uint32_t out[2]
-) {
-    uint64_t h = craftax_fast_hash64(key, ((uint64_t)count1 << 32) | count0);
-    out[0] = (uint32_t)h;
-    out[1] = (uint32_t)(h >> 32);
 }
 
 static inline CraftaxThreefryKey craftax_threefry_counter_key(
@@ -91,23 +76,12 @@ static inline void craftax_threefry_split_n(
     }
 }
 
-static inline CraftaxThreefryKey craftax_threefry_fold_in(
-    CraftaxThreefryKey key,
-    uint32_t data
-) {
-    return craftax_threefry_counter_key(key, 0u, data);
-}
-
 static inline uint32_t craftax_threefry_uniform_u32_at(
     CraftaxThreefryKey key,
     uint64_t index
 ) {
     uint64_t h = craftax_fast_hash64(key, index);
     return (uint32_t)h ^ (uint32_t)(h >> 32);
-}
-
-static inline uint32_t craftax_threefry_uniform_u32(CraftaxThreefryKey key) {
-    return craftax_threefry_uniform_u32_at(key, 0u);
 }
 
 static inline float craftax_threefry_uniform_f32_at(

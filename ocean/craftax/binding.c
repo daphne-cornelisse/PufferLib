@@ -1,4 +1,5 @@
 #define CRAFTAX_ENABLE_ENV_IMPL
+#define CRAFTAX_ENABLE_RENDERING
 #include "craftax.h"
 #include "step_crafting.h"
 #include "step_mobs.h"
@@ -17,9 +18,9 @@
 #define Env Craftax
 #include "vecenv.h"
 
-// Tiled vector step: process agents in tiles that fit comfortably in cache.
-// Each thread processes a contiguous block of lightweight env handles while
-// the heavier CraftaxState storage lives in a separate arena.
+// Tiled vector step: process agents in cache-friendly chunks. Each env stores a
+// lightweight handle while the backing CraftaxState instances live in a shared
+// arena allocation.
 void craftax_vec_step(StaticVec* vec) {
     memset(vec->rewards, 0, vec->total_agents * sizeof(float));
     memset(vec->terminals, 0, vec->total_agents * sizeof(float));
@@ -31,7 +32,7 @@ void craftax_vec_step(StaticVec* vec) {
         if (end > size) end = size;
         for (int i = tile; i < end; i++) {
             c_step_gameplay(&envs[i]);
-            craftax_encode_native_observation(envs[i].state, envs[i].observations);
+            craftax_encode_observation(envs[i].state, envs[i].observations);
         }
     }
 }
@@ -45,7 +46,7 @@ void craftax_vec_step_range(StaticVec* vec, int env_start, int env_count, int nu
         if (end > env_end) end = env_end;
         for (int i = tile; i < end; i++) {
             c_step_gameplay(&envs[i]);
-            craftax_encode_native_observation(envs[i].state, envs[i].observations);
+            craftax_encode_observation(envs[i].state, envs[i].observations);
         }
     }
 }
@@ -69,10 +70,6 @@ Env* my_vec_init(
     Env* envs = (Env*)calloc((size_t)num_envs, sizeof(Env));
     CraftaxArena* arena = (CraftaxArena*)calloc(1, sizeof(CraftaxArena));
     arena->states = craftax_alloc_state_arena(num_envs);
-    arena->num_envs = num_envs;
-    arena->packet_size = CRAFTAX_ARENA_PACKET_SIZE;
-    arena->num_packets = (num_envs + CRAFTAX_ARENA_PACKET_SIZE - 1)
-        / CRAFTAX_ARENA_PACKET_SIZE;
 
     int buf = 0;
     int buf_agents = 0;
@@ -84,8 +81,6 @@ Env* my_vec_init(
         env->rng = (unsigned int)i;
         env->arena = arena;
         env->state = &arena->states[i];
-        env->packet_id = i / arena->packet_size;
-        env->lane_id = i % arena->packet_size;
         env->owns_state_storage = false;
         my_init(env, env_kwargs);
 
@@ -123,8 +118,8 @@ void my_init(Env* env, Dict* kwargs) {
     }
     env->seed = seed_offset + (uint64_t)env->rng;
 
-    // Process-wide reset pool (first caller wins, rest block until ready).
-    // 0 disables caching -- regenerate every reset (exact parity mode).
+    // Process-wide reset pool. A size of 0 disables caching and regenerates the
+    // world on every reset.
     int reset_pool_size = 0;
     DictItem* pool_item = dict_get_unsafe(kwargs, "reset_pool_size");
     if (pool_item != NULL) reset_pool_size = (int)pool_item->value;

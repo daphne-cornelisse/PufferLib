@@ -67,10 +67,6 @@ Env* my_vec_init(
     Env* envs = (Env*)calloc((size_t)num_envs, sizeof(Env));
     CraftaxArena* arena = (CraftaxArena*)calloc(1, sizeof(CraftaxArena));
     arena->states = craftax_mini_alloc_state_arena(num_envs);
-    arena->num_envs = num_envs;
-    arena->packet_size = CRAFTAX_ARENA_PACKET_SIZE;
-    arena->num_packets = (num_envs + CRAFTAX_ARENA_PACKET_SIZE - 1)
-        / CRAFTAX_ARENA_PACKET_SIZE;
 
     int buf = 0;
     int buf_agents = 0;
@@ -82,8 +78,6 @@ Env* my_vec_init(
         env->rng = (unsigned int)i;
         env->arena = arena;
         env->state = &arena->states[i];
-        env->packet_id = i / arena->packet_size;
-        env->lane_id = i % arena->packet_size;
         env->owns_state_storage = false;
         my_init(env, env_kwargs);
 

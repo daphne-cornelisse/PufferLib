@@ -421,69 +421,62 @@ static inline void craftax_refresh_spawn_bits_all(CraftaxState* state) {
     }
 }
 
-#define CRAFTAX_ARENA_PACKET_SIZE 64
-
 typedef struct CraftaxArena {
     CraftaxState* states;
-    int num_envs;
-    int packet_size;
-    int num_packets;
 } CraftaxArena;
 
 #ifdef CRAFTAX_ENABLE_ENV_IMPL
-static inline void craftax_change_floor_native(CraftaxState* state, int32_t action);
-static inline void craftax_do_crafting_native(CraftaxState* state, int32_t action);
-static inline void craftax_do_action_native(
+static inline void craftax_change_floor(CraftaxState* state, int32_t action);
+static inline void craftax_do_crafting(CraftaxState* state, int32_t action);
+static inline void craftax_do_action(
     CraftaxState* state,
     int32_t action,
     CraftaxThreefryKey rng
 );
-static inline void craftax_place_block_native(CraftaxState* state, int32_t action);
-static inline void craftax_shoot_projectile_native(
+static inline void craftax_place_block(CraftaxState* state, int32_t action);
+static inline void craftax_shoot_projectile(
     CraftaxState* state,
     int32_t action
 );
-static inline void craftax_cast_spell_native(CraftaxState* state, int32_t action);
-static inline void craftax_drink_potion_native(CraftaxState* state, int32_t action);
-static inline void craftax_read_book_native(
+static inline void craftax_cast_spell(CraftaxState* state, int32_t action);
+static inline void craftax_drink_potion(CraftaxState* state, int32_t action);
+static inline void craftax_read_book(
     CraftaxState* state,
     const uint32_t rng_words[2],
     int32_t action
 );
-static inline void craftax_enchant_native(
+static inline void craftax_enchant(
     CraftaxState* state,
     int32_t action,
     CraftaxThreefryKey rng
 );
-static inline void craftax_boss_logic_native(CraftaxState* state);
-static inline void craftax_level_up_attributes_native(
+static inline void craftax_boss_logic(CraftaxState* state);
+static inline void craftax_level_up_attributes(
     CraftaxState* state,
     int32_t action,
     int32_t max_attribute
 );
-static inline void craftax_move_player_native(
-    CraftaxState* state,
-    int32_t action,
-    bool god_mode
-);
-static inline void craftax_update_mobs_native(
-    CraftaxState* state,
-    CraftaxThreefryKey rng
-);
-static inline void craftax_spawn_mobs_native(
-    CraftaxState* state,
-    CraftaxThreefryKey rng
-);
-static inline void craftax_update_plants_native(CraftaxState* state);
-static inline void craftax_update_player_intrinsics_native(
+static inline void craftax_move_player(
     CraftaxState* state,
     int32_t action
 );
-static inline void craftax_clip_inventory_and_intrinsics_native(
+static inline void craftax_update_mobs(
     CraftaxState* state,
-    bool god_mode
+    CraftaxThreefryKey rng
 );
-static inline void craftax_calculate_inventory_achievements_native(
+static inline void craftax_spawn_mobs(
+    CraftaxState* state,
+    CraftaxThreefryKey rng
+);
+static inline void craftax_update_plants(CraftaxState* state);
+static inline void craftax_update_player_intrinsics(
+    CraftaxState* state,
+    int32_t action
+);
+static inline void craftax_clip_inventory_and_intrinsics(
+    CraftaxState* state
+);
+static inline void craftax_calculate_inventory_achievements(
     CraftaxState* state
 );
 #endif
@@ -522,8 +515,6 @@ typedef struct Craftax {
     CraftaxThreefryKey rng_key;
     CraftaxArena* arena;
     CraftaxState* state;
-    int32_t packet_id;
-    int32_t lane_id;
     bool owns_state_storage;
 
     float achievements[CRAFTAX_NUM_ACHIEVEMENTS];
@@ -549,7 +540,7 @@ static const float CRAFTAX_ACHIEVEMENT_REWARD_MAP[CRAFTAX_NUM_ACHIEVEMENTS] = {
 };
 static const float CRAFTAX_MAX_EPISODE_RETURN = 226.0f;
 
-static inline CraftaxThreefryKey craftax_step_native_next_key(
+static inline CraftaxThreefryKey craftax_next_key(
     CraftaxThreefryKey* rng
 ) {
     CraftaxThreefryKey subkey;
@@ -586,9 +577,8 @@ static inline void craftax_reset_state_from_reset_key(
 
 // ============================================================
 // Reset pool: pre-generate N worlds once, then memcpy on reset.
-// Trades world diversity (<= pool_size unique maps per process) for
-// ~500x faster reset. Set pool_size=0 to disable (exact per-seed
-// world; required for the parity harness).
+// Trades world diversity (at most pool_size unique maps per process) for much
+// faster resets. Set pool_size=0 to regenerate from the seed every time.
 // ============================================================
 static int g_craftax_reset_pool_size = 0;
 static CraftaxState* g_craftax_reset_pool = NULL;
@@ -683,7 +673,7 @@ static inline void craftax_set_reset_pool_size(int n) {
             CraftaxThreefryKey init_key = craftax_prng_key((uint32_t)i);
             CraftaxThreefryKey discard, reset_key;
             craftax_threefry_split(init_key, &discard, &reset_key);
-            craftax_reset_state_from_reset_key(&g_craftax_reset_pool[i], reset_key);
+    craftax_reset_state_from_reset_key(&g_craftax_reset_pool[i], reset_key);
         }
     }
     g_craftax_reset_pool_ready = 1;
@@ -696,14 +686,8 @@ static inline void craftax_ensure_state_storage(Craftax* env) {
 
     CraftaxArena* arena = (CraftaxArena*)calloc(1, sizeof(CraftaxArena));
     arena->states = (CraftaxState*)calloc(1, sizeof(CraftaxState));
-    arena->num_envs = 1;
-    arena->packet_size = 1;
-    arena->num_packets = 1;
-
     env->arena = arena;
     env->state = arena->states;
-    env->packet_id = 0;
-    env->lane_id = 0;
     env->owns_state_storage = true;
 }
 
@@ -726,8 +710,7 @@ static inline void craftax_reset_state_from_seed(Craftax* env) {
 // when enabled, falls through to generate_world otherwise. Pool index is
 // derived from the reset_key so different done events pick different
 // pooled worlds. The direct craftax_reset_state_from_reset_key stays
-// pool-free so the parity harness and any other direct caller get exact
-// per-key determinism.
+// pool-free so direct callers always regenerate from the provided reset key.
 static inline void craftax_reset_state_on_done(
     CraftaxState* out,
     CraftaxThreefryKey reset_key
@@ -740,7 +723,7 @@ static inline void craftax_reset_state_on_done(
     craftax_reset_state_from_reset_key(out, reset_key);
 }
 
-static inline void craftax_encode_native_observation(
+static inline void craftax_encode_observation(
     const CraftaxState* state,
     float* obs
 ) {
@@ -750,7 +733,7 @@ static inline void craftax_encode_native_observation(
     craftax_encode_reset_observation((const CraftaxWorldState*)(const void*)state, obs);
 }
 
-static inline float craftax_calculate_light_level_native(int32_t timestep) {
+static inline float craftax_calculate_light_level(int32_t timestep) {
     float progress = fmodf(
         (float)timestep / (float)CRAFTAX_DAY_LENGTH,
         1.0f
@@ -759,7 +742,7 @@ static inline float craftax_calculate_light_level_native(int32_t timestep) {
     return 1.0f - powf(fabsf(c), 3.0f);
 }
 
-static inline bool craftax_is_game_over_native(const CraftaxState* state) {
+static inline bool craftax_is_game_over(const CraftaxState* state) {
     return state->timestep >= CRAFTAX_DEFAULT_MAX_TIMESTEPS
         || state->player_health <= 0.0f;
 }
@@ -788,7 +771,7 @@ static void add_log(Craftax* env) {
     env->log.n += 1.0f;
 }
 
-static float craftax_gameplay_step_native(
+static float craftax_gameplay_step(
     CraftaxState* state,
     int32_t action,
     CraftaxThreefryKey rng
@@ -799,37 +782,37 @@ static float craftax_gameplay_step_native(
     action = state->is_sleeping ? CRAFTAX_ACTION_NOOP : action;
     action = state->is_resting ? CRAFTAX_ACTION_NOOP : action;
 
-    craftax_change_floor_native(state, action);
-    craftax_do_crafting_native(state, action);
+    craftax_change_floor(state, action);
+    craftax_do_crafting(state, action);
 
-    CraftaxThreefryKey subkey = craftax_step_native_next_key(&rng);
-    craftax_do_action_native(state, action, subkey);
+    CraftaxThreefryKey subkey = craftax_next_key(&rng);
+    craftax_do_action(state, action, subkey);
 
-    craftax_place_block_native(state, action);
-    craftax_shoot_projectile_native(state, action);
-    craftax_cast_spell_native(state, action);
-    craftax_drink_potion_native(state, action);
+    craftax_place_block(state, action);
+    craftax_shoot_projectile(state, action);
+    craftax_cast_spell(state, action);
+    craftax_drink_potion(state, action);
 
-    subkey = craftax_step_native_next_key(&rng);
-    craftax_read_book_native(state, subkey.word, action);
+    subkey = craftax_next_key(&rng);
+    craftax_read_book(state, subkey.word, action);
 
-    subkey = craftax_step_native_next_key(&rng);
-    craftax_enchant_native(state, action, subkey);
+    subkey = craftax_next_key(&rng);
+    craftax_enchant(state, action, subkey);
 
-    craftax_boss_logic_native(state);
-    craftax_level_up_attributes_native(state, action, CRAFTAX_MAX_ATTRIBUTE);
-    craftax_move_player_native(state, action, false);
+    craftax_boss_logic(state);
+    craftax_level_up_attributes(state, action, CRAFTAX_MAX_ATTRIBUTE);
+    craftax_move_player(state, action);
 
-    subkey = craftax_step_native_next_key(&rng);
-    craftax_update_mobs_native(state, subkey);
+    subkey = craftax_next_key(&rng);
+    craftax_update_mobs(state, subkey);
 
-    subkey = craftax_step_native_next_key(&rng);
-    craftax_spawn_mobs_native(state, subkey);
+    subkey = craftax_next_key(&rng);
+    craftax_spawn_mobs(state, subkey);
 
-    craftax_update_plants_native(state);
-    craftax_update_player_intrinsics_native(state, action);
-    craftax_clip_inventory_and_intrinsics_native(state, false);
-    craftax_calculate_inventory_achievements_native(state);
+    craftax_update_plants(state);
+    craftax_update_player_intrinsics(state, action);
+    craftax_clip_inventory_and_intrinsics(state);
+    craftax_calculate_inventory_achievements(state);
 
     float reward = 0.0f;
     for (int i = 0; i < CRAFTAX_NUM_ACHIEVEMENTS; i++) {
@@ -837,9 +820,9 @@ static float craftax_gameplay_step_native(
         reward += (float)delta * CRAFTAX_ACHIEVEMENT_REWARD_MAP[i];
     }
 
-    subkey = craftax_step_native_next_key(&rng);
+    subkey = craftax_next_key(&rng);
     state->timestep += 1;
-    state->light_level = craftax_calculate_light_level_native(state->timestep);
+    state->light_level = craftax_calculate_light_level(state->timestep);
     state->state_rng[0] = subkey.word[0];
     state->state_rng[1] = subkey.word[1];
 
@@ -857,7 +840,6 @@ static void c_init(Craftax* env) {
     env->episode_length_accum = 0;
     memset(env->achievements, 0, sizeof(env->achievements));
     memset(&env->log, 0, sizeof(env->log));
-    craftax_wg_init_cell_templates();
     craftax_reset_state_from_seed(env);
 }
 
@@ -873,7 +855,7 @@ static void c_reset(Craftax* env) {
     memset(env->achievements, 0, sizeof(env->achievements));
 
     craftax_reset_state_from_seed(env);
-    craftax_encode_native_observation(env->state, env->observations);
+    craftax_encode_observation(env->state, env->observations);
 }
 
 static void c_step_gameplay(Craftax* env) {
@@ -890,8 +872,8 @@ static void c_step_gameplay(Craftax* env) {
     CraftaxThreefryKey reset_key;
     craftax_threefry_split(step_key, &step_rng, &reset_key);
 
-    float reward = craftax_gameplay_step_native(env->state, action, step_rng);
-    bool done = craftax_is_game_over_native(env->state);
+    float reward = craftax_gameplay_step(env->state, action, step_rng);
+    bool done = craftax_is_game_over(env->state);
     craftax_copy_achievements_to_env(env, env->state);
 
     env->rewards[0] = reward;
@@ -910,7 +892,7 @@ static void c_step_gameplay(Craftax* env) {
 
 static void c_step(Craftax* env) {
     c_step_gameplay(env);
-    craftax_encode_native_observation(env->state, env->observations);
+    craftax_encode_observation(env->state, env->observations);
 }
 
 static void c_close(Craftax* env) {
@@ -958,6 +940,7 @@ static void c_close(Craftax* env) {
 #define CRAFTAX_TEX_PLAYER_RIGHT 40
 #define CRAFTAX_TEX_PLAYER_SLEEP 41
 #define CRAFTAX_TEX_ITEM_BASE 42
+#define CRAFTAX_TEX_MOB_BASE 47
 
 static Texture2D craftax_textures[CRAFTAX_TEX_NUM];
 static bool craftax_textures_loaded = false;
@@ -1021,6 +1004,19 @@ static void craftax_draw_tile_tint(int tex_id, int dst_x, int dst_y, Color tint)
 static void craftax_draw_tile(int tex_id, int dst_x, int dst_y, float tint_alpha) {
     Color tint = {255, 255, 255, (unsigned char)(tint_alpha * 255.0f)};
     craftax_draw_tile_tint(tex_id, dst_x, dst_y, tint);
+}
+
+static void craftax_draw_texture_box(
+    int tex_id,
+    int dst_x,
+    int dst_y,
+    int dst_size,
+    Color tint
+) {
+    if (tex_id < 0 || tex_id >= CRAFTAX_TEX_NUM) return;
+    Rectangle src = {0, 0, CRAFTAX_TEX_TILE_PX, CRAFTAX_TEX_TILE_PX};
+    Rectangle dst = {(float)dst_x, (float)dst_y, (float)dst_size, (float)dst_size};
+    DrawTexturePro(craftax_textures[tex_id], src, dst, (Vector2){0, 0}, 0.0f, tint);
 }
 
 static int craftax_mob_tex_id(bool passive, bool ranged) {
@@ -1147,10 +1143,75 @@ static void craftax_draw_projectile_overlays(
     }
 }
 
+static void craftax_draw_hud_panel(int x, int y, int w, int h, const char* title) {
+    DrawRectangleRounded((Rectangle){(float)x, (float)y, (float)w, (float)h}, 0.18f, 8,
+        (Color){28, 31, 35, 235});
+    DrawRectangleLinesEx((Rectangle){(float)x, (float)y, (float)w, (float)h}, 2.0f,
+        (Color){72, 78, 88, 255});
+    if (title != NULL && title[0] != '\0') {
+        DrawText(title, x + 10, y + 8, 16, (Color){230, 232, 236, 255});
+    }
+}
+
+static void craftax_draw_hud_bar(
+    int x,
+    int y,
+    int w,
+    const char* label,
+    int value,
+    int max_value,
+    Color fill
+) {
+    if (max_value < 1) max_value = 1;
+    if (value < 0) value = 0;
+    if (value > max_value) value = max_value;
+
+    int bar_y = y + 18;
+    int bar_h = 12;
+    int fill_w = (w - 2) * value / max_value;
+
+    DrawText(label, x, y, 15, (Color){215, 217, 221, 255});
+    DrawRectangle(x, bar_y, w, bar_h, (Color){55, 60, 68, 255});
+    DrawRectangle(x + 1, bar_y + 1, fill_w, bar_h - 2, fill);
+    DrawRectangleLines(x, bar_y, w, bar_h, (Color){105, 112, 122, 255});
+    DrawText(TextFormat("%d/%d", value, max_value), x + w + 8, y + 8, 14,
+        (Color){235, 238, 242, 255});
+}
+
+static void craftax_draw_hud_slot(
+    int x,
+    int y,
+    int tex_id,
+    Color tint,
+    const char* label,
+    int value
+) {
+    const int slot = 28;
+    DrawRectangleRounded((Rectangle){(float)x, (float)y, (float)slot, (float)slot}, 0.2f, 6,
+        (Color){47, 51, 58, 255});
+    DrawRectangleLinesEx((Rectangle){(float)x, (float)y, (float)slot, (float)slot}, 1.0f,
+        (Color){88, 94, 104, 255});
+    craftax_draw_texture_box(tex_id, x + 4, y + 4, 20, tint);
+    DrawText(label, x + slot + 8, y + 2, 14, (Color){210, 214, 220, 255});
+    DrawText(TextFormat("%d", value), x + slot + 8, y + 15, 15, WHITE);
+}
+
+static void craftax_draw_hud_badge(
+    int x,
+    int y,
+    int w,
+    const char* label,
+    Color bg,
+    Color fg
+) {
+    DrawRectangleRounded((Rectangle){(float)x, (float)y, (float)w, 20.0f}, 0.3f, 6, bg);
+    DrawText(label, x + 8, y + 3, 14, fg);
+}
+
 static void c_render(Craftax* env) {
     const int view_w = CRAFTAX_RENDER_COLS * CRAFTAX_TEX_DRAW_PX;
     const int view_h = CRAFTAX_RENDER_ROWS * CRAFTAX_TEX_DRAW_PX;
-    const int hud_h = 96;
+    const int hud_h = 220;
 
     if (!IsWindowReady()) {
         if (!craftax_ensure_render_display(env)) {
@@ -1230,34 +1291,74 @@ static void c_render(Craftax* env) {
 
     // HUD
     int hud_y = view_h;
-    DrawRectangle(0, hud_y, view_w, hud_h, (Color){20, 20, 20, 255});
-    DrawText(TextFormat("HP:%.0f  F:%d  D:%d  E:%d  M:%d  XP:%d  lvl:%d  t:%d",
-             s->player_health, s->player_food, s->player_drink,
-             s->player_energy, s->player_mana, s->player_xp,
-             s->player_level, s->timestep),
-             4, hud_y + 4, 14, WHITE);
-    DrawText(TextFormat("DEX:%d  STR:%d  INT:%d  light:%.2f  floor_kills:%d/%d",
-             s->player_dexterity, s->player_strength,
-             s->player_intelligence, s->light_level,
-             s->monsters_killed[lvl], CRAFTAX_MONSTERS_KILLED_TO_CLEAR_LEVEL),
-             4, hud_y + 22, 14, (Color){200, 200, 200, 255});
-    DrawText(TextFormat("inv W:%d S:%d C:%d I:%d D:%d Sa:%d R:%d Sp:%d T:%d Ar:%d B:%d",
-             s->inventory.wood, s->inventory.stone, s->inventory.coal,
-             s->inventory.iron, s->inventory.diamond, s->inventory.sapphire,
-             s->inventory.ruby, s->inventory.sapling, s->inventory.torches,
-             s->inventory.arrows, s->inventory.books),
-             4, hud_y + 40, 14, (Color){220, 220, 220, 255});
+    DrawRectangle(0, hud_y, view_w, hud_h, (Color){14, 16, 19, 255});
+    craftax_draw_hud_panel(12, hud_y + 12, 256, 132, "Vitals");
+    craftax_draw_hud_bar(24, hud_y + 40, 140, "Health", (int)(s->player_health + 0.5f), 10,
+        (Color){198, 58, 62, 255});
+    craftax_draw_hud_bar(24, hud_y + 64, 140, "Food", s->player_food, 10,
+        (Color){196, 142, 56, 255});
+    craftax_draw_hud_bar(24, hud_y + 88, 140, "Drink", s->player_drink, 10,
+        (Color){70, 150, 224, 255});
+    craftax_draw_hud_bar(24, hud_y + 112, 140, "Energy", s->player_energy, 10,
+        (Color){120, 196, 94, 255});
+    craftax_draw_hud_bar(24, hud_y + 136, 140, "Mana", s->player_mana, 10,
+        (Color){168, 112, 222, 255});
+
+    craftax_draw_hud_panel(280, hud_y + 12, 220, 132, "Resources");
+    craftax_draw_hud_slot(292, hud_y + 40, CRAFTAX_BLOCK_WOOD, WHITE, "Wood", s->inventory.wood);
+    craftax_draw_hud_slot(292, hud_y + 72, CRAFTAX_BLOCK_STONE, WHITE, "Stone", s->inventory.stone);
+    craftax_draw_hud_slot(292, hud_y + 104, CRAFTAX_BLOCK_COAL, WHITE, "Coal", s->inventory.coal);
+    craftax_draw_hud_slot(392, hud_y + 40, CRAFTAX_BLOCK_IRON, WHITE, "Iron", s->inventory.iron);
+    craftax_draw_hud_slot(392, hud_y + 72, CRAFTAX_BLOCK_DIAMOND, WHITE, "Diamond", s->inventory.diamond);
+    craftax_draw_hud_slot(392, hud_y + 104, CRAFTAX_BLOCK_PLANT, WHITE, "Sapling", s->inventory.sapling);
+    DrawText(TextFormat("Ruby %d   Sapphire %d", s->inventory.ruby, s->inventory.sapphire),
+        292, hud_y + 130, 14, (Color){210, 214, 220, 255});
+
+    craftax_draw_hud_panel(512, hud_y + 12, 188, 132, "Tools");
+    craftax_draw_hud_slot(524, hud_y + 40, CRAFTAX_TEX_ITEM_BASE + CRAFTAX_ITEM_TORCH, WHITE,
+        "Torch", s->inventory.torches);
+    craftax_draw_hud_slot(524, hud_y + 72, craftax_projectile_tex_id((int32_t[2]){1, 0}),
+        (Color){255, 245, 160, 255}, "Arrow", s->inventory.arrows);
+    craftax_draw_hud_slot(524, hud_y + 104, CRAFTAX_BLOCK_CHEST, WHITE, "Book", s->inventory.books);
+    DrawText(TextFormat("Pickaxe %d", s->inventory.pickaxe), 624, hud_y + 44, 15, WHITE);
+    DrawText(TextFormat("Sword %d", s->inventory.sword), 624, hud_y + 68, 15, WHITE);
+    DrawText(TextFormat("Bow %d", s->inventory.bow), 624, hud_y + 92, 15, WHITE);
+    DrawText(TextFormat("Armour %d %d %d %d",
+        s->inventory.armour[0], s->inventory.armour[1],
+        s->inventory.armour[2], s->inventory.armour[3]),
+        624, hud_y + 118, 15, (Color){210, 214, 220, 255});
+
+    craftax_draw_hud_panel(12, hud_y + 152, view_w - 24, 60, "Status");
     int ach_count = 0;
     for (int i = 0; i < CRAFTAX_NUM_ACHIEVEMENTS; i++) ach_count += s->achievements[i] ? 1 : 0;
-    DrawText(TextFormat("equip pick:%d sword:%d bow:%d armour:[%d %d %d %d] ach:%d/%d ret:%.2f len:%d",
-             s->inventory.pickaxe, s->inventory.sword, s->inventory.bow,
-             s->inventory.armour[0], s->inventory.armour[1],
-             s->inventory.armour[2], s->inventory.armour[3],
-             ach_count, CRAFTAX_NUM_ACHIEVEMENTS,
-             env->episode_return_accum, env->episode_length_accum),
-             4, hud_y + 58, 14, (Color){200, 200, 140, 255});
+    DrawText(TextFormat("XP %d   DEX %d   STR %d   INT %d   Floor %d   Timestep %d",
+        s->player_xp, s->player_dexterity, s->player_strength,
+        s->player_intelligence, s->player_level, s->timestep),
+        24, hud_y + 176, 16, WHITE);
+    DrawText(TextFormat("Light %.2f   Kills %d/%d   Achievements %d/%d   Return %.2f   Length %d",
+        s->light_level, s->monsters_killed[lvl], CRAFTAX_MONSTERS_KILLED_TO_CLEAR_LEVEL,
+        ach_count, CRAFTAX_NUM_ACHIEVEMENTS, env->episode_return_accum, env->episode_length_accum),
+        24, hud_y + 196, 15, (Color){215, 218, 222, 255});
+
+    int badge_x = 360;
+    craftax_draw_hud_badge(badge_x, hud_y + 170, 78,
+        s->is_sleeping ? "Sleeping" : "Awake",
+        s->is_sleeping ? (Color){74, 88, 134, 255} : (Color){58, 96, 68, 255}, WHITE);
+    craftax_draw_hud_badge(badge_x + 86, hud_y + 170, 78,
+        s->is_resting ? "Resting" : "Active",
+        s->is_resting ? (Color){126, 96, 52, 255} : (Color){64, 72, 80, 255}, WHITE);
+    craftax_draw_hud_badge(badge_x + 172, hud_y + 170, 78,
+        s->learned_spells[0] ? "Fireball" : "No Fire",
+        s->learned_spells[0] ? (Color){150, 74, 40, 255} : (Color){54, 58, 62, 255}, WHITE);
+    craftax_draw_hud_badge(badge_x + 258, hud_y + 170, 78,
+        s->learned_spells[1] ? "Iceball" : "No Ice",
+        s->learned_spells[1] ? (Color){54, 112, 160, 255} : (Color){54, 58, 62, 255}, WHITE);
 
     EndDrawing();
+}
+#else
+static void c_render(Craftax* env) {
+    (void)env;
 }
 #endif
 

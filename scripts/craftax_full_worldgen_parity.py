@@ -49,7 +49,6 @@ class NativeCraftaxWorldgen:
                 int32_t* player_pos_out
             ) {
                 CraftaxWorldState state;
-                craftax_wg_init_cell_templates();
                 craftax_generate_world_from_seed(seed, &state);
                 memcpy(map_out, state.map, CRAFTAX_WG_NUM_LEVELS * CRAFTAX_WG_MAP_SIZE * CRAFTAX_WG_MAP_SIZE);
                 memcpy(item_map_out, state.item_map, CRAFTAX_WG_NUM_LEVELS * CRAFTAX_WG_MAP_SIZE * CRAFTAX_WG_MAP_SIZE);

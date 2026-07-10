@@ -107,7 +107,7 @@ class NativeCraftaxMiniMonteCarlo:
                     craftax_threefry_split(step_key, &step_rng, &reset_key);
                     (void)reset_key;
 
-                    float reward = craftax_mini_gameplay_step_native(&env, action, step_rng);
+                    float reward = craftax_mini_gameplay_step(&env, action, step_rng);
                     reward_sum += reward;
                     steps += 1;
 
@@ -117,7 +117,7 @@ class NativeCraftaxMiniMonteCarlo:
                     if (reward > 0.0f) {
                         success = 1;
                     }
-                    if (craftax_mini_is_game_over_native(&env)) {
+                    if (craftax_mini_is_game_over(&env)) {
                         break;
                     }
                 }

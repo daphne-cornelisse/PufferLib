@@ -1,8 +1,7 @@
 // Shared Craftax state transition helpers.
 //
-// These helpers intentionally are not integrated into c_step yet. They mutate a
-// full CraftaxState, or an Inventory plus read-only state context, so tests can
-// compare each subsystem directly against the installed JAX implementation.
+// These helpers handle floor changes, projectiles, spells, enchantments, and
+// chest interactions directly on CraftaxState.
 
 #pragma once
 
@@ -46,7 +45,7 @@ static inline int32_t craftax_medium_choice_weighted(
 }
 
 static inline int32_t craftax_medium_projectile_count(const CraftaxState* state) {
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
@@ -60,7 +59,7 @@ static inline int32_t craftax_medium_projectile_count(const CraftaxState* state)
 static inline int32_t craftax_medium_first_projectile_slot(
     const CraftaxState* state
 ) {
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
@@ -83,7 +82,7 @@ static inline void craftax_medium_spawn_player_projectile(
         return;
     }
 
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
@@ -97,7 +96,7 @@ static inline void craftax_medium_spawn_player_projectile(
 }
 
 static inline int32_t craftax_medium_level_achievement(int32_t level) {
-    switch (craftax_step_jax_index(level, CRAFTAX_NUM_LEVELS)) {
+    switch (craftax_clamp_index(level, CRAFTAX_NUM_LEVELS)) {
     case 1:
         return CRAFTAX_ACH_ENTER_DUNGEON;
     case 2:
@@ -119,7 +118,7 @@ static inline int32_t craftax_medium_level_achievement(int32_t level) {
     }
 }
 
-static inline void craftax_shoot_projectile_native(
+static inline void craftax_shoot_projectile(
     CraftaxState* state,
     int32_t action
 ) {
@@ -143,7 +142,7 @@ static inline void craftax_shoot_projectile_native(
     state->inventory.arrows -= (int32_t)is_shooting_arrow;
 }
 
-static inline void craftax_cast_spell_native(
+static inline void craftax_cast_spell(
     CraftaxState* state,
     int32_t action
 ) {
@@ -183,7 +182,7 @@ static inline void craftax_cast_spell_native(
     state->player_mana -= (int32_t)is_casting_spell * 2;
 }
 
-static inline void craftax_enchant_native(
+static inline void craftax_enchant(
     CraftaxState* state,
     int32_t action,
     CraftaxThreefryKey rng
@@ -191,15 +190,15 @@ static inline void craftax_enchant_native(
     int32_t direction[2];
     craftax_step_direction(state->player_direction, direction);
 
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    int32_t target_row = craftax_step_jax_index(
+    int32_t target_row = craftax_clamp_index(
         state->player_position[0] + direction[0],
         CRAFTAX_MAP_SIZE
     );
-    int32_t target_col = craftax_step_jax_index(
+    int32_t target_col = craftax_clamp_index(
         state->player_position[1] + direction[1],
         CRAFTAX_MAP_SIZE
     );
@@ -274,19 +273,19 @@ static inline void craftax_enchant_native(
     state->player_mana -= (int32_t)is_enchanting * 9;
 }
 
-static inline void craftax_change_floor_native(
+static inline void craftax_change_floor(
     CraftaxState* state,
     int32_t action
 ) {
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    int32_t player_row = craftax_step_jax_index(
+    int32_t player_row = craftax_clamp_index(
         state->player_position[0],
         CRAFTAX_MAP_SIZE
     );
-    int32_t player_col = craftax_step_jax_index(
+    int32_t player_col = craftax_clamp_index(
         state->player_position[1],
         CRAFTAX_MAP_SIZE
     );
@@ -310,14 +309,14 @@ static inline void craftax_change_floor_native(
     bool new_floor = new_level != 0 && !state->achievements[achievement];
 
     if (is_moving_down) {
-        int32_t ladder_level = craftax_step_jax_index(
+        int32_t ladder_level = craftax_clamp_index(
             state->player_level + 1,
             CRAFTAX_NUM_LEVELS
         );
         state->player_position[0] = state->up_ladders[ladder_level][0];
         state->player_position[1] = state->up_ladders[ladder_level][1];
     } else if (is_moving_up) {
-        int32_t ladder_level = craftax_step_jax_index(
+        int32_t ladder_level = craftax_clamp_index(
             state->player_level - 1,
             CRAFTAX_NUM_LEVELS
         );
@@ -331,7 +330,7 @@ static inline void craftax_change_floor_native(
     state->player_xp += (int32_t)new_floor;
 }
 
-static inline void craftax_add_items_from_chest_native(
+static inline void craftax_add_items_from_chest(
     const CraftaxState* state,
     CraftaxInventory* inventory,
     bool is_opening_chest,
@@ -430,7 +429,7 @@ static inline void craftax_add_items_from_chest_native(
         ? sword_loot_level
         : inventory->sword;
 
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );

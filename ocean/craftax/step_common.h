@@ -1,14 +1,13 @@
 // Shared Craftax step helpers.
 //
-// These helpers intentionally are not integrated into c_step yet. They mutate a
-// full CraftaxState in place so tests can compare each subsystem directly
-// against the installed JAX implementation.
+// These helpers operate directly on CraftaxState and are reused across the
+// gameplay step pipeline.
 
 #pragma once
 
 #include "craftax.h"
 
-static inline int32_t craftax_step_jax_index(int32_t index, int32_t size) {
+static inline int32_t craftax_clamp_index(int32_t index, int32_t size) {
     if (index < 0) {
         index += size;
     }
@@ -74,7 +73,7 @@ static inline bool craftax_step_has_beaten_boss(const CraftaxState* state) {
 static inline void craftax_step_direction(int32_t action, int32_t direction[2]) {
     direction[0] = 0;
     direction[1] = 0;
-    int32_t direction_index = craftax_step_jax_index(action, 16);
+    int32_t direction_index = craftax_clamp_index(action, 16);
     if (direction_index == CRAFTAX_ACTION_LEFT) {
         direction[1] = -1;
     } else if (direction_index == CRAFTAX_ACTION_RIGHT) {
@@ -122,9 +121,9 @@ static inline bool craftax_step_is_in_mob(
     int32_t row,
     int32_t col
 ) {
-    int32_t level = craftax_step_jax_index(state->player_level, CRAFTAX_NUM_LEVELS);
-    int32_t map_row = craftax_step_jax_index(row, CRAFTAX_MAP_SIZE);
-    int32_t map_col = craftax_step_jax_index(col, CRAFTAX_MAP_SIZE);
+    int32_t level = craftax_clamp_index(state->player_level, CRAFTAX_NUM_LEVELS);
+    int32_t map_row = craftax_clamp_index(row, CRAFTAX_MAP_SIZE);
+    int32_t map_col = craftax_clamp_index(col, CRAFTAX_MAP_SIZE);
     bool player_here = state->player_position[0] == row
         && state->player_position[1] == col;
     return ((state->mob_bits[level][map_row] >> map_col) & 1ULL) || player_here;
@@ -139,9 +138,9 @@ static inline bool craftax_step_valid_land_position(
         && row < CRAFTAX_MAP_SIZE
         && col >= 0
         && col < CRAFTAX_MAP_SIZE;
-    int32_t level = craftax_step_jax_index(state->player_level, CRAFTAX_NUM_LEVELS);
-    int32_t map_row = craftax_step_jax_index(row, CRAFTAX_MAP_SIZE);
-    int32_t map_col = craftax_step_jax_index(col, CRAFTAX_MAP_SIZE);
+    int32_t level = craftax_clamp_index(state->player_level, CRAFTAX_NUM_LEVELS);
+    int32_t map_row = craftax_clamp_index(row, CRAFTAX_MAP_SIZE);
+    int32_t map_col = craftax_clamp_index(col, CRAFTAX_MAP_SIZE);
     int32_t block = state->map[level][map_row][map_col];
     bool in_solid_block = craftax_step_is_solid_block(block);
     bool in_mob = craftax_step_is_in_mob(state, row, col);
@@ -154,10 +153,9 @@ static inline bool craftax_step_valid_land_position(
     return valid_move;
 }
 
-static inline void craftax_move_player_native(
+static inline void craftax_move_player(
     CraftaxState* state,
-    int32_t action,
-    bool god_mode
+    int32_t action
 ) {
     int32_t direction[2];
     craftax_step_direction(action, direction);
@@ -169,8 +167,6 @@ static inline void craftax_move_player_native(
         proposed_row,
         proposed_col
     );
-    valid_move = valid_move || god_mode;
-
     state->player_position[0] += (int32_t)valid_move * direction[0];
     state->player_position[1] += (int32_t)valid_move * direction[1];
 
@@ -179,7 +175,7 @@ static inline void craftax_move_player_native(
         + action * (int32_t)is_new_direction;
 }
 
-static inline void craftax_update_plants_native(CraftaxState* state) {
+static inline void craftax_update_plants(CraftaxState* state) {
     bool finished_growing_plants[CRAFTAX_MAX_GROWING_PLANTS];
 
     for (int plant = 0; plant < CRAFTAX_MAX_GROWING_PLANTS; plant++) {
@@ -190,11 +186,11 @@ static inline void craftax_update_plants_native(CraftaxState* state) {
     }
 
     for (int plant = 0; plant < CRAFTAX_MAX_GROWING_PLANTS; plant++) {
-        int32_t row = craftax_step_jax_index(
+        int32_t row = craftax_clamp_index(
             state->growing_plants_positions[plant][0],
             CRAFTAX_MAP_SIZE
         );
-        int32_t col = craftax_step_jax_index(
+        int32_t col = craftax_clamp_index(
             state->growing_plants_positions[plant][1],
             CRAFTAX_MAP_SIZE
         );
@@ -205,7 +201,7 @@ static inline void craftax_update_plants_native(CraftaxState* state) {
     }
 }
 
-static inline void craftax_boss_logic_native(CraftaxState* state) {
+static inline void craftax_boss_logic(CraftaxState* state) {
     state->achievements[CRAFTAX_ACH_DEFEAT_NECROMANCER] =
         state->achievements[CRAFTAX_ACH_DEFEAT_NECROMANCER]
         || craftax_step_has_beaten_boss(state);
@@ -213,7 +209,7 @@ static inline void craftax_boss_logic_native(CraftaxState* state) {
         (int32_t)craftax_step_is_fighting_boss(state);
 }
 
-static inline void craftax_level_up_attributes_native(
+static inline void craftax_level_up_attributes(
     CraftaxState* state,
     int32_t action,
     int32_t max_attribute
@@ -238,9 +234,8 @@ static inline void craftax_level_up_attributes_native(
     state->player_xp -= (int32_t)is_levelling_up;
 }
 
-static inline void craftax_clip_inventory_and_intrinsics_native(
-    CraftaxState* state,
-    bool god_mode
+static inline void craftax_clip_inventory_and_intrinsics(
+    CraftaxState* state
 ) {
     state->inventory.wood = craftax_step_mini32(state->inventory.wood, 99);
     state->inventory.stone = craftax_step_mini32(state->inventory.stone, 99);
@@ -269,9 +264,8 @@ static inline void craftax_clip_inventory_and_intrinsics_native(
     }
     state->inventory.books = craftax_step_mini32(state->inventory.books, 99);
 
-    float min_health = god_mode ? 9.0f : 0.0f;
     state->player_health = craftax_step_minf32(
-        craftax_step_maxf32(state->player_health, min_health),
+        craftax_step_maxf32(state->player_health, 0.0f),
         (float)craftax_step_get_max_health(state)
     );
     state->player_food = craftax_step_mini32(
@@ -292,7 +286,7 @@ static inline void craftax_clip_inventory_and_intrinsics_native(
     );
 }
 
-static inline void craftax_calculate_inventory_achievements_native(
+static inline void craftax_calculate_inventory_achievements(
     CraftaxState* state
 ) {
     state->achievements[CRAFTAX_ACH_COLLECT_WOOD] =
@@ -347,7 +341,7 @@ static inline void craftax_calculate_inventory_achievements_native(
         || state->inventory.sword >= 4;
 }
 
-static inline void craftax_update_player_intrinsics_native(
+static inline void craftax_update_player_intrinsics(
     CraftaxState* state,
     int32_t action
 ) {
@@ -454,7 +448,7 @@ static inline void craftax_update_player_intrinsics_native(
     state->player_mana = new_mana;
 }
 
-static inline void craftax_drink_potion_native(
+static inline void craftax_drink_potion(
     CraftaxState* state,
     int32_t action
 ) {
@@ -497,7 +491,7 @@ static inline void craftax_drink_potion_native(
         + (1 - (int32_t)is_drinking_yellow_potion) * drinking_potion_index;
     is_drinking_potion = is_drinking_potion || is_drinking_yellow_potion;
 
-    int32_t potion_index = craftax_step_jax_index(drinking_potion_index, 6);
+    int32_t potion_index = craftax_clamp_index(drinking_potion_index, 6);
     int32_t potion_effect_index = state->potion_mapping[potion_index];
 
     int32_t delta_health = 0;
@@ -521,7 +515,7 @@ static inline void craftax_drink_potion_native(
     state->player_energy += delta_energy;
 }
 
-static inline void craftax_read_book_native(
+static inline void craftax_read_book(
     CraftaxState* state,
     const uint32_t rng_words[2],
     int32_t action

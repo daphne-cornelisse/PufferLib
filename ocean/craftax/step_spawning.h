@@ -1,15 +1,10 @@
-// Craftax spawn_mobs, optimized for CPU.
+// Craftax mob spawning logic.
 //
-// Bitwise-equivalent to the prior JAX-transliterated baseline (verified by
-// ocean/craftax_exp/parity_vs_baseline.c over 1.28M paired steps), ~6-9x
-// faster per step by stripping JAX-isms:
-//   - full-grid validity masks -> compact coord list collected in one pass
-//   - bounding-box scan (only cells within MOB_DESPAWN_DISTANCE)
-//   - early return on mob-cap / probability-roll failure (no dead writes)
-//   - merged count + first_empty loops
-//
-// The prior reference implementation is archived at
-// ocean/craftax_exp/step_spawn_mobs_baseline.h.
+// This path is optimized for CPU execution:
+//   - compact coord lists instead of full-grid validity masks
+//   - bounding-box scans around the player
+//   - early returns on mob-cap and probability failures
+//   - merged count + first-empty passes
 
 #pragma once
 
@@ -169,8 +164,8 @@ static inline int32_t craftax_spawn_floor_mob_type(
         {0, 0, 0}, {2, 2, 2}, {1, 1, 1}, {2, 3, 3}, {2, 4, 4},
         {1, 5, 5}, {1, 6, 6}, {1, 7, 7}, {0, 0, 0},
     };
-    int32_t level = craftax_step_jax_index(floor, CRAFTAX_NUM_LEVELS);
-    int32_t class_index = craftax_step_jax_index(mob_class, 3);
+    int32_t level = craftax_clamp_index(floor, CRAFTAX_NUM_LEVELS);
+    int32_t class_index = craftax_clamp_index(mob_class, 3);
     return mapping[level][class_index];
 }
 
@@ -188,8 +183,8 @@ static inline float craftax_spawn_floor_spawn_chance(
         {0.0f, 0.06f, 0.05f, 0.0f},
         {0.1f, 0.06f, 0.05f, 0.0f},
     };
-    int32_t level = craftax_step_jax_index(floor, CRAFTAX_NUM_LEVELS);
-    int32_t index = craftax_step_jax_index(chance_index, 4);
+    int32_t level = craftax_clamp_index(floor, CRAFTAX_NUM_LEVELS);
+    int32_t index = craftax_clamp_index(chance_index, 4);
     return chances[level][index];
 }
 
@@ -202,8 +197,8 @@ static inline float craftax_spawn_mob_type_health(
         {0.0f, 12.0f, 12.0f, 0.0f}, {0.0f, 20.0f, 4.0f, 0.0f},
         {0.0f, 20.0f, 14.0f, 0.0f}, {0.0f, 24.0f, 16.0f, 0.0f},
     };
-    int32_t type_index = craftax_step_jax_index(mob_type, CRAFTAX_NUM_MOB_TYPES);
-    int32_t class_index = craftax_step_jax_index(mob_class, 4);
+    int32_t type_index = craftax_clamp_index(mob_type, CRAFTAX_NUM_MOB_TYPES);
+    int32_t class_index = craftax_clamp_index(mob_class, 4);
     return health[type_index][class_index];
 }
 
@@ -214,7 +209,7 @@ static inline bool craftax_spawn_is_all_valid_block(int32_t block) {
         [CRAFTAX_BLOCK_FIRE_GRASS] = 1,
         [CRAFTAX_BLOCK_ICE_GRASS] = 1,
     };
-    int32_t idx = craftax_step_jax_index(block, CRAFTAX_NUM_BLOCK_TYPES);
+    int32_t idx = craftax_clamp_index(block, CRAFTAX_NUM_BLOCK_TYPES);
     return flags[idx] != 0;
 }
 
@@ -224,7 +219,7 @@ static inline bool craftax_spawn_is_grave_block(int32_t block) {
         [CRAFTAX_BLOCK_GRAVE2] = 1,
         [CRAFTAX_BLOCK_GRAVE3] = 1,
     };
-    int32_t idx = craftax_step_jax_index(block, CRAFTAX_NUM_BLOCK_TYPES);
+    int32_t idx = craftax_clamp_index(block, CRAFTAX_NUM_BLOCK_TYPES);
     return flags[idx] != 0;
 }
 
@@ -232,7 +227,7 @@ static inline bool craftax_spawn_is_water_block(int32_t block) {
     static const uint8_t flags[CRAFTAX_NUM_BLOCK_TYPES] = {
         [CRAFTAX_BLOCK_WATER] = 1,
     };
-    int32_t idx = craftax_step_jax_index(block, CRAFTAX_NUM_BLOCK_TYPES);
+    int32_t idx = craftax_clamp_index(block, CRAFTAX_NUM_BLOCK_TYPES);
     return flags[idx] != 0;
 }
 
@@ -311,7 +306,7 @@ static inline void craftax_spawn_mobs2_count_and_empty(
 //   cum = 0;
 //   for i: if valid[i] { cum += 1.0; if (cum >= draw) return i; }
 // Over a compact list of length valid_count this collapses to a short loop
-// using the same FP arithmetic, preserving bitwise-identical choice.
+// using the same FP arithmetic across the selection path.
 static inline int32_t craftax_spawn_pick_kth(
     int32_t valid_count, CraftaxThreefryKey key
 ) {
@@ -582,9 +577,10 @@ static inline bool craftax_spawn_scan_ranged(
     );
 }
 
-// Both RNG keys are always consumed (preserves baseline RNG sequence).
+// Both RNG keys are always consumed to keep the spawn logic's RNG progression
+// uniform across outcomes.
 // Baseline quirk: type_id[level][slot] is written unconditionally, even
-// when no mob spawns. We match that for bitwise parity.
+// when no mob spawns.
 
 static inline void craftax_spawn_passive_mob(
     CraftaxState* state, CraftaxThreefryKey* rng,
@@ -683,10 +679,10 @@ static inline void craftax_spawn_ranged_mob(
     state->mob_bits[level][row] |= (1ULL << col);
 }
 
-static inline void craftax_spawn_mobs_native(
+static inline void craftax_spawn_mobs(
     CraftaxState* state, CraftaxThreefryKey rng
 ) {
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level, CRAFTAX_NUM_LEVELS
     );
     bool fighting_boss = craftax_step_is_fighting_boss(state);

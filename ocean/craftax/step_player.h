@@ -1,8 +1,7 @@
-// Standalone native port of Craftax do_action.
+// Craftax player action logic.
 //
-// This helper intentionally is not integrated into c_step yet. It mutates a
-// full CraftaxState in place so tests can compare the subsystem directly
-// against the installed JAX implementation.
+// These helpers implement the main action side effects directly on
+// CraftaxState.
 
 #pragma once
 
@@ -66,9 +65,9 @@ static inline float craftax_do_action_mob_defense(
         },
     };
 
-    int32_t type_index = craftax_step_jax_index(type_id, 8);
-    int32_t class_index = craftax_step_jax_index(mob_class_index, 4);
-    int32_t component = craftax_step_jax_index(damage_index, 3);
+    int32_t type_index = craftax_clamp_index(type_id, 8);
+    int32_t class_index = craftax_clamp_index(mob_class_index, 4);
+    int32_t component = craftax_clamp_index(damage_index, 3);
     return defenses[type_index][class_index][component];
 }
 
@@ -109,8 +108,8 @@ static inline int32_t craftax_do_action_mob_achievement(
         },
     };
 
-    int32_t class_index = craftax_step_jax_index(mob_class_index, 3);
-    int32_t type_index = craftax_step_jax_index(type_id, 8);
+    int32_t class_index = craftax_clamp_index(mob_class_index, 3);
+    int32_t type_index = craftax_clamp_index(type_id, 8);
     return achievements[class_index][type_index];
 }
 
@@ -120,7 +119,7 @@ static inline void craftax_do_action_player_damage_vector(
 ) {
     static const float physical_damages[5] = {1.0f, 2.0f, 3.0f, 5.0f, 8.0f};
 
-    int32_t sword_index = craftax_step_jax_index(state->inventory.sword, 5);
+    int32_t sword_index = craftax_clamp_index(state->inventory.sword, 5);
     float physical_damage = physical_damages[sword_index];
     float fire_damage =
         physical_damage * (float)(state->sword_enchantment == 1) * 0.5f;
@@ -182,7 +181,7 @@ static inline void craftax_do_action_attack_mobs3(
     bool* did_kill_mob,
     bool* is_attacking_mob
 ) {
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
@@ -233,7 +232,7 @@ static inline void craftax_do_action_attack_mobs2(
     bool* did_kill_mob,
     bool* is_attacking_mob
 ) {
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
@@ -298,12 +297,12 @@ static inline void craftax_do_action_update_mob_map(
         return;
     }
 
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    int32_t read_row = craftax_step_jax_index(row, CRAFTAX_MAP_SIZE);
-    int32_t read_col = craftax_step_jax_index(col, CRAFTAX_MAP_SIZE);
+    int32_t read_row = craftax_clamp_index(row, CRAFTAX_MAP_SIZE);
+    int32_t read_col = craftax_clamp_index(col, CRAFTAX_MAP_SIZE);
     bool old_value = (state->mob_bits[level][read_row] >> read_col) & 1ULL;
     bool new_value = old_value && !did_kill_mob;
     if (new_value) {
@@ -382,7 +381,7 @@ static inline void craftax_do_action_attack_mob(
 
     craftax_do_action_update_mob_map(state, row, col, *did_kill_mob);
 
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
@@ -399,7 +398,7 @@ static inline bool craftax_do_action_in_bounds(int32_t row, int32_t col) {
 static inline bool craftax_do_action_boss_vulnerable(
     const CraftaxState* state
 ) {
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
@@ -434,7 +433,7 @@ static inline void craftax_do_action_update_plants_with_eat(
     state->growing_plants_age[plant_index] = 0;
 }
 
-static inline void craftax_do_action_native(
+static inline void craftax_do_action(
     CraftaxState* state,
     int32_t action,
     CraftaxThreefryKey rng
@@ -460,12 +459,12 @@ static inline void craftax_do_action_native(
     );
     (void)did_kill_mob;
 
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    int32_t read_row = craftax_step_jax_index(target_row, CRAFTAX_MAP_SIZE);
-    int32_t read_col = craftax_step_jax_index(target_col, CRAFTAX_MAP_SIZE);
+    int32_t read_row = craftax_clamp_index(target_row, CRAFTAX_MAP_SIZE);
+    int32_t read_col = craftax_clamp_index(target_col, CRAFTAX_MAP_SIZE);
     int32_t target_block = state->map[level][read_row][read_col];
 
     CraftaxThreefryKey sapling_key = craftax_medium_next_random_key(&rng);
@@ -585,7 +584,7 @@ static inline void craftax_do_action_native(
 
         if (is_opening_chest) {
             craftax_set_map_block(state, level, target_row, target_col, CRAFTAX_BLOCK_PATH);
-            craftax_add_items_from_chest_native(
+            craftax_add_items_from_chest(
                 state,
                 &state->inventory,
                 true,

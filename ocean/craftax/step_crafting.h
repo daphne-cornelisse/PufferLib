@@ -1,8 +1,7 @@
-// Standalone native ports of Craftax crafting and placement subsystems.
+// Craftax crafting and placement logic.
 //
-// These helpers intentionally are not integrated into c_step yet. They mutate a
-// full CraftaxState in place so tests can compare each subsystem directly
-// against the installed JAX implementation.
+// These helpers update crafting results, item placement, and plant growth state
+// directly on CraftaxState.
 
 #pragma once
 
@@ -23,7 +22,7 @@ static inline bool craftax_crafting_is_near_block(
         {1, 1},
     };
 
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
@@ -56,7 +55,7 @@ static inline int32_t craftax_crafting_first_armour_below(
     return first;
 }
 
-static inline void craftax_do_crafting_native(
+static inline void craftax_do_crafting(
     CraftaxState* state,
     int32_t action
 ) {
@@ -294,7 +293,7 @@ static inline void craftax_crafting_add_torch_light(
     }
 }
 
-static inline void craftax_add_new_growing_plant_native(
+static inline void craftax_add_new_growing_plant(
     CraftaxState* state,
     const int32_t position[2],
     bool is_placing_sapling
@@ -318,7 +317,7 @@ static inline void craftax_add_new_growing_plant_native(
     state->growing_plants_mask[plant_index] = true;
 }
 
-static inline void craftax_place_block_native(
+static inline void craftax_place_block(
     CraftaxState* state,
     int32_t action
 ) {
@@ -336,7 +335,7 @@ static inline void craftax_place_block_native(
         return;
     }
 
-    int32_t level = craftax_step_jax_index(
+    int32_t level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
@@ -411,7 +410,7 @@ static inline void craftax_place_block_native(
     if (is_placing_sapling) {
         int32_t position[2] = {row, col};
         craftax_set_map_block(state, level, row, col, CRAFTAX_BLOCK_PLANT);
-        craftax_add_new_growing_plant_native(
+        craftax_add_new_growing_plant(
             state,
             position,
             is_placing_sapling
