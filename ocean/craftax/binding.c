@@ -10,7 +10,6 @@
 #define ACT_SIZES {CRAFTAX_NUM_ACTIONS}
 #define OBS_TENSOR_T FloatTensor
 
-#define CRAFTAX_VEC_TILE_SIZE 128
 #define MY_VEC_INIT
 #define MY_VEC_CLOSE
 #define MY_VEC_STEP craftax_vec_step

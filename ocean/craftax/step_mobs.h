@@ -7,8 +7,6 @@
 
 #include "step_player.h"
 
-#define CRAFTAX_UPDATE_BOSS_FIGHT_EXTRA_DAMAGE 0.5f
-
 static inline CraftaxThreefryKey craftax_update_mobs_next_random_key(
     CraftaxThreefryKey* rng
 ) {
@@ -411,7 +409,7 @@ static inline float craftax_update_mobs_damage_done_to_player(
     }
 
     float boss_coeff = craftax_step_is_fighting_boss(state)
-        ? 1.0f + CRAFTAX_UPDATE_BOSS_FIGHT_EXTRA_DAMAGE
+        ? 1.0f + CRAFTAX_BOSS_FIGHT_EXTRA_DAMAGE
         : 1.0f;
     float damage = 0.0f;
     for (int32_t i = 0; i < 3; i++) {

@@ -7,8 +7,6 @@
 
 #include "step_state.h"
 
-#define CRAFTAX_DO_ACTION_BOSS_FIGHT_SPAWN_TURNS 7
-
 static inline float craftax_do_action_mob_defense(
     int32_t type_id,
     int32_t mob_class_index,
@@ -604,6 +602,6 @@ static inline void craftax_do_action(
     state->boss_progress += (int32_t)is_damaging_boss;
     if (is_damaging_boss) {
         state->boss_timesteps_to_spawn_this_round =
-            CRAFTAX_DO_ACTION_BOSS_FIGHT_SPAWN_TURNS;
+            CRAFTAX_BOSS_FIGHT_SPAWN_TURNS;
     }
 }

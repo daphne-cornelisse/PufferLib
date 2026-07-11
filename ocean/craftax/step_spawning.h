@@ -10,19 +10,6 @@
 
 #include "step_state.h"
 
-#define CRAFTAX_SPAWN_MAP_CELLS (CRAFTAX_MAP_SIZE * CRAFTAX_MAP_SIZE)
-#define CRAFTAX_SPAWN_BBOX_MAX_CELLS 729  // (2*DESPAWN-1)^2 at 14 = 27*27
-#define CRAFTAX_SPAWN_ALL_VALID_BLOCK_MASK ( \
-    (1ULL << CRAFTAX_BLOCK_GRASS) \
-    | (1ULL << CRAFTAX_BLOCK_PATH) \
-    | (1ULL << CRAFTAX_BLOCK_FIRE_GRASS) \
-    | (1ULL << CRAFTAX_BLOCK_ICE_GRASS))
-#define CRAFTAX_SPAWN_GRAVE_BLOCK_MASK ( \
-    (1ULL << CRAFTAX_BLOCK_GRAVE) \
-    | (1ULL << CRAFTAX_BLOCK_GRAVE2) \
-    | (1ULL << CRAFTAX_BLOCK_GRAVE3))
-#define CRAFTAX_SPAWN_WATER_BLOCK_MASK (1ULL << CRAFTAX_BLOCK_WATER)
-
 typedef struct { int8_t dr, dc0, dc1; } CraftaxSpawnOffsetSpan;
 
 static CraftaxSpawnOffsetSpan craftax_spawn_passive_spans[CRAFTAX_SPAWN_BBOX_MAX_CELLS];
