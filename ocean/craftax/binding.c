@@ -134,7 +134,7 @@ void my_init(Env* env, Dict* kwargs) {
 
     DictItem* view_mode_item = dict_get_unsafe(kwargs, "view_mode");
     if (view_mode_item != NULL) {
-        env->render_view_mode = (int32_t)view_mode_item->value;
+        env->render_view_mode = (int)view_mode_item->value;
     }
 
     c_init(env);

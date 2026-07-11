@@ -15,27 +15,27 @@ static inline CraftaxThreefryKey craftax_medium_next_random_key(
     return draw;
 }
 
-static inline int32_t craftax_medium_randint(
+static inline int craftax_medium_randint(
     CraftaxThreefryKey key,
-    int32_t minval,
-    int32_t maxval
+    int minval,
+    int maxval
 ) {
     return craftax_randint_i32_at(key, 0u, minval, maxval);
 }
 
-static inline int32_t craftax_medium_choice_weighted(
+static inline int craftax_medium_choice_weighted(
     CraftaxThreefryKey key,
     const float* weights,
-    int32_t count
+    int count
 ) {
     float total = 0.0f;
-    for (int32_t i = 0; i < count; i++) {
+    for (int i = 0; i < count; i++) {
         total += weights[i];
     }
 
     float draw = total * (1.0f - craftax_threefry_uniform_f32(key));
     float cumulative = 0.0f;
-    for (int32_t i = 0; i < count; i++) {
+    for (int i = 0; i < count; i++) {
         cumulative += weights[i];
         if (cumulative >= draw) {
             return i;
@@ -44,26 +44,26 @@ static inline int32_t craftax_medium_choice_weighted(
     return count - 1;
 }
 
-static inline int32_t craftax_medium_projectile_count(const CraftaxState* state) {
-    int32_t level = craftax_clamp_index(
+static inline int craftax_medium_projectile_count(const CraftaxState* state) {
+    int level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    int32_t count = 0;
-    for (int32_t i = 0; i < CRAFTAX_MAX_PLAYER_PROJECTILES; i++) {
-        count += (int32_t)state->player_projectiles.mask[level][i];
+    int count = 0;
+    for (int i = 0; i < CRAFTAX_MAX_PLAYER_PROJECTILES; i++) {
+        count += (int)state->player_projectiles.mask[level][i];
     }
     return count;
 }
 
-static inline int32_t craftax_medium_first_projectile_slot(
+static inline int craftax_medium_first_projectile_slot(
     const CraftaxState* state
 ) {
-    int32_t level = craftax_clamp_index(
+    int level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    for (int32_t i = 0; i < CRAFTAX_MAX_PLAYER_PROJECTILES; i++) {
+    for (int i = 0; i < CRAFTAX_MAX_PLAYER_PROJECTILES; i++) {
         if (!state->player_projectiles.mask[level][i]) {
             return i;
         }
@@ -74,19 +74,19 @@ static inline int32_t craftax_medium_first_projectile_slot(
 static inline void craftax_medium_spawn_player_projectile(
     CraftaxState* state,
     bool is_spawning_projectile,
-    const int32_t new_projectile_position[2],
-    const int32_t direction[2],
-    int32_t projectile_type
+    const int new_projectile_position[2],
+    const int direction[2],
+    int projectile_type
 ) {
     if (!is_spawning_projectile) {
         return;
     }
 
-    int32_t level = craftax_clamp_index(
+    int level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    int32_t index = craftax_medium_first_projectile_slot(state);
+    int index = craftax_medium_first_projectile_slot(state);
     state->player_projectiles.position[level][index][0] = new_projectile_position[0];
     state->player_projectiles.position[level][index][1] = new_projectile_position[1];
     state->player_projectiles.mask[level][index] = true;
@@ -95,7 +95,7 @@ static inline void craftax_medium_spawn_player_projectile(
     state->player_projectile_directions[level][index][1] = direction[1];
 }
 
-static inline int32_t craftax_medium_level_achievement(int32_t level) {
+static inline int craftax_medium_level_achievement(int level) {
     switch (craftax_clamp_index(level, CRAFTAX_NUM_LEVELS)) {
     case 1:
         return CRAFTAX_ACH_ENTER_DUNGEON;
@@ -120,14 +120,14 @@ static inline int32_t craftax_medium_level_achievement(int32_t level) {
 
 static inline void craftax_shoot_projectile(
     CraftaxState* state,
-    int32_t action
+    int action
 ) {
     bool is_shooting_arrow = action == CRAFTAX_ACTION_SHOOT_ARROW
         && state->inventory.bow >= 1
         && state->inventory.arrows >= 1
         && craftax_medium_projectile_count(state) < CRAFTAX_MAX_PLAYER_PROJECTILES;
 
-    int32_t direction[2];
+    int direction[2];
     craftax_step_direction(state->player_direction, direction);
     craftax_medium_spawn_player_projectile(
         state,
@@ -139,12 +139,12 @@ static inline void craftax_shoot_projectile(
 
     state->achievements[CRAFTAX_ACH_FIRE_BOW] =
         state->achievements[CRAFTAX_ACH_FIRE_BOW] || is_shooting_arrow;
-    state->inventory.arrows -= (int32_t)is_shooting_arrow;
+    state->inventory.arrows -= (int)is_shooting_arrow;
 }
 
 static inline void craftax_cast_spell(
     CraftaxState* state,
-    int32_t action
+    int action
 ) {
     bool has_projectile_slot =
         craftax_medium_projectile_count(state) < CRAFTAX_MAX_PLAYER_PROJECTILES;
@@ -159,11 +159,11 @@ static inline void craftax_cast_spell(
         && state->learned_spells[1];
     bool is_casting_spell = is_casting_fireball || is_casting_iceball;
 
-    int32_t projectile_type =
-        (int32_t)is_casting_fireball * CRAFTAX_PROJECTILE_FIREBALL
-        + (int32_t)is_casting_iceball * CRAFTAX_PROJECTILE_ICEBALL;
+    int projectile_type =
+        (int)is_casting_fireball * CRAFTAX_PROJECTILE_FIREBALL
+        + (int)is_casting_iceball * CRAFTAX_PROJECTILE_ICEBALL;
 
-    int32_t direction[2];
+    int direction[2];
     craftax_step_direction(state->player_direction, direction);
     craftax_medium_spawn_player_projectile(
         state,
@@ -179,36 +179,36 @@ static inline void craftax_cast_spell(
     if (is_casting_iceball) {
         state->achievements[CRAFTAX_ACH_CAST_ICEBALL] = true;
     }
-    state->player_mana -= (int32_t)is_casting_spell * 2;
+    state->player_mana -= (int)is_casting_spell * 2;
 }
 
 static inline void craftax_enchant(
     CraftaxState* state,
-    int32_t action,
+    int action,
     CraftaxThreefryKey rng
 ) {
-    int32_t direction[2];
+    int direction[2];
     craftax_step_direction(state->player_direction, direction);
 
-    int32_t level = craftax_clamp_index(
+    int level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    int32_t target_row = craftax_clamp_index(
+    int target_row = craftax_clamp_index(
         state->player_position[0] + direction[0],
         CRAFTAX_MAP_SIZE
     );
-    int32_t target_col = craftax_clamp_index(
+    int target_col = craftax_clamp_index(
         state->player_position[1] + direction[1],
         CRAFTAX_MAP_SIZE
     );
-    int32_t target_block = state->map[level][target_row][target_col];
+    int target_block = state->map[level][target_row][target_col];
 
     bool is_fire_table = target_block == CRAFTAX_BLOCK_ENCHANTMENT_TABLE_FIRE;
     bool is_ice_table = target_block == CRAFTAX_BLOCK_ENCHANTMENT_TABLE_ICE;
     bool target_block_is_enchantment_table = is_fire_table || is_ice_table;
-    int32_t enchantment_type = is_fire_table ? 1 : 2;
-    int32_t num_gems = is_fire_table
+    int enchantment_type = is_fire_table ? 1 : 2;
+    int num_gems = is_fire_table
         ? state->inventory.ruby
         : state->inventory.sapphire;
 
@@ -222,8 +222,8 @@ static inline void craftax_enchant(
         && action == CRAFTAX_ACTION_ENCHANT_SWORD
         && state->inventory.sword > 0;
 
-    int32_t armour_count = 0;
-    for (int32_t i = 0; i < 4; i++) {
+    int armour_count = 0;
+    for (int i = 0; i < 4; i++) {
         armour_count += state->inventory.armour[i];
     }
     bool is_enchanting_armour = could_enchant
@@ -231,13 +231,13 @@ static inline void craftax_enchant(
         && armour_count > 0;
 
     CraftaxThreefryKey armour_key = craftax_medium_next_random_key(&rng);
-    int32_t unenchanted_count = 0;
-    for (int32_t i = 0; i < 4; i++) {
-        unenchanted_count += (int32_t)(state->armour_enchantments[i] == 0);
+    int unenchanted_count = 0;
+    for (int i = 0; i < 4; i++) {
+        unenchanted_count += (int)(state->armour_enchantments[i] == 0);
     }
 
     float armour_targets[4];
-    for (int32_t i = 0; i < 4; i++) {
+    for (int i = 0; i < 4; i++) {
         bool unenchanted = state->armour_enchantments[i] == 0;
         bool opposite_enchanted = state->armour_enchantments[i] != 0
             && state->armour_enchantments[i] != enchantment_type;
@@ -245,7 +245,7 @@ static inline void craftax_enchant(
             unenchanted_count == 0 && opposite_enchanted
         )) ? 1.0f : 0.0f;
     }
-    int32_t armour_target = craftax_medium_choice_weighted(
+    int armour_target = craftax_medium_choice_weighted(
         armour_key,
         armour_targets,
         4
@@ -267,25 +267,25 @@ static inline void craftax_enchant(
     }
 
     state->inventory.sapphire -=
-        (int32_t)is_enchanting * (int32_t)(enchantment_type == 2);
+        (int)is_enchanting * (int)(enchantment_type == 2);
     state->inventory.ruby -=
-        (int32_t)is_enchanting * (int32_t)(enchantment_type == 1);
-    state->player_mana -= (int32_t)is_enchanting * 9;
+        (int)is_enchanting * (int)(enchantment_type == 1);
+    state->player_mana -= (int)is_enchanting * 9;
 }
 
 static inline void craftax_change_floor(
     CraftaxState* state,
-    int32_t action
+    int action
 ) {
-    int32_t level = craftax_clamp_index(
+    int level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    int32_t player_row = craftax_clamp_index(
+    int player_row = craftax_clamp_index(
         state->player_position[0],
         CRAFTAX_MAP_SIZE
     );
-    int32_t player_col = craftax_clamp_index(
+    int player_col = craftax_clamp_index(
         state->player_position[1],
         CRAFTAX_MAP_SIZE
     );
@@ -303,20 +303,20 @@ static inline void craftax_change_floor(
         && on_up_ladder
         && state->player_level > 0;
 
-    int32_t delta_floor = (int32_t)is_moving_down - (int32_t)is_moving_up;
-    int32_t new_level = state->player_level + delta_floor;
-    int32_t achievement = craftax_medium_level_achievement(new_level);
+    int delta_floor = (int)is_moving_down - (int)is_moving_up;
+    int new_level = state->player_level + delta_floor;
+    int achievement = craftax_medium_level_achievement(new_level);
     bool new_floor = new_level != 0 && !state->achievements[achievement];
 
     if (is_moving_down) {
-        int32_t ladder_level = craftax_clamp_index(
+        int ladder_level = craftax_clamp_index(
             state->player_level + 1,
             CRAFTAX_NUM_LEVELS
         );
         state->player_position[0] = state->up_ladders[ladder_level][0];
         state->player_position[1] = state->up_ladders[ladder_level][1];
     } else if (is_moving_up) {
-        int32_t ladder_level = craftax_clamp_index(
+        int ladder_level = craftax_clamp_index(
             state->player_level - 1,
             CRAFTAX_NUM_LEVELS
         );
@@ -327,7 +327,7 @@ static inline void craftax_change_floor(
     state->player_level = new_level;
     state->achievements[achievement] =
         state->achievements[achievement] || new_level != 0;
-    state->player_xp += (int32_t)new_floor;
+    state->player_xp += (int)new_floor;
 }
 
 static inline void craftax_add_items_from_chest(
@@ -341,79 +341,79 @@ static inline void craftax_add_items_from_chest(
     draw_key = craftax_medium_next_random_key(&rng);
     bool is_looting_wood = craftax_threefry_uniform_f32(draw_key) < 0.6f;
     draw_key = craftax_medium_next_random_key(&rng);
-    int32_t wood_loot_amount =
-        craftax_medium_randint(draw_key, 1, 6) * (int32_t)is_looting_wood;
+    int wood_loot_amount =
+        craftax_medium_randint(draw_key, 1, 6) * (int)is_looting_wood;
     (void)wood_loot_amount;
 
     draw_key = craftax_medium_next_random_key(&rng);
     bool is_looting_torch = craftax_threefry_uniform_f32(draw_key) < 0.6f;
     draw_key = craftax_medium_next_random_key(&rng);
-    int32_t torch_loot_amount =
-        craftax_medium_randint(draw_key, 4, 8) * (int32_t)is_looting_torch;
+    int torch_loot_amount =
+        craftax_medium_randint(draw_key, 4, 8) * (int)is_looting_torch;
 
     draw_key = craftax_medium_next_random_key(&rng);
     bool is_looting_ore = craftax_threefry_uniform_f32(draw_key) < 0.6f;
     draw_key = craftax_medium_next_random_key(&rng);
     float ore_weights[5] = {0.3f, 0.3f, 0.15f, 0.125f, 0.125f};
-    int32_t ore_loot_id = craftax_medium_choice_weighted(
+    int ore_loot_id = craftax_medium_choice_weighted(
         draw_key,
         ore_weights,
         5
     );
     draw_key = craftax_medium_next_random_key(&rng);
 
-    int32_t coal_loot_amount =
+    int coal_loot_amount =
         craftax_medium_randint(draw_key, 1, 4)
-        * (int32_t)(ore_loot_id == 0)
-        * (int32_t)is_looting_ore;
-    int32_t iron_loot_amount =
+        * (int)(ore_loot_id == 0)
+        * (int)is_looting_ore;
+    int iron_loot_amount =
         craftax_medium_randint(draw_key, 1, 3)
-        * (int32_t)(ore_loot_id == 1)
-        * (int32_t)is_looting_ore;
-    int32_t diamond_loot_amount =
+        * (int)(ore_loot_id == 1)
+        * (int)is_looting_ore;
+    int diamond_loot_amount =
         craftax_medium_randint(draw_key, 1, 2)
-        * (int32_t)(ore_loot_id == 2)
-        * (int32_t)is_looting_ore;
-    int32_t sapphire_loot_amount =
+        * (int)(ore_loot_id == 2)
+        * (int)is_looting_ore;
+    int sapphire_loot_amount =
         craftax_medium_randint(draw_key, 1, 2)
-        * (int32_t)(ore_loot_id == 3)
-        * (int32_t)is_looting_ore;
-    int32_t ruby_loot_amount =
+        * (int)(ore_loot_id == 3)
+        * (int)is_looting_ore;
+    int ruby_loot_amount =
         craftax_medium_randint(draw_key, 1, 2)
-        * (int32_t)(ore_loot_id == 4)
-        * (int32_t)is_looting_ore;
+        * (int)(ore_loot_id == 4)
+        * (int)is_looting_ore;
 
     draw_key = craftax_medium_next_random_key(&rng);
     bool is_looting_potion = craftax_threefry_uniform_f32(draw_key) < 0.5f;
     draw_key = craftax_medium_next_random_key(&rng);
-    int32_t potion_loot_index = craftax_medium_randint(draw_key, 0, 6);
+    int potion_loot_index = craftax_medium_randint(draw_key, 0, 6);
     draw_key = craftax_medium_next_random_key(&rng);
-    int32_t potion_loot_amount = craftax_medium_randint(draw_key, 1, 3);
+    int potion_loot_amount = craftax_medium_randint(draw_key, 1, 3);
 
     draw_key = craftax_medium_next_random_key(&rng);
     bool is_looting_arrows = craftax_threefry_uniform_f32(draw_key) < 0.25f;
     draw_key = craftax_medium_next_random_key(&rng);
-    int32_t arrows_loot_amount =
-        craftax_medium_randint(draw_key, 1, 5) * (int32_t)is_looting_arrows;
+    int arrows_loot_amount =
+        craftax_medium_randint(draw_key, 1, 5) * (int)is_looting_arrows;
 
     draw_key = craftax_medium_next_random_key(&rng);
     bool is_looting_tool = craftax_threefry_uniform_f32(draw_key) < 0.2f;
     draw_key = craftax_medium_next_random_key(&rng);
-    int32_t tool_id = craftax_medium_randint(draw_key, 0, 2);
+    int tool_id = craftax_medium_randint(draw_key, 0, 2);
 
     bool is_looting_pickaxe = is_looting_tool
         && tool_id == 0
         && is_opening_chest;
     draw_key = craftax_medium_next_random_key(&rng);
     float tool_weights[4] = {0.4f, 0.3f, 0.2f, 0.1f};
-    int32_t pickaxe_loot_level = (
+    int pickaxe_loot_level = (
         craftax_medium_choice_weighted(draw_key, tool_weights, 4) + 1
-    ) * (int32_t)is_looting_pickaxe;
+    ) * (int)is_looting_pickaxe;
     pickaxe_loot_level = craftax_step_maxi32(
         pickaxe_loot_level,
         inventory->pickaxe
     );
-    int32_t new_pickaxe_level = is_looting_pickaxe
+    int new_pickaxe_level = is_looting_pickaxe
         ? pickaxe_loot_level
         : inventory->pickaxe;
 
@@ -421,27 +421,27 @@ static inline void craftax_add_items_from_chest(
         && tool_id == 1
         && is_opening_chest;
     draw_key = craftax_medium_next_random_key(&rng);
-    int32_t sword_loot_level = (
+    int sword_loot_level = (
         craftax_medium_choice_weighted(draw_key, tool_weights, 4) + 1
-    ) * (int32_t)is_looting_sword;
+    ) * (int)is_looting_sword;
     sword_loot_level = craftax_step_maxi32(sword_loot_level, inventory->sword);
-    int32_t new_sword_level = is_looting_sword
+    int new_sword_level = is_looting_sword
         ? sword_loot_level
         : inventory->sword;
 
-    int32_t level = craftax_clamp_index(
+    int level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
     bool is_looting_bow = is_opening_chest
         && state->player_level == 1
         && !state->chests_opened[level];
-    int32_t new_bow_level = is_looting_bow ? 1 : inventory->bow;
+    int new_bow_level = is_looting_bow ? 1 : inventory->bow;
 
     bool is_looting_book = !state->chests_opened[level]
         && (state->player_level == 3 || state->player_level == 4);
 
-    int32_t opening = (int32_t)is_opening_chest;
+    int opening = (int)is_opening_chest;
     inventory->torches += torch_loot_amount * opening;
     inventory->coal += coal_loot_amount * opening;
     inventory->iron += iron_loot_amount * opening;
@@ -452,7 +452,7 @@ static inline void craftax_add_items_from_chest(
     inventory->pickaxe = new_pickaxe_level;
     inventory->sword = new_sword_level;
     inventory->potions[potion_loot_index] +=
-        potion_loot_amount * (int32_t)is_looting_potion * opening;
+        potion_loot_amount * (int)is_looting_potion * opening;
     inventory->bow = new_bow_level;
-    inventory->books += (int32_t)is_looting_book * opening;
+    inventory->books += (int)is_looting_book * opening;
 }

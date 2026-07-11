@@ -39,12 +39,12 @@
 
 // Positive values select a fixed goal block. Non-positive values cycle the
 // three human-task goals across env slots.
-static int32_t g_craftax_mini_config_goal_block = CRAFTAX_BLOCK_DIAMOND;
-static int32_t g_craftax_mini_max_timesteps = CRAFTAX_MINI_DEFAULT_MAX_TIMESTEPS;
+static int g_craftax_mini_config_goal_block = CRAFTAX_BLOCK_DIAMOND;
+static int g_craftax_mini_max_timesteps = CRAFTAX_MINI_DEFAULT_MAX_TIMESTEPS;
 static bool g_craftax_mini_use_human_maps = true;
 
-static inline int32_t craftax_mini_goal_block_for_slot(uint32_t slot) {
-    static const int32_t goal_blocks[3] = {
+static inline int craftax_mini_goal_block_for_slot(uint32_t slot) {
+    static const int goal_blocks[3] = {
         CRAFTAX_BLOCK_DIAMOND,
         CRAFTAX_BLOCK_SAPPHIRE,
         CRAFTAX_BLOCK_RUBY,
@@ -52,14 +52,14 @@ static inline int32_t craftax_mini_goal_block_for_slot(uint32_t slot) {
     return goal_blocks[slot % 3u];
 }
 
-static inline int32_t craftax_mini_current_goal_block(const Craftax* env) {
+static inline int craftax_mini_current_goal_block(const Craftax* env) {
     if (g_craftax_mini_config_goal_block > 0) {
         return g_craftax_mini_config_goal_block;
     }
     return craftax_mini_goal_block_for_slot(env->rng);
 }
 
-static inline int32_t craftax_mini_action_to_full(int32_t action) {
+static inline int craftax_mini_action_to_full(int action) {
     switch (action) {
     case 0: return CRAFTAX_ACTION_RIGHT;
     case 1: return CRAFTAX_ACTION_DOWN;
@@ -70,7 +70,7 @@ static inline int32_t craftax_mini_action_to_full(int32_t action) {
     }
 }
 
-static inline bool craftax_mini_is_solid_block(int32_t block) {
+static inline bool craftax_mini_is_solid_block(int block) {
     // Matches the web experiment simplification: non-precious stones are
     // passable, while goal stones and interactive objects remain blocking.
     return block != CRAFTAX_BLOCK_STONE && craftax_step_is_solid_block(block);
@@ -78,17 +78,17 @@ static inline bool craftax_mini_is_solid_block(int32_t block) {
 
 static inline bool craftax_mini_valid_land_position(
     const CraftaxState* state,
-    int32_t row,
-    int32_t col
+    int row,
+    int col
 ) {
     bool pos_in_bounds = row >= 0
         && row < CRAFTAX_MAP_SIZE
         && col >= 0
         && col < CRAFTAX_MAP_SIZE;
-    int32_t level = craftax_clamp_index(state->player_level, CRAFTAX_NUM_LEVELS);
-    int32_t map_row = craftax_clamp_index(row, CRAFTAX_MAP_SIZE);
-    int32_t map_col = craftax_clamp_index(col, CRAFTAX_MAP_SIZE);
-    int32_t block = state->map[level][map_row][map_col];
+    int level = craftax_clamp_index(state->player_level, CRAFTAX_NUM_LEVELS);
+    int map_row = craftax_clamp_index(row, CRAFTAX_MAP_SIZE);
+    int map_col = craftax_clamp_index(col, CRAFTAX_MAP_SIZE);
+    int block = state->map[level][map_row][map_col];
     bool in_solid_block = craftax_mini_is_solid_block(block);
     bool in_mob = craftax_step_is_in_mob(state, row, col);
     bool in_lava = block == CRAFTAX_BLOCK_LAVA;
@@ -102,30 +102,30 @@ static inline bool craftax_mini_valid_land_position(
 
 static inline void craftax_mini_move_player(
     CraftaxState* state,
-    int32_t action
+    int action
 ) {
-    int32_t direction[2];
+    int direction[2];
     craftax_step_direction(action, direction);
 
-    int32_t proposed_row = state->player_position[0] + direction[0];
-    int32_t proposed_col = state->player_position[1] + direction[1];
+    int proposed_row = state->player_position[0] + direction[0];
+    int proposed_col = state->player_position[1] + direction[1];
     bool valid_move = craftax_mini_valid_land_position(
         state,
         proposed_row,
         proposed_col
     );
 
-    state->player_position[0] += (int32_t)valid_move * direction[0];
-    state->player_position[1] += (int32_t)valid_move * direction[1];
+    state->player_position[0] += (int)valid_move * direction[0];
+    state->player_position[1] += (int)valid_move * direction[1];
 
     bool is_new_direction = direction[0] != 0 || direction[1] != 0;
-    state->player_direction = state->player_direction * (1 - (int32_t)is_new_direction)
-        + action * (int32_t)is_new_direction;
+    state->player_direction = state->player_direction * (1 - (int)is_new_direction)
+        + action * (int)is_new_direction;
 }
 
-static inline int32_t craftax_mini_inventory_count_for_goal(
+static inline int craftax_mini_inventory_count_for_goal(
     const CraftaxState* state,
-    int32_t goal_block
+    int goal_block
 ) {
     switch (goal_block) {
     case CRAFTAX_BLOCK_DIAMOND: return state->inventory.diamond;
@@ -135,7 +135,7 @@ static inline int32_t craftax_mini_inventory_count_for_goal(
     }
 }
 
-static inline const char* craftax_mini_goal_name(int32_t goal_block) {
+static inline const char* craftax_mini_goal_name(int goal_block) {
     switch (goal_block) {
     case CRAFTAX_BLOCK_DIAMOND: return "diamond";
     case CRAFTAX_BLOCK_SAPPHIRE: return "sapphire";
@@ -144,7 +144,7 @@ static inline const char* craftax_mini_goal_name(int32_t goal_block) {
     }
 }
 
-static inline Color craftax_mini_goal_color(int32_t goal_block) {
+static inline Color craftax_mini_goal_color(int goal_block) {
     switch (goal_block) {
     case CRAFTAX_BLOCK_DIAMOND: return (Color){180, 255, 255, 255};
     case CRAFTAX_BLOCK_SAPPHIRE: return (Color){120, 180, 255, 255};
@@ -155,13 +155,13 @@ static inline Color craftax_mini_goal_color(int32_t goal_block) {
 
 static inline float craftax_mini_gameplay_step(
     Craftax* env,
-    int32_t mini_action,
+    int mini_action,
     CraftaxThreefryKey rng
 ) {
     CraftaxState* state = env->state;
-    int32_t action = craftax_mini_action_to_full(mini_action);
-    int32_t goal_block = craftax_mini_current_goal_block(env);
-    int32_t initial_goal_count = craftax_mini_inventory_count_for_goal(
+    int action = craftax_mini_action_to_full(mini_action);
+    int goal_block = craftax_mini_current_goal_block(env);
+    int initial_goal_count = craftax_mini_inventory_count_for_goal(
         state,
         goal_block
     );
@@ -207,7 +207,7 @@ static inline float craftax_mini_gameplay_step(
     state->state_rng[0] = subkey.word[0];
     state->state_rng[1] = subkey.word[1];
 
-    int32_t current_goal_count = craftax_mini_inventory_count_for_goal(
+    int current_goal_count = craftax_mini_inventory_count_for_goal(
         state,
         goal_block
     );
@@ -216,12 +216,12 @@ static inline float craftax_mini_gameplay_step(
 
 static inline bool craftax_mini_is_game_over(const Craftax* env) {
     const CraftaxState* state = env->state;
-    int32_t goal_block = craftax_mini_current_goal_block(env);
+    int goal_block = craftax_mini_current_goal_block(env);
     bool reached_goal = craftax_mini_inventory_count_for_goal(
         state,
         goal_block
     ) > 0;
-    int32_t max_timesteps = g_craftax_mini_max_timesteps > 0
+    int max_timesteps = g_craftax_mini_max_timesteps > 0
         ? g_craftax_mini_max_timesteps
         : CRAFTAX_MINI_DEFAULT_MAX_TIMESTEPS;
     return reached_goal
@@ -238,7 +238,7 @@ static inline void craftax_mini_apply_reset_settings(Craftax* env) {
 
 static inline bool craftax_mini_apply_human_map_for_seed(
     CraftaxState* state,
-    int32_t seed
+    int seed
 ) {
     const uint8_t* map = craftax_mini_human_map_for_seed(seed);
     if (map == NULL) {
@@ -260,9 +260,9 @@ static inline void craftax_mini_reset_state_from_seed(Craftax* env) {
         return;
     }
 
-    int32_t seed = (int32_t)env->seed;
+    int seed = (int)env->seed;
     if (!craftax_mini_apply_human_map_for_seed(env->state, seed)) {
-        seed = craftax_mini_human_seed_for_index((int32_t)env->rng);
+        seed = craftax_mini_human_seed_for_index((int)env->rng);
         craftax_mini_apply_human_map_for_seed(env->state, seed);
     }
 }
@@ -330,7 +330,7 @@ static void c_step_gameplay(Craftax* env) {
         memset(env->achievements, 0, sizeof(env->achievements));
         craftax_reset_state_on_done(env->state, reset_key);
         if (g_craftax_mini_use_human_maps) {
-            int32_t seed = craftax_mini_human_seed_for_index((int32_t)env->rng);
+            int seed = craftax_mini_human_seed_for_index((int)env->rng);
             craftax_mini_apply_human_map_for_seed(env->state, seed);
         }
         craftax_mini_apply_reset_settings(env);

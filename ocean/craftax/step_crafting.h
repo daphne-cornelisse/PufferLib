@@ -9,9 +9,9 @@
 
 static inline bool craftax_crafting_is_near_block(
     const CraftaxState* state,
-    int32_t block_type
+    int block_type
 ) {
-    static const int32_t close_blocks[8][2] = {
+    static const int close_blocks[8][2] = {
         {0, -1},
         {0, 1},
         {-1, 0},
@@ -22,13 +22,13 @@ static inline bool craftax_crafting_is_near_block(
         {1, 1},
     };
 
-    int32_t level = craftax_clamp_index(
+    int level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    for (int32_t i = 0; i < 8; i++) {
-        int32_t row = state->player_position[0] + close_blocks[i][0];
-        int32_t col = state->player_position[1] + close_blocks[i][1];
+    for (int i = 0; i < 8; i++) {
+        int row = state->player_position[0] + close_blocks[i][0];
+        int col = state->player_position[1] + close_blocks[i][1];
         bool in_bounds = row >= 0
             && row < CRAFTAX_MAP_SIZE
             && col >= 0
@@ -40,24 +40,24 @@ static inline bool craftax_crafting_is_near_block(
     return false;
 }
 
-static inline int32_t craftax_crafting_first_armour_below(
+static inline int craftax_crafting_first_armour_below(
     const CraftaxInventory* inventory,
-    int32_t threshold,
-    int32_t* count
+    int threshold,
+    int* count
 ) {
-    int32_t first = 0;
+    int first = 0;
     *count = 0;
-    for (int32_t i = 0; i < 4; i++) {
+    for (int i = 0; i < 4; i++) {
         bool below = inventory->armour[i] < threshold;
         first = (*count == 0 && below) ? i : first;
-        *count += (int32_t)below;
+        *count += (int)below;
     }
     return first;
 }
 
 static inline void craftax_do_crafting(
     CraftaxState* state,
-    int32_t action
+    int action
 ) {
     bool is_at_crafting_table = craftax_crafting_is_near_block(
         state,
@@ -76,10 +76,10 @@ static inline void craftax_do_crafting(
         && can_craft_wood_pickaxe
         && is_at_crafting_table
         && inventory->pickaxe < 1;
-    inventory->wood -= 1 * (int32_t)is_crafting_wood_pickaxe;
+    inventory->wood -= 1 * (int)is_crafting_wood_pickaxe;
     inventory->pickaxe =
-        inventory->pickaxe * (1 - (int32_t)is_crafting_wood_pickaxe)
-        + 1 * (int32_t)is_crafting_wood_pickaxe;
+        inventory->pickaxe * (1 - (int)is_crafting_wood_pickaxe)
+        + 1 * (int)is_crafting_wood_pickaxe;
 
     bool can_craft_stone_pickaxe =
         inventory->wood >= 1 && inventory->stone >= 1;
@@ -88,11 +88,11 @@ static inline void craftax_do_crafting(
         && can_craft_stone_pickaxe
         && is_at_crafting_table
         && inventory->pickaxe < 2;
-    inventory->stone -= 1 * (int32_t)is_crafting_stone_pickaxe;
-    inventory->wood -= 1 * (int32_t)is_crafting_stone_pickaxe;
+    inventory->stone -= 1 * (int)is_crafting_stone_pickaxe;
+    inventory->wood -= 1 * (int)is_crafting_stone_pickaxe;
     inventory->pickaxe =
-        inventory->pickaxe * (1 - (int32_t)is_crafting_stone_pickaxe)
-        + 2 * (int32_t)is_crafting_stone_pickaxe;
+        inventory->pickaxe * (1 - (int)is_crafting_stone_pickaxe)
+        + 2 * (int)is_crafting_stone_pickaxe;
 
     bool can_craft_iron_pickaxe =
         inventory->wood >= 1
@@ -105,13 +105,13 @@ static inline void craftax_do_crafting(
         && is_at_furnace
         && is_at_crafting_table
         && inventory->pickaxe < 3;
-    inventory->iron -= 1 * (int32_t)is_crafting_iron_pickaxe;
-    inventory->wood -= 1 * (int32_t)is_crafting_iron_pickaxe;
-    inventory->stone -= 1 * (int32_t)is_crafting_iron_pickaxe;
-    inventory->coal -= 1 * (int32_t)is_crafting_iron_pickaxe;
+    inventory->iron -= 1 * (int)is_crafting_iron_pickaxe;
+    inventory->wood -= 1 * (int)is_crafting_iron_pickaxe;
+    inventory->stone -= 1 * (int)is_crafting_iron_pickaxe;
+    inventory->coal -= 1 * (int)is_crafting_iron_pickaxe;
     inventory->pickaxe =
-        inventory->pickaxe * (1 - (int32_t)is_crafting_iron_pickaxe)
-        + 3 * (int32_t)is_crafting_iron_pickaxe;
+        inventory->pickaxe * (1 - (int)is_crafting_iron_pickaxe)
+        + 3 * (int)is_crafting_iron_pickaxe;
 
     bool can_craft_diamond_pickaxe =
         inventory->wood >= 1 && inventory->diamond >= 3;
@@ -120,11 +120,11 @@ static inline void craftax_do_crafting(
         && can_craft_diamond_pickaxe
         && is_at_crafting_table
         && inventory->pickaxe < 4;
-    inventory->diamond -= 3 * (int32_t)is_crafting_diamond_pickaxe;
-    inventory->wood -= 1 * (int32_t)is_crafting_diamond_pickaxe;
+    inventory->diamond -= 3 * (int)is_crafting_diamond_pickaxe;
+    inventory->wood -= 1 * (int)is_crafting_diamond_pickaxe;
     inventory->pickaxe =
-        inventory->pickaxe * (1 - (int32_t)is_crafting_diamond_pickaxe)
-        + 4 * (int32_t)is_crafting_diamond_pickaxe;
+        inventory->pickaxe * (1 - (int)is_crafting_diamond_pickaxe)
+        + 4 * (int)is_crafting_diamond_pickaxe;
 
     bool can_craft_wood_sword = inventory->wood >= 1;
     bool is_crafting_wood_sword =
@@ -132,10 +132,10 @@ static inline void craftax_do_crafting(
         && can_craft_wood_sword
         && is_at_crafting_table
         && inventory->sword < 1;
-    inventory->wood -= 1 * (int32_t)is_crafting_wood_sword;
+    inventory->wood -= 1 * (int)is_crafting_wood_sword;
     inventory->sword =
-        inventory->sword * (1 - (int32_t)is_crafting_wood_sword)
-        + 1 * (int32_t)is_crafting_wood_sword;
+        inventory->sword * (1 - (int)is_crafting_wood_sword)
+        + 1 * (int)is_crafting_wood_sword;
 
     bool can_craft_stone_sword =
         inventory->stone >= 1 && inventory->wood >= 1;
@@ -144,11 +144,11 @@ static inline void craftax_do_crafting(
         && can_craft_stone_sword
         && is_at_crafting_table
         && inventory->sword < 2;
-    inventory->wood -= 1 * (int32_t)is_crafting_stone_sword;
-    inventory->stone -= 1 * (int32_t)is_crafting_stone_sword;
+    inventory->wood -= 1 * (int)is_crafting_stone_sword;
+    inventory->stone -= 1 * (int)is_crafting_stone_sword;
     inventory->sword =
-        inventory->sword * (1 - (int32_t)is_crafting_stone_sword)
-        + 2 * (int32_t)is_crafting_stone_sword;
+        inventory->sword * (1 - (int)is_crafting_stone_sword)
+        + 2 * (int)is_crafting_stone_sword;
 
     bool can_craft_iron_sword =
         inventory->iron >= 1
@@ -161,13 +161,13 @@ static inline void craftax_do_crafting(
         && is_at_furnace
         && is_at_crafting_table
         && inventory->sword < 3;
-    inventory->wood -= 1 * (int32_t)is_crafting_iron_sword;
-    inventory->iron -= 1 * (int32_t)is_crafting_iron_sword;
-    inventory->stone -= 1 * (int32_t)is_crafting_iron_sword;
-    inventory->coal -= 1 * (int32_t)is_crafting_iron_sword;
+    inventory->wood -= 1 * (int)is_crafting_iron_sword;
+    inventory->iron -= 1 * (int)is_crafting_iron_sword;
+    inventory->stone -= 1 * (int)is_crafting_iron_sword;
+    inventory->coal -= 1 * (int)is_crafting_iron_sword;
     inventory->sword =
-        inventory->sword * (1 - (int32_t)is_crafting_iron_sword)
-        + 3 * (int32_t)is_crafting_iron_sword;
+        inventory->sword * (1 - (int)is_crafting_iron_sword)
+        + 3 * (int)is_crafting_iron_sword;
 
     bool can_craft_diamond_sword =
         inventory->diamond >= 2 && inventory->wood >= 1;
@@ -176,14 +176,14 @@ static inline void craftax_do_crafting(
         && can_craft_diamond_sword
         && is_at_crafting_table
         && inventory->sword < 4;
-    inventory->wood -= 1 * (int32_t)is_crafting_diamond_sword;
-    inventory->diamond -= 2 * (int32_t)is_crafting_diamond_sword;
+    inventory->wood -= 1 * (int)is_crafting_diamond_sword;
+    inventory->diamond -= 2 * (int)is_crafting_diamond_sword;
     inventory->sword =
-        inventory->sword * (1 - (int32_t)is_crafting_diamond_sword)
-        + 4 * (int32_t)is_crafting_diamond_sword;
+        inventory->sword * (1 - (int)is_crafting_diamond_sword)
+        + 4 * (int)is_crafting_diamond_sword;
 
-    int32_t armour_count = 0;
-    int32_t iron_armour_index_to_craft =
+    int armour_count = 0;
+    int iron_armour_index_to_craft =
         craftax_crafting_first_armour_below(inventory, 1, &armour_count);
     bool can_craft_iron_armour =
         armour_count > 0 && inventory->iron >= 3 && inventory->coal >= 3;
@@ -192,18 +192,18 @@ static inline void craftax_do_crafting(
         && can_craft_iron_armour
         && is_at_crafting_table
         && is_at_furnace;
-    inventory->iron -= 3 * (int32_t)is_crafting_iron_armour;
-    inventory->coal -= 3 * (int32_t)is_crafting_iron_armour;
+    inventory->iron -= 3 * (int)is_crafting_iron_armour;
+    inventory->coal -= 3 * (int)is_crafting_iron_armour;
     inventory->armour[iron_armour_index_to_craft] =
-        (int32_t)is_crafting_iron_armour * 1
-        + (1 - (int32_t)is_crafting_iron_armour)
+        (int)is_crafting_iron_armour * 1
+        + (1 - (int)is_crafting_iron_armour)
         * inventory->armour[iron_armour_index_to_craft];
     state->achievements[CRAFTAX_ACH_MAKE_IRON_ARMOUR] =
         state->achievements[CRAFTAX_ACH_MAKE_IRON_ARMOUR]
         || is_crafting_iron_armour;
 
-    int32_t diamond_armour_count = 0;
-    int32_t diamond_armour_index_to_craft =
+    int diamond_armour_count = 0;
+    int diamond_armour_index_to_craft =
         craftax_crafting_first_armour_below(inventory, 2, &diamond_armour_count);
     bool can_craft_diamond_armour =
         diamond_armour_count > 0 && inventory->diamond >= 3;
@@ -211,10 +211,10 @@ static inline void craftax_do_crafting(
         action == CRAFTAX_ACTION_MAKE_DIAMOND_ARMOUR
         && can_craft_diamond_armour
         && is_at_crafting_table;
-    inventory->diamond -= 3 * (int32_t)is_crafting_diamond_armour;
+    inventory->diamond -= 3 * (int)is_crafting_diamond_armour;
     inventory->armour[diamond_armour_index_to_craft] =
-        (int32_t)is_crafting_diamond_armour * 2
-        + (1 - (int32_t)is_crafting_diamond_armour)
+        (int)is_crafting_diamond_armour * 2
+        + (1 - (int)is_crafting_diamond_armour)
         * inventory->armour[diamond_armour_index_to_craft];
     state->achievements[CRAFTAX_ACH_MAKE_DIAMOND_ARMOUR] =
         state->achievements[CRAFTAX_ACH_MAKE_DIAMOND_ARMOUR]
@@ -226,9 +226,9 @@ static inline void craftax_do_crafting(
         && can_craft_arrow
         && is_at_crafting_table
         && inventory->arrows < 99;
-    inventory->wood -= 1 * (int32_t)is_crafting_arrow;
-    inventory->stone -= 1 * (int32_t)is_crafting_arrow;
-    inventory->arrows += 2 * (int32_t)is_crafting_arrow;
+    inventory->wood -= 1 * (int)is_crafting_arrow;
+    inventory->stone -= 1 * (int)is_crafting_arrow;
+    inventory->arrows += 2 * (int)is_crafting_arrow;
 
     bool can_craft_torch = inventory->coal >= 1 && inventory->wood >= 1;
     bool is_crafting_torch =
@@ -236,12 +236,12 @@ static inline void craftax_do_crafting(
         && can_craft_torch
         && is_at_crafting_table
         && inventory->torches < 99;
-    inventory->wood -= 1 * (int32_t)is_crafting_torch;
-    inventory->coal -= 1 * (int32_t)is_crafting_torch;
-    inventory->torches += 4 * (int32_t)is_crafting_torch;
+    inventory->wood -= 1 * (int)is_crafting_torch;
+    inventory->coal -= 1 * (int)is_crafting_torch;
+    inventory->torches += 4 * (int)is_crafting_torch;
 }
 
-static inline bool craftax_crafting_can_place_item(int32_t block) {
+static inline bool craftax_crafting_can_place_item(int block) {
     switch (block) {
     case CRAFTAX_BLOCK_GRASS:
     case CRAFTAX_BLOCK_SAND:
@@ -254,7 +254,7 @@ static inline bool craftax_crafting_can_place_item(int32_t block) {
     }
 }
 
-static inline float craftax_crafting_torch_light(int32_t row, int32_t col) {
+static inline float craftax_crafting_torch_light(int row, int col) {
     static const float torch_light_map[9][9] = {
         {0.0f, 0.0f, 0.10557288f, 0.17537886f, 0.19999999f, 0.17537886f, 0.10557288f, 0.0f, 0.0f},
         {0.0f, 0.15147191f, 0.27888972f, 0.36754447f, 0.39999998f, 0.36754447f, 0.27888972f, 0.15147191f, 0.0f},
@@ -271,17 +271,17 @@ static inline float craftax_crafting_torch_light(int32_t row, int32_t col) {
 
 static inline void craftax_crafting_add_torch_light(
     CraftaxState* state,
-    int32_t level,
-    int32_t row,
-    int32_t col
+    int level,
+    int row,
+    int col
 ) {
-    for (int32_t dr = -4; dr <= 4; dr++) {
-        int32_t map_row = row + dr;
+    for (int dr = -4; dr <= 4; dr++) {
+        int map_row = row + dr;
         if (map_row < 0 || map_row >= CRAFTAX_MAP_SIZE) {
             continue;
         }
-        for (int32_t dc = -4; dc <= 4; dc++) {
-            int32_t map_col = col + dc;
+        for (int dc = -4; dc <= 4; dc++) {
+            int map_col = col + dc;
             if (map_col < 0 || map_col >= CRAFTAX_MAP_SIZE) {
                 continue;
             }
@@ -295,15 +295,15 @@ static inline void craftax_crafting_add_torch_light(
 
 static inline void craftax_add_new_growing_plant(
     CraftaxState* state,
-    const int32_t position[2],
+    const int position[2],
     bool is_placing_sapling
 ) {
-    int32_t plant_index = 0;
-    int32_t empty_count = 0;
-    for (int32_t i = 0; i < CRAFTAX_MAX_GROWING_PLANTS; i++) {
+    int plant_index = 0;
+    int empty_count = 0;
+    for (int i = 0; i < CRAFTAX_MAX_GROWING_PLANTS; i++) {
         bool is_empty = !state->growing_plants_mask[i];
         plant_index = (empty_count == 0 && is_empty) ? i : plant_index;
-        empty_count += (int32_t)is_empty;
+        empty_count += (int)is_empty;
     }
 
     bool is_adding_plant = empty_count > 0 && is_placing_sapling;
@@ -319,13 +319,13 @@ static inline void craftax_add_new_growing_plant(
 
 static inline void craftax_place_block(
     CraftaxState* state,
-    int32_t action
+    int action
 ) {
-    int32_t direction[2];
+    int direction[2];
     craftax_step_direction(state->player_direction, direction);
 
-    int32_t row = state->player_position[0] + direction[0];
-    int32_t col = state->player_position[1] + direction[1];
+    int row = state->player_position[0] + direction[0];
+    int col = state->player_position[1] + direction[1];
     bool in_bounds = row >= 0
         && row < CRAFTAX_MAP_SIZE
         && col >= 0
@@ -335,12 +335,12 @@ static inline void craftax_place_block(
         return;
     }
 
-    int32_t level = craftax_clamp_index(
+    int level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    int32_t original_block = state->map[level][row][col];
-    int32_t original_item = state->item_map[level][row][col];
+    int original_block = state->map[level][row][col];
+    int original_item = state->item_map[level][row][col];
     bool is_placement_on_solid_block_or_item =
         craftax_step_is_solid_block(original_block)
         || original_item != CRAFTAX_ITEM_NONE;
@@ -354,7 +354,7 @@ static inline void craftax_place_block(
     if (is_placing_crafting_table) {
         craftax_set_map_block(state, level, row, col, CRAFTAX_BLOCK_CRAFTING_TABLE);
     }
-    inventory->wood -= 2 * (int32_t)is_placing_crafting_table;
+    inventory->wood -= 2 * (int)is_placing_crafting_table;
     state->achievements[CRAFTAX_ACH_PLACE_TABLE] =
         state->achievements[CRAFTAX_ACH_PLACE_TABLE]
         || is_placing_crafting_table;
@@ -366,7 +366,7 @@ static inline void craftax_place_block(
     if (is_placing_furnace) {
         craftax_set_map_block(state, level, row, col, CRAFTAX_BLOCK_FURNACE);
     }
-    inventory->stone -= 1 * (int32_t)is_placing_furnace;
+    inventory->stone -= 1 * (int)is_placing_furnace;
     state->achievements[CRAFTAX_ACH_PLACE_FURNACE] =
         state->achievements[CRAFTAX_ACH_PLACE_FURNACE]
         || is_placing_furnace;
@@ -381,7 +381,7 @@ static inline void craftax_place_block(
     if (is_placing_stone) {
         craftax_set_map_block(state, level, row, col, CRAFTAX_BLOCK_STONE);
     }
-    inventory->stone -= 1 * (int32_t)is_placing_stone;
+    inventory->stone -= 1 * (int)is_placing_stone;
     state->achievements[CRAFTAX_ACH_PLACE_STONE] =
         state->achievements[CRAFTAX_ACH_PLACE_STONE]
         || is_placing_stone;
@@ -397,7 +397,7 @@ static inline void craftax_place_block(
         state->item_map[level][row][col] = CRAFTAX_ITEM_TORCH;
         craftax_crafting_add_torch_light(state, level, row, col);
     }
-    inventory->torches -= 1 * (int32_t)is_placing_torch;
+    inventory->torches -= 1 * (int)is_placing_torch;
     state->achievements[CRAFTAX_ACH_PLACE_TORCH] =
         state->achievements[CRAFTAX_ACH_PLACE_TORCH]
         || is_placing_torch;
@@ -408,7 +408,7 @@ static inline void craftax_place_block(
         && inventory->sapling > 0
         && state->item_map[level][row][col] == CRAFTAX_ITEM_NONE;
     if (is_placing_sapling) {
-        int32_t position[2] = {row, col};
+        int position[2] = {row, col};
         craftax_set_map_block(state, level, row, col, CRAFTAX_BLOCK_PLANT);
         craftax_add_new_growing_plant(
             state,
@@ -416,7 +416,7 @@ static inline void craftax_place_block(
             is_placing_sapling
         );
     }
-    inventory->sapling -= 1 * (int32_t)is_placing_sapling;
+    inventory->sapling -= 1 * (int)is_placing_sapling;
     state->achievements[CRAFTAX_ACH_PLACE_PLANT] =
         state->achievements[CRAFTAX_ACH_PLACE_PLANT]
         || is_placing_sapling;

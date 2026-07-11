@@ -46,7 +46,7 @@ class NativeCraftaxWorldgen:
                 uint32_t seed,
                 uint8_t* map_out,
                 uint8_t* item_map_out,
-                int32_t* player_pos_out
+                int* player_pos_out
             ) {
                 CraftaxWorldState state;
                 craftax_generate_world_from_seed(seed, &state);

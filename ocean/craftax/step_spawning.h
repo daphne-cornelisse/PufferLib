@@ -15,17 +15,17 @@ typedef struct { int8_t dr, dc0, dc1; } CraftaxSpawnOffsetSpan;
 static CraftaxSpawnOffsetSpan craftax_spawn_passive_spans[CRAFTAX_SPAWN_BBOX_MAX_CELLS];
 static CraftaxSpawnOffsetSpan craftax_spawn_hostile_spans[CRAFTAX_SPAWN_BBOX_MAX_CELLS];
 static CraftaxSpawnOffsetSpan craftax_spawn_boss_spans[CRAFTAX_SPAWN_BBOX_MAX_CELLS];
-static int32_t craftax_spawn_passive_span_count = 0;
-static int32_t craftax_spawn_hostile_span_count = 0;
-static int32_t craftax_spawn_boss_span_count = 0;
-static int32_t craftax_spawn_offsets_initialized = 0;
+static int craftax_spawn_passive_span_count = 0;
+static int craftax_spawn_hostile_span_count = 0;
+static int craftax_spawn_boss_span_count = 0;
+static int craftax_spawn_offsets_initialized = 0;
 
 static inline void craftax_spawn_append_span(
     CraftaxSpawnOffsetSpan* spans,
-    int32_t* count,
-    int32_t dr,
-    int32_t dc0,
-    int32_t dc1
+    int* count,
+    int dr,
+    int dc0,
+    int dc1
 ) {
     spans[*count] = (CraftaxSpawnOffsetSpan){
         (int8_t)dr, (int8_t)dc0, (int8_t)dc1
@@ -35,16 +35,16 @@ static inline void craftax_spawn_append_span(
 
 static inline void craftax_spawn_build_spans_for_row(
     CraftaxSpawnOffsetSpan* spans,
-    int32_t* count,
-    int32_t dr,
-    int32_t limit,
-    int32_t min_exclusive,
-    int32_t max_exclusive
+    int* count,
+    int dr,
+    int limit,
+    int min_exclusive,
+    int max_exclusive
 ) {
     bool active = false;
-    int32_t start = 0;
-    for (int32_t dc = -limit; dc <= limit; dc++) {
-        int32_t distance2 = dr * dr + dc * dc;
+    int start = 0;
+    for (int dc = -limit; dc <= limit; dc++) {
+        int distance2 = dr * dr + dc * dc;
         bool valid = distance2 > min_exclusive && distance2 < max_exclusive;
         if (valid && !active) {
             active = true;
@@ -69,13 +69,13 @@ static inline void craftax_spawn_init_offsets_once(void) {
         if (!__atomic_load_n(
                 &craftax_spawn_offsets_initialized, __ATOMIC_RELAXED
         )) {
-            int32_t passive_count = 0;
-            int32_t hostile_count = 0;
-            int32_t boss_count = 0;
-            int32_t limit = CRAFTAX_MOB_DESPAWN_DISTANCE - 1;
-            int32_t limit2 = CRAFTAX_MOB_DESPAWN_DISTANCE
+            int passive_count = 0;
+            int hostile_count = 0;
+            int boss_count = 0;
+            int limit = CRAFTAX_MOB_DESPAWN_DISTANCE - 1;
+            int limit2 = CRAFTAX_MOB_DESPAWN_DISTANCE
                            * CRAFTAX_MOB_DESPAWN_DISTANCE;
-            for (int32_t dr = -limit; dr <= limit; dr++) {
+            for (int dr = -limit; dr <= limit; dr++) {
                 craftax_spawn_build_spans_for_row(
                     craftax_spawn_passive_spans,
                     &passive_count,
@@ -117,8 +117,8 @@ static inline bool craftax_spawn_block_matches(uint8_t block, uint64_t mask) {
 
 static inline uint64_t craftax_spawn_row_bits_for_mask(
     const CraftaxState* state,
-    int32_t level,
-    int32_t row,
+    int level,
+    int row,
     uint64_t terrain_mask
 ) {
     if (terrain_mask == CRAFTAX_SPAWN_ALL_VALID_BLOCK_MASK) {
@@ -130,7 +130,7 @@ static inline uint64_t craftax_spawn_row_bits_for_mask(
     return state->spawn_water_bits[level][row];
 }
 
-static inline uint64_t craftax_spawn_col_mask(int32_t col0, int32_t col1) {
+static inline uint64_t craftax_spawn_col_mask(int col0, int col1) {
     uint64_t hi = (1ULL << (col1 + 1)) - 1ULL;
     uint64_t lo = col0 <= 0 ? 0ULL : ((1ULL << col0) - 1ULL);
     return hi & ~lo;
@@ -144,20 +144,20 @@ static inline CraftaxThreefryKey craftax_spawn_next_random_key(
     return draw;
 }
 
-static inline int32_t craftax_spawn_floor_mob_type(
-    int32_t floor, int32_t mob_class
+static inline int craftax_spawn_floor_mob_type(
+    int floor, int mob_class
 ) {
-    static const int32_t mapping[CRAFTAX_NUM_LEVELS][3] = {
+    static const int mapping[CRAFTAX_NUM_LEVELS][3] = {
         {0, 0, 0}, {2, 2, 2}, {1, 1, 1}, {2, 3, 3}, {2, 4, 4},
         {1, 5, 5}, {1, 6, 6}, {1, 7, 7}, {0, 0, 0},
     };
-    int32_t level = craftax_clamp_index(floor, CRAFTAX_NUM_LEVELS);
-    int32_t class_index = craftax_clamp_index(mob_class, 3);
+    int level = craftax_clamp_index(floor, CRAFTAX_NUM_LEVELS);
+    int class_index = craftax_clamp_index(mob_class, 3);
     return mapping[level][class_index];
 }
 
 static inline float craftax_spawn_floor_spawn_chance(
-    int32_t floor, int32_t chance_index
+    int floor, int chance_index
 ) {
     static const float chances[CRAFTAX_NUM_LEVELS][4] = {
         {0.1f, 0.02f, 0.05f, 0.1f},
@@ -170,13 +170,13 @@ static inline float craftax_spawn_floor_spawn_chance(
         {0.0f, 0.06f, 0.05f, 0.0f},
         {0.1f, 0.06f, 0.05f, 0.0f},
     };
-    int32_t level = craftax_clamp_index(floor, CRAFTAX_NUM_LEVELS);
-    int32_t index = craftax_clamp_index(chance_index, 4);
+    int level = craftax_clamp_index(floor, CRAFTAX_NUM_LEVELS);
+    int index = craftax_clamp_index(chance_index, 4);
     return chances[level][index];
 }
 
 static inline float craftax_spawn_mob_type_health(
-    int32_t mob_type, int32_t mob_class
+    int mob_type, int mob_class
 ) {
     static const float health[CRAFTAX_NUM_MOB_TYPES][4] = {
         {3.0f, 5.0f, 3.0f, 0.0f}, {4.0f, 7.0f, 5.0f, 0.0f},
@@ -184,89 +184,89 @@ static inline float craftax_spawn_mob_type_health(
         {0.0f, 12.0f, 12.0f, 0.0f}, {0.0f, 20.0f, 4.0f, 0.0f},
         {0.0f, 20.0f, 14.0f, 0.0f}, {0.0f, 24.0f, 16.0f, 0.0f},
     };
-    int32_t type_index = craftax_clamp_index(mob_type, CRAFTAX_NUM_MOB_TYPES);
-    int32_t class_index = craftax_clamp_index(mob_class, 4);
+    int type_index = craftax_clamp_index(mob_type, CRAFTAX_NUM_MOB_TYPES);
+    int class_index = craftax_clamp_index(mob_class, 4);
     return health[type_index][class_index];
 }
 
-static inline bool craftax_spawn_is_all_valid_block(int32_t block) {
+static inline bool craftax_spawn_is_all_valid_block(int block) {
     static const uint8_t flags[CRAFTAX_NUM_BLOCK_TYPES] = {
         [CRAFTAX_BLOCK_GRASS] = 1,
         [CRAFTAX_BLOCK_PATH] = 1,
         [CRAFTAX_BLOCK_FIRE_GRASS] = 1,
         [CRAFTAX_BLOCK_ICE_GRASS] = 1,
     };
-    int32_t idx = craftax_clamp_index(block, CRAFTAX_NUM_BLOCK_TYPES);
+    int idx = craftax_clamp_index(block, CRAFTAX_NUM_BLOCK_TYPES);
     return flags[idx] != 0;
 }
 
-static inline bool craftax_spawn_is_grave_block(int32_t block) {
+static inline bool craftax_spawn_is_grave_block(int block) {
     static const uint8_t flags[CRAFTAX_NUM_BLOCK_TYPES] = {
         [CRAFTAX_BLOCK_GRAVE] = 1,
         [CRAFTAX_BLOCK_GRAVE2] = 1,
         [CRAFTAX_BLOCK_GRAVE3] = 1,
     };
-    int32_t idx = craftax_clamp_index(block, CRAFTAX_NUM_BLOCK_TYPES);
+    int idx = craftax_clamp_index(block, CRAFTAX_NUM_BLOCK_TYPES);
     return flags[idx] != 0;
 }
 
-static inline bool craftax_spawn_is_water_block(int32_t block) {
+static inline bool craftax_spawn_is_water_block(int block) {
     static const uint8_t flags[CRAFTAX_NUM_BLOCK_TYPES] = {
         [CRAFTAX_BLOCK_WATER] = 1,
     };
-    int32_t idx = craftax_clamp_index(block, CRAFTAX_NUM_BLOCK_TYPES);
+    int idx = craftax_clamp_index(block, CRAFTAX_NUM_BLOCK_TYPES);
     return flags[idx] != 0;
 }
 
-static inline int32_t craftax_spawn_player_distance_squared(
-    const CraftaxState* state, int32_t row, int32_t col
+static inline int craftax_spawn_player_distance_squared(
+    const CraftaxState* state, int row, int col
 ) {
-    int32_t dr = row - state->player_position[0];
-    int32_t dc = col - state->player_position[1];
+    int dr = row - state->player_position[0];
+    int dc = col - state->player_position[1];
     if (dr < 0) dr = -dr;
     if (dc < 0) dc = -dc;
     return dr * dr + dc * dc;
 }
 
-static inline int32_t craftax_spawn_count_mobs3(
-    const CraftaxMobs3* mobs, int32_t level
+static inline int craftax_spawn_count_mobs3(
+    const CraftaxMobs3* mobs, int level
 ) {
-    int32_t count = 0;
-    for (int32_t i = 0; i < 3; i++) count += (int32_t)mobs->mask[level][i];
+    int count = 0;
+    for (int i = 0; i < 3; i++) count += (int)mobs->mask[level][i];
     return count;
 }
 
-static inline int32_t craftax_spawn_count_mobs2(
-    const CraftaxMobs2* mobs, int32_t level
+static inline int craftax_spawn_count_mobs2(
+    const CraftaxMobs2* mobs, int level
 ) {
-    int32_t count = 0;
-    for (int32_t i = 0; i < 2; i++) count += (int32_t)mobs->mask[level][i];
+    int count = 0;
+    for (int i = 0; i < 2; i++) count += (int)mobs->mask[level][i];
     return count;
 }
 
-static inline int32_t craftax_spawn_first_empty_mobs3(
-    const CraftaxMobs3* mobs, int32_t level
+static inline int craftax_spawn_first_empty_mobs3(
+    const CraftaxMobs3* mobs, int level
 ) {
-    for (int32_t i = 0; i < 3; i++) if (!mobs->mask[level][i]) return i;
+    for (int i = 0; i < 3; i++) if (!mobs->mask[level][i]) return i;
     return 0;
 }
 
-static inline int32_t craftax_spawn_first_empty_mobs2(
-    const CraftaxMobs2* mobs, int32_t level
+static inline int craftax_spawn_first_empty_mobs2(
+    const CraftaxMobs2* mobs, int level
 ) {
-    for (int32_t i = 0; i < 2; i++) if (!mobs->mask[level][i]) return i;
+    for (int i = 0; i < 2; i++) if (!mobs->mask[level][i]) return i;
     return 0;
 }
 
 static inline void craftax_spawn_mobs3_count_and_empty(
-    const CraftaxMobs3* mobs, int32_t level,
-    int32_t* count_out, int32_t* first_empty_out
+    const CraftaxMobs3* mobs, int level,
+    int* count_out, int* first_empty_out
 ) {
-    int32_t count = 0, first_empty = 0;
+    int count = 0, first_empty = 0;
     bool found = false;
-    for (int32_t i = 0; i < 3; i++) {
+    for (int i = 0; i < 3; i++) {
         bool m = mobs->mask[level][i];
-        count += (int32_t)m;
+        count += (int)m;
         if (!m && !found) { first_empty = i; found = true; }
     }
     *count_out = count;
@@ -274,14 +274,14 @@ static inline void craftax_spawn_mobs3_count_and_empty(
 }
 
 static inline void craftax_spawn_mobs2_count_and_empty(
-    const CraftaxMobs2* mobs, int32_t level,
-    int32_t* count_out, int32_t* first_empty_out
+    const CraftaxMobs2* mobs, int level,
+    int* count_out, int* first_empty_out
 ) {
-    int32_t count = 0, first_empty = 0;
+    int count = 0, first_empty = 0;
     bool found = false;
-    for (int32_t i = 0; i < 2; i++) {
+    for (int i = 0; i < 2; i++) {
         bool m = mobs->mask[level][i];
-        count += (int32_t)m;
+        count += (int)m;
         if (!m && !found) { first_empty = i; found = true; }
     }
     *count_out = count;
@@ -294,12 +294,12 @@ static inline void craftax_spawn_mobs2_count_and_empty(
 //   for i: if valid[i] { cum += 1.0; if (cum >= draw) return i; }
 // Over a compact list of length valid_count this collapses to a short loop
 // using the same FP arithmetic across the selection path.
-static inline int32_t craftax_spawn_pick_kth(
-    int32_t valid_count, CraftaxThreefryKey key
+static inline int craftax_spawn_pick_kth(
+    int valid_count, CraftaxThreefryKey key
 ) {
     float draw = (float)valid_count * (1.0f - craftax_threefry_uniform_f32(key));
     float cum = 0.0f;
-    for (int32_t k = 0; k < valid_count; k++) {
+    for (int k = 0; k < valid_count; k++) {
         cum += 1.0f;
         if (cum >= draw) return k;
     }
@@ -312,27 +312,27 @@ typedef struct {
     CraftaxSpawnCoord passive[CRAFTAX_SPAWN_BBOX_MAX_CELLS];
     CraftaxSpawnCoord melee[CRAFTAX_SPAWN_BBOX_MAX_CELLS];
     CraftaxSpawnCoord ranged[CRAFTAX_SPAWN_BBOX_MAX_CELLS];
-    int32_t passive_count;
-    int32_t melee_count;
-    int32_t ranged_count;
+    int passive_count;
+    int melee_count;
+    int ranged_count;
 } CraftaxSpawnLists;
 
-static inline int32_t craftax_spawn_collect_spans(
+static inline int craftax_spawn_collect_spans(
     const CraftaxState* state,
-    int32_t level,
+    int level,
     const CraftaxSpawnOffsetSpan* spans,
-    int32_t span_count,
+    int span_count,
     uint64_t terrain_mask,
     CraftaxSpawnCoord* coords
 ) {
-    int32_t pr = state->player_position[0];
-    int32_t pc = state->player_position[1];
-    int32_t n = 0;
-    for (int32_t i = 0; i < span_count; i++) {
-        int32_t row = pr + spans[i].dr;
+    int pr = state->player_position[0];
+    int pc = state->player_position[1];
+    int n = 0;
+    for (int i = 0; i < span_count; i++) {
+        int row = pr + spans[i].dr;
         if ((uint32_t)row >= CRAFTAX_MAP_SIZE) continue;
-        int32_t col0 = pc + spans[i].dc0;
-        int32_t col1 = pc + spans[i].dc1;
+        int col0 = pc + spans[i].dc0;
+        int col1 = pc + spans[i].dc1;
         if (col0 < 0) col0 = 0;
         if (col1 >= CRAFTAX_MAP_SIZE) col1 = CRAFTAX_MAP_SIZE - 1;
         if (col0 > col1) continue;
@@ -341,7 +341,7 @@ static inline int32_t craftax_spawn_collect_spans(
             & ~state->mob_bits[level][row]
             & craftax_spawn_col_mask(col0, col1);
         while (candidates != 0) {
-            int32_t col = __builtin_ctzll(candidates);
+            int col = __builtin_ctzll(candidates);
             coords[n].row = (int16_t)row;
             coords[n].col = (int16_t)col;
             n++;
@@ -353,39 +353,39 @@ static inline int32_t craftax_spawn_collect_spans(
 
 static inline bool craftax_spawn_scan_spans(
     const CraftaxState* state,
-    int32_t level,
+    int level,
     const CraftaxSpawnOffsetSpan* spans,
-    int32_t span_count,
+    int span_count,
     uint64_t terrain_mask,
     CraftaxThreefryKey pos_key,
-    int32_t* out_row,
-    int32_t* out_col
+    int* out_row,
+    int* out_col
 ) {
     CraftaxSpawnCoord coords[CRAFTAX_SPAWN_BBOX_MAX_CELLS];
-    int32_t n = craftax_spawn_collect_spans(
+    int n = craftax_spawn_collect_spans(
         state, level, spans, span_count, terrain_mask, coords
     );
     if (n == 0) return false;
-    int32_t k = craftax_spawn_pick_kth(n, pos_key);
+    int k = craftax_spawn_pick_kth(n, pos_key);
     *out_row = coords[k].row;
     *out_col = coords[k].col;
     return true;
 }
 
 static inline bool craftax_spawn_coord_matches(
-    CraftaxSpawnCoord coord, bool exclude, int32_t row, int32_t col
+    CraftaxSpawnCoord coord, bool exclude, int row, int col
 ) {
     return exclude && coord.row == row && coord.col == col;
 }
 
 static inline bool craftax_spawn_pick_excluding(
-    const CraftaxSpawnCoord* coords, int32_t count, CraftaxThreefryKey key,
-    bool exclude_a, int32_t row_a, int32_t col_a,
-    bool exclude_b, int32_t row_b, int32_t col_b,
-    int32_t* out_row, int32_t* out_col
+    const CraftaxSpawnCoord* coords, int count, CraftaxThreefryKey key,
+    bool exclude_a, int row_a, int col_a,
+    bool exclude_b, int row_b, int col_b,
+    int* out_row, int* out_col
 ) {
-    int32_t valid_count = 0;
-    for (int32_t i = 0; i < count; i++) {
+    int valid_count = 0;
+    for (int i = 0; i < count; i++) {
         bool excluded = craftax_spawn_coord_matches(
             coords[i], exclude_a, row_a, col_a
         ) || craftax_spawn_coord_matches(coords[i], exclude_b, row_b, col_b);
@@ -393,8 +393,8 @@ static inline bool craftax_spawn_pick_excluding(
     }
     if (valid_count == 0) return false;
 
-    int32_t k = craftax_spawn_pick_kth(valid_count, key);
-    for (int32_t i = 0; i < count; i++) {
+    int k = craftax_spawn_pick_kth(valid_count, key);
+    for (int i = 0; i < count; i++) {
         bool excluded = craftax_spawn_coord_matches(
             coords[i], exclude_a, row_a, col_a
         ) || craftax_spawn_coord_matches(coords[i], exclude_b, row_b, col_b);
@@ -411,8 +411,8 @@ static inline bool craftax_spawn_pick_excluding(
 
 static inline void craftax_spawn_scan_all(
     const CraftaxState* state,
-    int32_t level,
-    int32_t ranged_type,
+    int level,
+    int ranged_type,
     bool fighting_boss,
     bool need_passive,
     bool need_melee,
@@ -438,12 +438,12 @@ static inline void craftax_spawn_scan_all(
 
     if (!need_melee && !need_ranged) return;
 
-    int32_t pr = state->player_position[0];
-    int32_t pc = state->player_position[1];
+    int pr = state->player_position[0];
+    int pc = state->player_position[1];
     const CraftaxSpawnOffsetSpan* spans = fighting_boss
         ? craftax_spawn_boss_spans
         : craftax_spawn_hostile_spans;
-    int32_t span_count = fighting_boss
+    int span_count = fighting_boss
         ? craftax_spawn_boss_span_count
         : craftax_spawn_hostile_span_count;
     bool ranged_water_type = (ranged_type == 5);
@@ -460,11 +460,11 @@ static inline void craftax_spawn_scan_all(
         ranged_terrain_mask = CRAFTAX_SPAWN_ALL_VALID_BLOCK_MASK;
     }
 
-    for (int32_t i = 0; i < span_count; i++) {
-        int32_t row = pr + spans[i].dr;
+    for (int i = 0; i < span_count; i++) {
+        int row = pr + spans[i].dr;
         if ((uint32_t)row >= CRAFTAX_MAP_SIZE) continue;
-        int32_t col0 = pc + spans[i].dc0;
-        int32_t col1 = pc + spans[i].dc1;
+        int col0 = pc + spans[i].dc0;
+        int col1 = pc + spans[i].dc1;
         if (col0 < 0) col0 = 0;
         if (col1 >= CRAFTAX_MAP_SIZE) col1 = CRAFTAX_MAP_SIZE - 1;
         if (col0 > col1) continue;
@@ -477,8 +477,8 @@ static inline void craftax_spawn_scan_all(
                     state, level, row, melee_terrain_mask
                 ) & open_bits;
             while (melee_candidates != 0) {
-                int32_t col = __builtin_ctzll(melee_candidates);
-                int32_t n = out->melee_count++;
+                int col = __builtin_ctzll(melee_candidates);
+                int n = out->melee_count++;
                 out->melee[n].row = (int16_t)row;
                 out->melee[n].col = (int16_t)col;
                 melee_candidates &= melee_candidates - 1;
@@ -491,8 +491,8 @@ static inline void craftax_spawn_scan_all(
                     state, level, row, ranged_terrain_mask
                 ) & open_bits;
             while (ranged_candidates != 0) {
-                int32_t col = __builtin_ctzll(ranged_candidates);
-                int32_t n = out->ranged_count++;
+                int col = __builtin_ctzll(ranged_candidates);
+                int n = out->ranged_count++;
                 out->ranged[n].row = (int16_t)row;
                 out->ranged[n].col = (int16_t)col;
                 ranged_candidates &= ranged_candidates - 1;
@@ -502,8 +502,8 @@ static inline void craftax_spawn_scan_all(
 }
 
 static inline bool craftax_spawn_scan_passive(
-    const CraftaxState* state, int32_t level, CraftaxThreefryKey pos_key,
-    int32_t* out_row, int32_t* out_col
+    const CraftaxState* state, int level, CraftaxThreefryKey pos_key,
+    int* out_row, int* out_col
 ) {
     craftax_spawn_init_offsets_once();
     return craftax_spawn_scan_spans(
@@ -519,14 +519,14 @@ static inline bool craftax_spawn_scan_passive(
 }
 
 static inline bool craftax_spawn_scan_melee(
-    const CraftaxState* state, int32_t level, bool fighting_boss,
-    CraftaxThreefryKey pos_key, int32_t* out_row, int32_t* out_col
+    const CraftaxState* state, int level, bool fighting_boss,
+    CraftaxThreefryKey pos_key, int* out_row, int* out_col
 ) {
     craftax_spawn_init_offsets_once();
     const CraftaxSpawnOffsetSpan* spans = fighting_boss
         ? craftax_spawn_boss_spans
         : craftax_spawn_hostile_spans;
-    int32_t span_count = fighting_boss
+    int span_count = fighting_boss
         ? craftax_spawn_boss_span_count
         : craftax_spawn_hostile_span_count;
     uint64_t terrain_mask = fighting_boss
@@ -539,15 +539,15 @@ static inline bool craftax_spawn_scan_melee(
 }
 
 static inline bool craftax_spawn_scan_ranged(
-    const CraftaxState* state, int32_t level, int32_t new_type,
+    const CraftaxState* state, int level, int new_type,
     bool fighting_boss, CraftaxThreefryKey pos_key,
-    int32_t* out_row, int32_t* out_col
+    int* out_row, int* out_col
 ) {
     craftax_spawn_init_offsets_once();
     const CraftaxSpawnOffsetSpan* spans = fighting_boss
         ? craftax_spawn_boss_spans
         : craftax_spawn_hostile_spans;
-    int32_t span_count = fighting_boss
+    int span_count = fighting_boss
         ? craftax_spawn_boss_span_count
         : craftax_spawn_hostile_span_count;
     uint64_t terrain_mask;
@@ -571,15 +571,15 @@ static inline bool craftax_spawn_scan_ranged(
 
 static inline void craftax_spawn_passive_mob(
     CraftaxState* state, CraftaxThreefryKey* rng,
-    int32_t level, bool fighting_boss
+    int level, bool fighting_boss
 ) {
-    int32_t count, slot;
+    int count, slot;
     craftax_spawn_mobs3_count_and_empty(&state->passive_mobs, level, &count, &slot);
 
     CraftaxThreefryKey prob_key = craftax_spawn_next_random_key(rng);
     CraftaxThreefryKey pos_key  = craftax_spawn_next_random_key(rng);
 
-    int32_t type = craftax_spawn_floor_mob_type(level, CRAFTAX_MOB_PASSIVE);
+    int type = craftax_spawn_floor_mob_type(level, CRAFTAX_MOB_PASSIVE);
     state->passive_mobs.type_id[level][slot] = type;
 
     if (fighting_boss) return;
@@ -587,7 +587,7 @@ static inline void craftax_spawn_passive_mob(
     if (craftax_threefry_uniform_f32(prob_key)
         >= craftax_spawn_floor_spawn_chance(level, 0)) return;
 
-    int32_t row, col;
+    int row, col;
     if (!craftax_spawn_scan_passive(state, level, pos_key, &row, &col)) return;
 
     state->passive_mobs.position[level][slot][0] = row;
@@ -600,12 +600,12 @@ static inline void craftax_spawn_passive_mob(
 
 static inline void craftax_spawn_melee_mob(
     CraftaxState* state, CraftaxThreefryKey* rng,
-    int32_t level, bool fighting_boss, int32_t monster_spawn_coeff
+    int level, bool fighting_boss, int monster_spawn_coeff
 ) {
-    int32_t count, slot;
+    int count, slot;
     craftax_spawn_mobs3_count_and_empty(&state->melee_mobs, level, &count, &slot);
 
-    int32_t type = fighting_boss
+    int type = fighting_boss
         ? craftax_spawn_floor_mob_type(state->boss_progress, CRAFTAX_MOB_MELEE)
         : craftax_spawn_floor_mob_type(level, CRAFTAX_MOB_MELEE);
 
@@ -621,7 +621,7 @@ static inline void craftax_spawn_melee_mob(
     if (craftax_threefry_uniform_f32(prob_key)
         >= spawn_chance * (float)monster_spawn_coeff) return;
 
-    int32_t row, col;
+    int row, col;
     if (!craftax_spawn_scan_melee(state, level, fighting_boss, pos_key, &row, &col))
         return;
 
@@ -635,12 +635,12 @@ static inline void craftax_spawn_melee_mob(
 
 static inline void craftax_spawn_ranged_mob(
     CraftaxState* state, CraftaxThreefryKey* rng,
-    int32_t level, bool fighting_boss, int32_t monster_spawn_coeff
+    int level, bool fighting_boss, int monster_spawn_coeff
 ) {
-    int32_t count, slot;
+    int count, slot;
     craftax_spawn_mobs2_count_and_empty(&state->ranged_mobs, level, &count, &slot);
 
-    int32_t type = fighting_boss
+    int type = fighting_boss
         ? craftax_spawn_floor_mob_type(state->boss_progress, CRAFTAX_MOB_RANGED)
         : craftax_spawn_floor_mob_type(level, CRAFTAX_MOB_RANGED);
 
@@ -654,7 +654,7 @@ static inline void craftax_spawn_ranged_mob(
         >= craftax_spawn_floor_spawn_chance(level, 2) * (float)monster_spawn_coeff)
         return;
 
-    int32_t row, col;
+    int row, col;
     if (!craftax_spawn_scan_ranged(state, level, type, fighting_boss, pos_key,
                                     &row, &col)) return;
 
@@ -669,37 +669,37 @@ static inline void craftax_spawn_ranged_mob(
 static inline void craftax_spawn_mobs(
     CraftaxState* state, CraftaxThreefryKey rng
 ) {
-    int32_t level = craftax_clamp_index(
+    int level = craftax_clamp_index(
         state->player_level, CRAFTAX_NUM_LEVELS
     );
     bool fighting_boss = craftax_step_is_fighting_boss(state);
-    int32_t monster_spawn_coeff =
+    int monster_spawn_coeff =
         1
-        + (int32_t)(state->monsters_killed[level]
+        + (int)(state->monsters_killed[level]
                     < CRAFTAX_MONSTERS_KILLED_TO_CLEAR_LEVEL) * 2;
 
     bool boss_spawn_wave =
         fighting_boss && state->boss_timesteps_to_spawn_this_round >= 1;
     if (fighting_boss) {
-        monster_spawn_coeff *= (int32_t)boss_spawn_wave * 1000;
+        monster_spawn_coeff *= (int)boss_spawn_wave * 1000;
     }
 
-    int32_t passive_count, passive_slot;
+    int passive_count, passive_slot;
     craftax_spawn_mobs3_count_and_empty(
         &state->passive_mobs, level, &passive_count, &passive_slot
     );
     CraftaxThreefryKey passive_prob_key = craftax_spawn_next_random_key(&rng);
     CraftaxThreefryKey passive_pos_key = craftax_spawn_next_random_key(&rng);
-    int32_t passive_type = craftax_spawn_floor_mob_type(
+    int passive_type = craftax_spawn_floor_mob_type(
         level, CRAFTAX_MOB_PASSIVE
     );
     state->passive_mobs.type_id[level][passive_slot] = passive_type;
 
-    int32_t melee_count, melee_slot;
+    int melee_count, melee_slot;
     craftax_spawn_mobs3_count_and_empty(
         &state->melee_mobs, level, &melee_count, &melee_slot
     );
-    int32_t melee_type = fighting_boss
+    int melee_type = fighting_boss
         ? craftax_spawn_floor_mob_type(state->boss_progress, CRAFTAX_MOB_MELEE)
         : craftax_spawn_floor_mob_type(level, CRAFTAX_MOB_MELEE);
     CraftaxThreefryKey melee_prob_key = craftax_spawn_next_random_key(&rng);
@@ -709,11 +709,11 @@ static inline void craftax_spawn_mobs(
     CraftaxThreefryKey melee_pos_key = craftax_spawn_next_random_key(&rng);
     state->melee_mobs.type_id[level][melee_slot] = melee_type;
 
-    int32_t ranged_count, ranged_slot;
+    int ranged_count, ranged_slot;
     craftax_spawn_mobs2_count_and_empty(
         &state->ranged_mobs, level, &ranged_count, &ranged_slot
     );
-    int32_t ranged_type = fighting_boss
+    int ranged_type = fighting_boss
         ? craftax_spawn_floor_mob_type(state->boss_progress, CRAFTAX_MOB_RANGED)
         : craftax_spawn_floor_mob_type(level, CRAFTAX_MOB_RANGED);
     CraftaxThreefryKey ranged_prob_key = craftax_spawn_next_random_key(&rng);
@@ -734,11 +734,11 @@ static inline void craftax_spawn_mobs(
 
     if (!try_passive && !try_melee && !try_ranged) return;
 
-    int32_t try_count = (int32_t)try_passive
-        + (int32_t)try_melee
-        + (int32_t)try_ranged;
+    int try_count = (int)try_passive
+        + (int)try_melee
+        + (int)try_ranged;
     if (try_count == 1) {
-        int32_t row, col;
+        int row, col;
         if (try_passive && craftax_spawn_scan_passive(
                 state, level, passive_pos_key, &row, &col
         )) {
@@ -780,8 +780,8 @@ static inline void craftax_spawn_mobs(
     );
 
     bool passive_spawned = false;
-    int32_t passive_row = 0;
-    int32_t passive_col = 0;
+    int passive_row = 0;
+    int passive_col = 0;
     if (try_passive && craftax_spawn_pick_excluding(
             lists.passive, lists.passive_count, passive_pos_key,
             false, 0, 0, false, 0, 0, &passive_row, &passive_col
@@ -796,8 +796,8 @@ static inline void craftax_spawn_mobs(
     }
 
     bool melee_spawned = false;
-    int32_t melee_row = 0;
-    int32_t melee_col = 0;
+    int melee_row = 0;
+    int melee_col = 0;
     if (try_melee && craftax_spawn_pick_excluding(
             lists.melee, lists.melee_count, melee_pos_key,
             passive_spawned, passive_row, passive_col,
@@ -812,8 +812,8 @@ static inline void craftax_spawn_mobs(
         melee_spawned = true;
     }
 
-    int32_t ranged_row = 0;
-    int32_t ranged_col = 0;
+    int ranged_row = 0;
+    int ranged_col = 0;
     if (try_ranged && craftax_spawn_pick_excluding(
             lists.ranged, lists.ranged_count, ranged_pos_key,
             passive_spawned, passive_row, passive_col,

@@ -9,7 +9,7 @@
 #define CRAFTAX_MINI_HUMAN_NUM_LEVELS 9
 #define CRAFTAX_MINI_HUMAN_MAP_SIZE 48
 
-static const int32_t CRAFTAX_MINI_HUMAN_WORLD_SEEDS[CRAFTAX_MINI_HUMAN_NUM_WORLDS] = {3, 15, 20, 95};
+static const int CRAFTAX_MINI_HUMAN_WORLD_SEEDS[CRAFTAX_MINI_HUMAN_NUM_WORLDS] = {3, 15, 20, 95};
 
 static const uint8_t CRAFTAX_MINI_HUMAN_WORLD_3[CRAFTAX_MINI_HUMAN_NUM_LEVELS][CRAFTAX_MINI_HUMAN_MAP_SIZE][CRAFTAX_MINI_HUMAN_MAP_SIZE] = {
     {
@@ -1823,7 +1823,7 @@ static const uint8_t CRAFTAX_MINI_HUMAN_WORLD_95[CRAFTAX_MINI_HUMAN_NUM_LEVELS][
     },
 };
 
-static inline const uint8_t* craftax_mini_human_map_for_seed(int32_t seed) {
+static inline const uint8_t* craftax_mini_human_map_for_seed(int seed) {
     if (seed == 3) return &CRAFTAX_MINI_HUMAN_WORLD_3[0][0][0];
     if (seed == 15) return &CRAFTAX_MINI_HUMAN_WORLD_15[0][0][0];
     if (seed == 20) return &CRAFTAX_MINI_HUMAN_WORLD_20[0][0][0];
@@ -1831,8 +1831,8 @@ static inline const uint8_t* craftax_mini_human_map_for_seed(int32_t seed) {
     return 0;
 }
 
-static inline int32_t craftax_mini_human_seed_for_index(int32_t index) {
-    int32_t wrapped = index % CRAFTAX_MINI_HUMAN_NUM_WORLDS;
+static inline int craftax_mini_human_seed_for_index(int index) {
+    int wrapped = index % CRAFTAX_MINI_HUMAN_NUM_WORLDS;
     if (wrapped < 0) wrapped += CRAFTAX_MINI_HUMAN_NUM_WORLDS;
     return CRAFTAX_MINI_HUMAN_WORLD_SEEDS[wrapped];
 }

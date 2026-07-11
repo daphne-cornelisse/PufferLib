@@ -60,17 +60,17 @@ class NativeCraftaxMiniReplay:
 
             typedef struct MiniReplayFrame {
                 uint8_t map[CRAFTAX_MAP_SIZE * CRAFTAX_MAP_SIZE];
-                int32_t player_position[2];
-                int32_t player_direction;
-                int32_t timestep;
-                int32_t goal_block;
+                int player_position[2];
+                int player_direction;
+                int timestep;
+                int goal_block;
                 float reward;
                 float done;
             } MiniReplayFrame;
 
             static void capture_frame(
                 Craftax* env,
-                int32_t goal_block,
+                int goal_block,
                 float reward,
                 float done,
                 MiniReplayFrame* frame
@@ -92,14 +92,14 @@ class NativeCraftaxMiniReplay:
             int craftax_mini_replay_rollout(
                 uint32_t world_seed,
                 uint32_t slot_id,
-                int32_t goal_block,
-                int32_t max_timesteps,
-                int32_t start_row,
-                int32_t start_col,
-                const int32_t* actions,
-                int32_t num_actions,
+                int goal_block,
+                int max_timesteps,
+                int start_row,
+                int start_col,
+                const int* actions,
+                int num_actions,
                 MiniReplayFrame* frames,
-                int32_t max_frames
+                int max_frames
             ) {
                 if (max_frames <= 0) {
                     return 0;
@@ -122,12 +122,12 @@ class NativeCraftaxMiniReplay:
                     env.state->player_position[1] = start_col;
                 }
 
-                int32_t active_goal = craftax_mini_current_goal_block(&env);
-                int32_t count = 0;
+                int active_goal = craftax_mini_current_goal_block(&env);
+                int count = 0;
                 capture_frame(&env, active_goal, 0.0f, 0.0f, &frames[count++]);
 
-                for (int32_t i = 0; i < num_actions && count < max_frames; i++) {
-                    int32_t action = actions[i];
+                for (int i = 0; i < num_actions && count < max_frames; i++) {
+                    int action = actions[i];
                     if (action < 0) action = 0;
                     if (action >= CRAFTAX_MINI_NUM_ACTIONS) {
                         action = CRAFTAX_MINI_NUM_ACTIONS - 1;

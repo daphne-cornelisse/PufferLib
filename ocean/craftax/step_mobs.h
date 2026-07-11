@@ -16,9 +16,9 @@ static inline CraftaxThreefryKey craftax_update_mobs_next_random_key(
 }
 
 static inline bool craftax_update_mobs_scatter_index(
-    int32_t index,
-    int32_t size,
-    int32_t* mapped_index
+    int index,
+    int size,
+    int* mapped_index
 ) {
     if (index < -size || index >= size) {
         return false;
@@ -28,8 +28,8 @@ static inline bool craftax_update_mobs_scatter_index(
 }
 
 static inline bool craftax_update_mobs_in_bounds(
-    int32_t row,
-    int32_t col
+    int row,
+    int col
 ) {
     return row >= 0
         && row < CRAFTAX_MAP_SIZE
@@ -37,28 +37,28 @@ static inline bool craftax_update_mobs_in_bounds(
         && col < CRAFTAX_MAP_SIZE;
 }
 
-static inline int32_t craftax_update_mobs_read_block(
+static inline int craftax_update_mobs_read_block(
     const CraftaxState* state,
-    int32_t level,
-    int32_t row,
-    int32_t col
+    int level,
+    int row,
+    int col
 ) {
-    int32_t map_level = craftax_clamp_index(level, CRAFTAX_NUM_LEVELS);
-    int32_t map_row = craftax_clamp_index(row, CRAFTAX_MAP_SIZE);
-    int32_t map_col = craftax_clamp_index(col, CRAFTAX_MAP_SIZE);
+    int map_level = craftax_clamp_index(level, CRAFTAX_NUM_LEVELS);
+    int map_row = craftax_clamp_index(row, CRAFTAX_MAP_SIZE);
+    int map_col = craftax_clamp_index(col, CRAFTAX_MAP_SIZE);
     return state->map[map_level][map_row][map_col];
 }
 
 static inline void craftax_update_mobs_set_block(
     CraftaxState* state,
-    int32_t level,
-    int32_t row,
-    int32_t col,
-    int32_t block
+    int level,
+    int row,
+    int col,
+    int block
 ) {
-    int32_t map_level;
-    int32_t map_row;
-    int32_t map_col;
+    int map_level;
+    int map_row;
+    int map_col;
     if (!craftax_update_mobs_scatter_index(
             level,
             CRAFTAX_NUM_LEVELS,
@@ -81,26 +81,26 @@ static inline void craftax_update_mobs_set_block(
 
 static inline bool craftax_update_mobs_read_mob_map(
     const CraftaxState* state,
-    int32_t level,
-    int32_t row,
-    int32_t col
+    int level,
+    int row,
+    int col
 ) {
-    int32_t map_level = craftax_clamp_index(level, CRAFTAX_NUM_LEVELS);
-    int32_t map_row = craftax_clamp_index(row, CRAFTAX_MAP_SIZE);
-    int32_t map_col = craftax_clamp_index(col, CRAFTAX_MAP_SIZE);
+    int map_level = craftax_clamp_index(level, CRAFTAX_NUM_LEVELS);
+    int map_row = craftax_clamp_index(row, CRAFTAX_MAP_SIZE);
+    int map_col = craftax_clamp_index(col, CRAFTAX_MAP_SIZE);
     return (state->mob_bits[map_level][map_row] >> map_col) & 1ULL;
 }
 
 static inline void craftax_update_mobs_set_mob_map(
     CraftaxState* state,
-    int32_t level,
-    int32_t row,
-    int32_t col,
+    int level,
+    int row,
+    int col,
     bool value
 ) {
-    int32_t map_level;
-    int32_t map_row;
-    int32_t map_col;
+    int map_level;
+    int map_row;
+    int map_col;
     if (!craftax_update_mobs_scatter_index(
             level,
             CRAFTAX_NUM_LEVELS,
@@ -127,9 +127,9 @@ static inline void craftax_update_mobs_set_mob_map(
 
 static inline void craftax_update_mobs_clear_old_map_entry(
     CraftaxState* state,
-    int32_t level,
-    int32_t row,
-    int32_t col,
+    int level,
+    int row,
+    int col,
     bool old_mask
 ) {
     bool old_value = craftax_update_mobs_read_mob_map(state, level, row, col);
@@ -144,9 +144,9 @@ static inline void craftax_update_mobs_clear_old_map_entry(
 
 static inline void craftax_update_mobs_enter_new_map_entry(
     CraftaxState* state,
-    int32_t level,
-    int32_t row,
-    int32_t col,
+    int level,
+    int row,
+    int col,
     bool new_mask
 ) {
     bool old_value = craftax_update_mobs_read_mob_map(state, level, row, col);
@@ -160,8 +160,8 @@ static inline void craftax_update_mobs_enter_new_map_entry(
 }
 
 static inline void craftax_update_mobs_damage_vector(
-    int32_t type_id,
-    int32_t mob_class_index,
+    int type_id,
+    int mob_class_index,
     float damage[3]
 ) {
     static const float damages[CRAFTAX_NUM_MOB_TYPES][4][3] = {
@@ -215,19 +215,19 @@ static inline void craftax_update_mobs_damage_vector(
         },
     };
 
-    int32_t type_index = craftax_clamp_index(
+    int type_index = craftax_clamp_index(
         type_id,
         CRAFTAX_NUM_MOB_TYPES
     );
-    int32_t class_index = craftax_clamp_index(mob_class_index, 4);
-    for (int32_t i = 0; i < 3; i++) {
+    int class_index = craftax_clamp_index(mob_class_index, 4);
+    for (int i = 0; i < 3; i++) {
         damage[i] = damages[type_index][class_index][i];
     }
 }
 
 static inline void craftax_update_mobs_collision_map(
-    int32_t type_id,
-    int32_t mob_class_index,
+    int type_id,
+    int mob_class_index,
     bool collision[3]
 ) {
     static const bool collisions[CRAFTAX_NUM_MOB_TYPES][4][3] = {
@@ -281,20 +281,20 @@ static inline void craftax_update_mobs_collision_map(
         },
     };
 
-    int32_t type_index = craftax_clamp_index(
+    int type_index = craftax_clamp_index(
         type_id,
         CRAFTAX_NUM_MOB_TYPES
     );
-    int32_t class_index = craftax_clamp_index(mob_class_index, 4);
-    for (int32_t i = 0; i < 3; i++) {
+    int class_index = craftax_clamp_index(mob_class_index, 4);
+    for (int i = 0; i < 3; i++) {
         collision[i] = collisions[type_index][class_index][i];
     }
 }
 
-static inline int32_t craftax_update_mobs_projectile_type_for_ranged(
-    int32_t ranged_type
+static inline int craftax_update_mobs_projectile_type_for_ranged(
+    int ranged_type
 ) {
-    static const int32_t mapping[CRAFTAX_NUM_MOB_TYPES] = {
+    static const int mapping[CRAFTAX_NUM_MOB_TYPES] = {
         CRAFTAX_PROJECTILE_ARROW,
         CRAFTAX_PROJECTILE_ARROW,
         CRAFTAX_PROJECTILE_FIREBALL,
@@ -304,7 +304,7 @@ static inline int32_t craftax_update_mobs_projectile_type_for_ranged(
         CRAFTAX_PROJECTILE_FIREBALL2,
         CRAFTAX_PROJECTILE_ICEBALL2,
     };
-    int32_t type_index = craftax_clamp_index(
+    int type_index = craftax_clamp_index(
         ranged_type,
         CRAFTAX_NUM_MOB_TYPES
     );
@@ -313,10 +313,10 @@ static inline int32_t craftax_update_mobs_projectile_type_for_ranged(
 
 static inline void craftax_update_mobs_direction_choice(
     CraftaxThreefryKey key,
-    int32_t count,
-    int32_t direction[2]
+    int count,
+    int direction[2]
 ) {
-    int32_t choice = craftax_medium_randint(key, 0, count);
+    int choice = craftax_medium_randint(key, 0, count);
     direction[0] = 0;
     direction[1] = 0;
     if (choice == 0) {
@@ -330,26 +330,26 @@ static inline void craftax_update_mobs_direction_choice(
     }
 }
 
-static inline int32_t craftax_update_mobs_abs_i32(int32_t value) {
+static inline int craftax_update_mobs_abs_i32(int value) {
     return value < 0 ? -value : value;
 }
 
-static inline int32_t craftax_update_mobs_sign_i32(int32_t value) {
+static inline int craftax_update_mobs_sign_i32(int value) {
     if (value < 0) {
         return -1;
     }
     return value > 0 ? 1 : 0;
 }
 
-static inline int32_t craftax_update_mobs_player_axis_choice(
+static inline int craftax_update_mobs_player_axis_choice(
     CraftaxThreefryKey key,
-    int32_t distance_row,
-    int32_t distance_col
+    int distance_row,
+    int distance_col
 ) {
-    int32_t max_distance = distance_row > distance_col
+    int max_distance = distance_row > distance_col
         ? distance_row
         : distance_col;
-    int32_t total_distance = distance_row + distance_col;
+    int total_distance = distance_row + distance_col;
     if (total_distance == 0) {
         return 1;
     }
@@ -363,16 +363,16 @@ static inline int32_t craftax_update_mobs_player_axis_choice(
 
 static inline bool craftax_update_mobs_valid_position(
     const CraftaxState* state,
-    int32_t row,
-    int32_t col,
+    int row,
+    int col,
     const bool collision[3]
 ) {
-    int32_t level = craftax_clamp_index(
+    int level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
     bool pos_in_bounds = craftax_update_mobs_in_bounds(row, col);
-    int32_t block = craftax_update_mobs_read_block(state, level, row, col);
+    int block = craftax_update_mobs_read_block(state, level, row, col);
     bool in_solid_block = craftax_step_is_solid_block(block);
     bool in_mob = craftax_step_is_in_mob(state, row, col);
     bool in_lava = block == CRAFTAX_BLOCK_LAVA;
@@ -386,10 +386,10 @@ static inline bool craftax_update_mobs_valid_position(
     return valid_move;
 }
 
-static inline int32_t craftax_update_mobs_manhattan_to_player(
+static inline int craftax_update_mobs_manhattan_to_player(
     const CraftaxState* state,
-    int32_t row,
-    int32_t col
+    int row,
+    int col
 ) {
     return craftax_update_mobs_abs_i32(row - state->player_position[0])
         + craftax_update_mobs_abs_i32(col - state->player_position[1]);
@@ -400,35 +400,35 @@ static inline float craftax_update_mobs_damage_done_to_player(
     const float damage_vector[3]
 ) {
     float defense_vector[3] = {0.0f, 0.0f, 0.0f};
-    for (int32_t i = 0; i < 4; i++) {
+    for (int i = 0; i < 4; i++) {
         defense_vector[0] += (float)state->inventory.armour[i] * 0.1f;
         defense_vector[1] +=
-            (float)(int32_t)(state->armour_enchantments[i] == 1) * 0.2f;
+            (float)(int)(state->armour_enchantments[i] == 1) * 0.2f;
         defense_vector[2] +=
-            (float)(int32_t)(state->armour_enchantments[i] == 2) * 0.2f;
+            (float)(int)(state->armour_enchantments[i] == 2) * 0.2f;
     }
 
     float boss_coeff = craftax_step_is_fighting_boss(state)
         ? 1.0f + CRAFTAX_BOSS_FIGHT_EXTRA_DAMAGE
         : 1.0f;
     float damage = 0.0f;
-    for (int32_t i = 0; i < 3; i++) {
+    for (int i = 0; i < 3; i++) {
         damage += (1.0f - defense_vector[i]) * damage_vector[i] * boss_coeff;
     }
     return damage;
 }
 
-static inline int32_t craftax_update_mobs_count_mob_projectiles(
+static inline int craftax_update_mobs_count_mob_projectiles(
     const CraftaxState* state,
-    int32_t level
+    int level
 ) {
     const bool* mask = state->mob_projectiles.mask[level];
-    return (int32_t)mask[0] + (int32_t)mask[1] + (int32_t)mask[2];
+    return (int)mask[0] + (int)mask[1] + (int)mask[2];
 }
 
-static inline int32_t craftax_update_mobs_first_empty_mob_projectile(
+static inline int craftax_update_mobs_first_empty_mob_projectile(
     const CraftaxState* state,
-    int32_t level
+    int level
 ) {
     const bool* mask = state->mob_projectiles.mask[level];
     if (!mask[0]) return 0;
@@ -439,17 +439,17 @@ static inline int32_t craftax_update_mobs_first_empty_mob_projectile(
 
 static inline void craftax_update_mobs_spawn_mob_projectile(
     CraftaxState* state,
-    int32_t level,
+    int level,
     bool is_spawning_projectile,
-    const int32_t position[2],
-    const int32_t direction[2],
-    int32_t projectile_type
+    const int position[2],
+    const int direction[2],
+    int projectile_type
 ) {
     if (!is_spawning_projectile) {
         return;
     }
 
-    int32_t index = craftax_update_mobs_first_empty_mob_projectile(
+    int index = craftax_update_mobs_first_empty_mob_projectile(
         state,
         level
     );
@@ -463,8 +463,8 @@ static inline void craftax_update_mobs_spawn_mob_projectile(
 
 static inline void craftax_update_mobs_attack_mob_with_damage(
     CraftaxState* state,
-    int32_t row,
-    int32_t col,
+    int row,
+    int col,
     const float damage_vector[3],
     bool can_eat,
     bool* did_attack_mob,
@@ -528,20 +528,20 @@ static inline void craftax_update_mobs_attack_mob_with_damage(
 
     craftax_do_action_update_mob_map(state, row, col, *did_kill_mob);
 
-    int32_t level = craftax_clamp_index(
+    int level = craftax_clamp_index(
         state->player_level,
         CRAFTAX_NUM_LEVELS
     );
-    state->monsters_killed[level] += (int32_t)did_kill_monster;
+    state->monsters_killed[level] += (int)did_kill_monster;
 }
 
 static inline void craftax_update_mobs_player_projectile_damage_vector(
     const CraftaxState* state,
-    int32_t level,
-    int32_t projectile_index,
+    int level,
+    int projectile_index,
     float damage_vector[3]
 ) {
-    int32_t projectile_type =
+    int projectile_type =
         state->player_projectiles.type_id[level][projectile_index];
     craftax_update_mobs_damage_vector(
         projectile_type,
@@ -549,9 +549,9 @@ static inline void craftax_update_mobs_player_projectile_damage_vector(
         damage_vector
     );
 
-    float mask = (float)(int32_t)
+    float mask = (float)(int)
         state->player_projectiles.mask[level][projectile_index];
-    for (int32_t i = 0; i < 3; i++) {
+    for (int i = 0; i < 3; i++) {
         damage_vector[i] *= mask;
     }
 
@@ -559,7 +559,7 @@ static inline void craftax_update_mobs_player_projectile_damage_vector(
         || projectile_type == CRAFTAX_PROJECTILE_ARROW2;
     if (is_arrow) {
         float arrow_damage_add[3] = {0.0f, 0.0f, 0.0f};
-        int32_t enchantment_index;
+        int enchantment_index;
         if (craftax_update_mobs_scatter_index(
                 state->bow_enchantment,
                 3,
@@ -568,7 +568,7 @@ static inline void craftax_update_mobs_player_projectile_damage_vector(
             arrow_damage_add[enchantment_index] = damage_vector[0] / 2.0f;
         }
         arrow_damage_add[0] = 0.0f;
-        for (int32_t i = 0; i < 3; i++) {
+        for (int i = 0; i < 3; i++) {
             damage_vector[i] += arrow_damage_add[i];
         }
     }
@@ -576,7 +576,7 @@ static inline void craftax_update_mobs_player_projectile_damage_vector(
     if (is_arrow) {
         float arrow_damage_coeff =
             1.0f + 0.2f * (float)(state->player_dexterity - 1);
-        for (int32_t i = 0; i < 3; i++) {
+        for (int i = 0; i < 3; i++) {
             damage_vector[i] *= arrow_damage_coeff;
         }
     }
@@ -586,7 +586,7 @@ static inline void craftax_update_mobs_player_projectile_damage_vector(
     if (is_magic_projectile) {
         float magic_damage_coeff =
             1.0f + 0.5f * (float)(state->player_intelligence - 1);
-        for (int32_t i = 0; i < 3; i++) {
+        for (int i = 0; i < 3; i++) {
             damage_vector[i] *= magic_damage_coeff;
         }
     }
@@ -595,36 +595,36 @@ static inline void craftax_update_mobs_player_projectile_damage_vector(
 static inline void craftax_update_mobs_move_melee(
     CraftaxState* state,
     CraftaxThreefryKey* rng,
-    int32_t index
+    int index
 ) {
-    int32_t level = state->player_level;
+    int level = state->player_level;
     bool old_mask = state->melee_mobs.mask[level][index];
     // Dead slot early-out: no observable effect on obs/reward/terminal.
     // Skip body and RNG draws for speed.
     if (!old_mask) return;
-    int32_t old_row = state->melee_mobs.position[level][index][0];
-    int32_t old_col = state->melee_mobs.position[level][index][1];
-    int32_t old_cooldown = state->melee_mobs.attack_cooldown[level][index];
-    int32_t mob_type = state->melee_mobs.type_id[level][index];
+    int old_row = state->melee_mobs.position[level][index][0];
+    int old_col = state->melee_mobs.position[level][index][1];
+    int old_cooldown = state->melee_mobs.attack_cooldown[level][index];
+    int mob_type = state->melee_mobs.type_id[level][index];
 
     CraftaxThreefryKey draw_key =
         craftax_update_mobs_next_random_key(rng);
-    int32_t random_direction[2];
+    int random_direction[2];
     craftax_update_mobs_direction_choice(draw_key, 4, random_direction);
-    int32_t random_row = old_row + random_direction[0];
-    int32_t random_col = old_col + random_direction[1];
+    int random_row = old_row + random_direction[0];
+    int random_col = old_col + random_direction[1];
 
-    int32_t distance_row =
+    int distance_row =
         craftax_update_mobs_abs_i32(state->player_position[0] - old_row);
-    int32_t distance_col =
+    int distance_col =
         craftax_update_mobs_abs_i32(state->player_position[1] - old_col);
     draw_key = craftax_update_mobs_next_random_key(rng);
-    int32_t player_move_axis = craftax_update_mobs_player_axis_choice(
+    int player_move_axis = craftax_update_mobs_player_axis_choice(
         draw_key,
         distance_row,
         distance_col
     );
-    int32_t player_direction[2] = {0, 0};
+    int player_direction[2] = {0, 0};
     if (player_move_axis == 0) {
         player_direction[0] =
             craftax_update_mobs_sign_i32(state->player_position[0] - old_row);
@@ -632,18 +632,18 @@ static inline void craftax_update_mobs_move_melee(
         player_direction[1] =
             craftax_update_mobs_sign_i32(state->player_position[1] - old_col);
     }
-    int32_t player_row = old_row + player_direction[0];
-    int32_t player_col = old_col + player_direction[1];
+    int player_row = old_row + player_direction[0];
+    int player_col = old_col + player_direction[1];
 
-    int32_t distance_to_player = distance_row + distance_col;
+    int distance_to_player = distance_row + distance_col;
     bool close_to_player = distance_to_player < 10
         || craftax_step_is_fighting_boss(state);
     draw_key = craftax_update_mobs_next_random_key(rng);
     close_to_player = close_to_player
         && craftax_threefry_uniform_f32(draw_key) < 0.75f;
 
-    int32_t proposed_row = close_to_player ? player_row : random_row;
-    int32_t proposed_col = close_to_player ? player_col : random_col;
+    int proposed_row = close_to_player ? player_row : random_row;
+    int proposed_col = close_to_player ? player_col : random_col;
 
     bool is_attacking_player = distance_to_player == 1
         && old_cooldown <= 0
@@ -659,8 +659,8 @@ static inline void craftax_update_mobs_move_melee(
         CRAFTAX_MOB_MELEE,
         base_damage
     );
-    float sleeping_coeff = 1.0f + 2.5f * (float)(int32_t)state->is_sleeping;
-    for (int32_t i = 0; i < 3; i++) {
+    float sleeping_coeff = 1.0f + 2.5f * (float)(int)state->is_sleeping;
+    for (int i = 0; i < 3; i++) {
         base_damage[i] *= sleeping_coeff;
     }
     float damage = craftax_update_mobs_damage_done_to_player(
@@ -668,9 +668,9 @@ static inline void craftax_update_mobs_move_melee(
         base_damage
     );
 
-    int32_t new_cooldown = is_attacking_player ? 5 : old_cooldown - 1;
+    int new_cooldown = is_attacking_player ? 5 : old_cooldown - 1;
     bool is_waking_player = state->is_sleeping && is_attacking_player;
-    state->player_health -= damage * (float)(int32_t)is_attacking_player;
+    state->player_health -= damage * (float)(int)is_attacking_player;
     state->is_sleeping = state->is_sleeping && !is_attacking_player;
     state->is_resting = state->is_resting && !is_attacking_player;
     state->achievements[CRAFTAX_ACH_WAKE_UP] =
@@ -688,8 +688,8 @@ static inline void craftax_update_mobs_move_melee(
         proposed_col,
         collision
     );
-    int32_t new_row = valid_move ? proposed_row : old_row;
-    int32_t new_col = valid_move ? proposed_col : old_col;
+    int new_row = valid_move ? proposed_row : old_row;
+    int new_col = valid_move ? proposed_col : old_col;
 
     bool should_not_despawn = distance_to_player < CRAFTAX_MOB_DESPAWN_DISTANCE
         || craftax_step_is_fighting_boss(state);
@@ -724,21 +724,21 @@ static inline void craftax_update_mobs_move_melee(
 static inline void craftax_update_mobs_move_passive(
     CraftaxState* state,
     CraftaxThreefryKey* rng,
-    int32_t index
+    int index
 ) {
-    int32_t level = state->player_level;
+    int level = state->player_level;
     bool old_mask = state->passive_mobs.mask[level][index];
     if (!old_mask) return;
-    int32_t old_row = state->passive_mobs.position[level][index][0];
-    int32_t old_col = state->passive_mobs.position[level][index][1];
-    int32_t mob_type = state->passive_mobs.type_id[level][index];
+    int old_row = state->passive_mobs.position[level][index][0];
+    int old_col = state->passive_mobs.position[level][index][1];
+    int mob_type = state->passive_mobs.type_id[level][index];
 
     CraftaxThreefryKey draw_key =
         craftax_update_mobs_next_random_key(rng);
-    int32_t direction[2];
+    int direction[2];
     craftax_update_mobs_direction_choice(draw_key, 8, direction);
-    int32_t proposed_row = old_row + direction[0];
-    int32_t proposed_col = old_col + direction[1];
+    int proposed_row = old_row + direction[0];
+    int proposed_col = old_col + direction[1];
 
     bool collision[3];
     craftax_update_mobs_collision_map(
@@ -752,10 +752,10 @@ static inline void craftax_update_mobs_move_passive(
         proposed_col,
         collision
     );
-    int32_t new_row = valid_move ? proposed_row : old_row;
-    int32_t new_col = valid_move ? proposed_col : old_col;
+    int new_row = valid_move ? proposed_row : old_row;
+    int new_col = valid_move ? proposed_col : old_col;
 
-    int32_t distance_to_player = craftax_update_mobs_manhattan_to_player(
+    int distance_to_player = craftax_update_mobs_manhattan_to_player(
         state,
         old_row,
         old_col
@@ -787,34 +787,34 @@ static inline void craftax_update_mobs_move_passive(
 static inline void craftax_update_mobs_move_ranged(
     CraftaxState* state,
     CraftaxThreefryKey* rng,
-    int32_t index
+    int index
 ) {
-    int32_t level = state->player_level;
+    int level = state->player_level;
     bool old_mask = state->ranged_mobs.mask[level][index];
     if (!old_mask) return;
-    int32_t old_row = state->ranged_mobs.position[level][index][0];
-    int32_t old_col = state->ranged_mobs.position[level][index][1];
-    int32_t old_cooldown = state->ranged_mobs.attack_cooldown[level][index];
-    int32_t mob_type = state->ranged_mobs.type_id[level][index];
+    int old_row = state->ranged_mobs.position[level][index][0];
+    int old_col = state->ranged_mobs.position[level][index][1];
+    int old_cooldown = state->ranged_mobs.attack_cooldown[level][index];
+    int mob_type = state->ranged_mobs.type_id[level][index];
 
     CraftaxThreefryKey draw_key =
         craftax_update_mobs_next_random_key(rng);
-    int32_t random_direction[2];
+    int random_direction[2];
     craftax_update_mobs_direction_choice(draw_key, 4, random_direction);
-    int32_t random_row = old_row + random_direction[0];
-    int32_t random_col = old_col + random_direction[1];
+    int random_row = old_row + random_direction[0];
+    int random_col = old_col + random_direction[1];
 
-    int32_t distance_row =
+    int distance_row =
         craftax_update_mobs_abs_i32(state->player_position[0] - old_row);
-    int32_t distance_col =
+    int distance_col =
         craftax_update_mobs_abs_i32(state->player_position[1] - old_col);
     draw_key = craftax_update_mobs_next_random_key(rng);
-    int32_t player_move_axis = craftax_update_mobs_player_axis_choice(
+    int player_move_axis = craftax_update_mobs_player_axis_choice(
         draw_key,
         distance_row,
         distance_col
     );
-    int32_t player_direction[2] = {0, 0};
+    int player_direction[2] = {0, 0};
     if (player_move_axis == 0) {
         player_direction[0] =
             craftax_update_mobs_sign_i32(state->player_position[0] - old_row);
@@ -822,16 +822,16 @@ static inline void craftax_update_mobs_move_ranged(
         player_direction[1] =
             craftax_update_mobs_sign_i32(state->player_position[1] - old_col);
     }
-    int32_t towards_row = old_row + player_direction[0];
-    int32_t towards_col = old_col + player_direction[1];
-    int32_t away_row = old_row - player_direction[0];
-    int32_t away_col = old_col - player_direction[1];
+    int towards_row = old_row + player_direction[0];
+    int towards_col = old_col + player_direction[1];
+    int away_row = old_row - player_direction[0];
+    int away_col = old_col - player_direction[1];
 
-    int32_t distance_to_player = distance_row + distance_col;
+    int distance_to_player = distance_row + distance_col;
     bool far_from_player = distance_to_player >= 6;
     bool too_close_to_player = distance_to_player <= 3;
-    int32_t proposed_row = far_from_player ? towards_row : random_row;
-    int32_t proposed_col = far_from_player ? towards_col : random_col;
+    int proposed_row = far_from_player ? towards_row : random_row;
+    int proposed_col = far_from_player ? towards_col : random_col;
     if (too_close_to_player) {
         proposed_row = away_row;
         proposed_col = away_col;
@@ -869,8 +869,8 @@ static inline void craftax_update_mobs_move_ranged(
             < CRAFTAX_MAX_MOB_PROJECTILES;
     bool is_spawning_projectile =
         is_attacking_player && can_spawn_projectile;
-    int32_t projectile_position[2] = {old_row, old_col};
-    int32_t projectile_type =
+    int projectile_position[2] = {old_row, old_col};
+    int projectile_type =
         craftax_update_mobs_projectile_type_for_ranged(mob_type);
     craftax_update_mobs_spawn_mob_projectile(
         state,
@@ -885,7 +885,7 @@ static inline void craftax_update_mobs_move_ranged(
         proposed_row = old_row;
         proposed_col = old_col;
     }
-    int32_t new_cooldown = is_attacking_player ? 4 : old_cooldown - 1;
+    int new_cooldown = is_attacking_player ? 4 : old_cooldown - 1;
 
     bool valid_move = craftax_update_mobs_valid_position(
         state,
@@ -893,8 +893,8 @@ static inline void craftax_update_mobs_move_ranged(
         proposed_col,
         collision
     );
-    int32_t new_row = valid_move ? proposed_row : old_row;
-    int32_t new_col = valid_move ? proposed_col : old_col;
+    int new_row = valid_move ? proposed_row : old_row;
+    int new_col = valid_move ? proposed_col : old_col;
 
     bool should_not_despawn = distance_to_player < CRAFTAX_MOB_DESPAWN_DISTANCE
         || craftax_step_is_fighting_boss(state);
@@ -923,16 +923,16 @@ static inline void craftax_update_mobs_move_ranged(
 
 static inline void craftax_update_mobs_move_mob_projectile(
     CraftaxState* state,
-    int32_t index
+    int index
 ) {
-    int32_t level = state->player_level;
+    int level = state->player_level;
     bool old_mask = state->mob_projectiles.mask[level][index];
     if (!old_mask) return;
-    int32_t old_row = state->mob_projectiles.position[level][index][0];
-    int32_t old_col = state->mob_projectiles.position[level][index][1];
-    int32_t proposed_row =
+    int old_row = state->mob_projectiles.position[level][index][0];
+    int old_col = state->mob_projectiles.position[level][index][1];
+    int proposed_row =
         old_row + state->mob_projectile_directions[level][index][0];
-    int32_t proposed_col =
+    int proposed_col =
         old_col + state->mob_projectile_directions[level][index][1];
 
     bool proposed_in_player =
@@ -942,7 +942,7 @@ static inline void craftax_update_mobs_move_mob_projectile(
         proposed_row,
         proposed_col
     );
-    int32_t proposed_block = craftax_update_mobs_read_block(
+    int proposed_block = craftax_update_mobs_read_block(
         state,
         level,
         proposed_row,
@@ -966,9 +966,9 @@ static inline void craftax_update_mobs_move_mob_projectile(
     bool hit_bench_or_furnace = proposed_block == CRAFTAX_BLOCK_FURNACE
         || proposed_block == CRAFTAX_BLOCK_CRAFTING_TABLE;
     bool removing_block = hit_bench_or_furnace && old_mask;
-    int32_t new_block = removing_block ? CRAFTAX_BLOCK_PATH : proposed_block;
+    int new_block = removing_block ? CRAFTAX_BLOCK_PATH : proposed_block;
 
-    int32_t projectile_type =
+    int projectile_type =
         state->mob_projectiles.type_id[level][index];
     float damage_vector[3];
     craftax_update_mobs_damage_vector(
@@ -984,7 +984,7 @@ static inline void craftax_update_mobs_move_mob_projectile(
     state->mob_projectiles.position[level][index][0] = proposed_row;
     state->mob_projectiles.position[level][index][1] = proposed_col;
     state->mob_projectiles.mask[level][index] = new_mask;
-    state->player_health -= damage * (float)(int32_t)hit_player;
+    state->player_health -= damage * (float)(int)hit_player;
     state->is_sleeping = state->is_sleeping && !hit_player;
     state->is_resting = state->is_resting && !hit_player;
     craftax_update_mobs_set_block(
@@ -998,16 +998,16 @@ static inline void craftax_update_mobs_move_mob_projectile(
 
 static inline void craftax_update_mobs_move_player_projectile(
     CraftaxState* state,
-    int32_t index
+    int index
 ) {
-    int32_t level = state->player_level;
+    int level = state->player_level;
     bool old_mask = state->player_projectiles.mask[level][index];
     if (!old_mask) return;
-    int32_t old_row = state->player_projectiles.position[level][index][0];
-    int32_t old_col = state->player_projectiles.position[level][index][1];
-    int32_t proposed_row =
+    int old_row = state->player_projectiles.position[level][index][0];
+    int old_col = state->player_projectiles.position[level][index][1];
+    int proposed_row =
         old_row + state->player_projectile_directions[level][index][0];
-    int32_t proposed_col =
+    int proposed_col =
         old_col + state->player_projectile_directions[level][index][1];
 
     float damage_vector[3];
@@ -1022,7 +1022,7 @@ static inline void craftax_update_mobs_move_player_projectile(
         proposed_row,
         proposed_col
     );
-    int32_t proposed_block = craftax_update_mobs_read_block(
+    int proposed_block = craftax_update_mobs_read_block(
         state,
         level,
         proposed_row,
@@ -1045,9 +1045,9 @@ static inline void craftax_update_mobs_move_player_projectile(
     (void)did_kill_mob0;
 
     float second_damage_vector[3];
-    for (int32_t i = 0; i < 3; i++) {
+    for (int i = 0; i < 3; i++) {
         second_damage_vector[i] =
-            damage_vector[i] * (float)(int32_t)(!did_attack_mob0);
+            damage_vector[i] * (float)(int)(!did_attack_mob0);
     }
 
     bool did_attack_mob1 = false;

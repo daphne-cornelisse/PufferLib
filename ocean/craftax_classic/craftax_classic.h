@@ -124,7 +124,7 @@ static inline uint32_t cr_pcg(uint64_t* s) {
     *s = *s * 6364136223846793005ULL + 1442695040888963407ULL;
     uint32_t x = (uint32_t)(((*s >> 18u) ^ *s) >> 27u);
     uint32_t rot = (uint32_t)(*s >> 59u);
-    return (x >> rot) | (x << ((-(int32_t)rot) & 31));
+    return (x >> rot) | (x << ((-(int)rot) & 31));
 }
 static inline float    cr_rf(uint64_t* s)      { return (cr_pcg(s) >> 8) * (1.0f / 16777216.0f); }
 static inline int      cr_ri(uint64_t* s, int n) { return (int)(cr_pcg(s) % (uint32_t)n); }
@@ -208,11 +208,11 @@ typedef struct CraftaxClassic {
 
     float   light_level;
     bool    achievements[NUM_ACHIEVEMENTS];
-    int32_t timestep;
+    int timestep;
 
     // Episode stats (accumulated; flushed into env->log on terminal)
     float episode_return_accum;
-    int32_t episode_length_accum;
+    int episode_length_accum;
 
     // Scratch for per-step reward computation
     int8_t old_health;

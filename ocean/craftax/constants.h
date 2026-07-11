@@ -340,20 +340,20 @@ typedef enum CraftaxAchievement {
 } CraftaxAchievement;
 
 typedef struct CraftaxSmoothGenConfig {
-    int32_t default_block;
-    int32_t sea_block;
-    int32_t coast_block;
-    int32_t mountain_block;
-    int32_t path_block;
-    int32_t inner_mountain_block;
-    int32_t ore_requirement_blocks[5];
-    int32_t ores[5];
+    int default_block;
+    int sea_block;
+    int coast_block;
+    int mountain_block;
+    int path_block;
+    int inner_mountain_block;
+    int ore_requirement_blocks[5];
+    int ores[5];
     float ore_chances[5];
-    int32_t tree_requirement_block;
-    int32_t tree;
-    int32_t lava;
-    int32_t player_spawn;
-    int32_t valid_ladder;
+    int tree_requirement_block;
+    int tree;
+    int lava;
+    int player_spawn;
+    int valid_ladder;
     bool ladder_up;
     bool ladder_down;
     float player_proximity_map_water_strength;
@@ -368,9 +368,9 @@ typedef struct CraftaxSmoothGenConfig {
 } CraftaxSmoothGenConfig;
 
 typedef struct CraftaxDungeonConfig {
-    int32_t special_block;
-    int32_t fountain_block;
-    int32_t rare_path_replacement_block;
+    int special_block;
+    int fountain_block;
+    int rare_path_replacement_block;
 } CraftaxDungeonConfig;
 
 static const CraftaxSmoothGenConfig CRAFTAX_SMOOTHGEN_CONFIGS[6] = {

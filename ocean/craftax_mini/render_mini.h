@@ -18,7 +18,7 @@ static inline void craftax_render_mini(Craftax* env) {
     int view_w = craftax_view_width(client);
     int view_h = craftax_view_height(client);
     int hud_y = view_h;
-    int32_t goal_block = craftax_mini_current_goal_block(env);
+    int goal_block = craftax_mini_current_goal_block(env);
     int goal_count = craftax_mini_inventory_count_for_goal(s, goal_block);
     bool found_goal_gemstone = goal_count > 0;
     Color goal_color = craftax_mini_goal_color(goal_block);

@@ -1,4 +1,4 @@
-// Full native Craftax environment for PufferLib Ocean.
+// Native Craftax environment
 
 #pragma once
 
@@ -12,68 +12,62 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// ============================================================
 // State layout declarations matching craftax_state.py field order
-// ============================================================
 typedef struct CraftaxInventory {
-    int32_t wood;
-    int32_t stone;
-    int32_t coal;
-    int32_t iron;
-    int32_t diamond;
-    int32_t sapling;
-    int32_t pickaxe;
-    int32_t sword;
-    int32_t bow;
-    int32_t arrows;
-    int32_t armour[4];
-    int32_t torches;
-    int32_t ruby;
-    int32_t sapphire;
-    int32_t potions[6];
-    int32_t books;
+    int wood;
+    int stone;
+    int coal;
+    int iron;
+    int diamond;
+    int sapling;
+    int pickaxe;
+    int sword;
+    int bow;
+    int arrows;
+    int armour[4];
+    int torches;
+    int ruby;
+    int sapphire;
+    int potions[6];
+    int books;
 } CraftaxInventory;
 
 typedef struct CraftaxMobs3 {
-    int32_t position[CRAFTAX_NUM_LEVELS][3][2];
+    int position[CRAFTAX_NUM_LEVELS][3][2];
     float health[CRAFTAX_NUM_LEVELS][3];
     bool mask[CRAFTAX_NUM_LEVELS][3];
-    int32_t attack_cooldown[CRAFTAX_NUM_LEVELS][3];
-    int32_t type_id[CRAFTAX_NUM_LEVELS][3];
+    int attack_cooldown[CRAFTAX_NUM_LEVELS][3];
+    int type_id[CRAFTAX_NUM_LEVELS][3];
 } CraftaxMobs3;
 
 typedef struct CraftaxMobs2 {
-    int32_t position[CRAFTAX_NUM_LEVELS][2][2];
+    int position[CRAFTAX_NUM_LEVELS][2][2];
     float health[CRAFTAX_NUM_LEVELS][2];
     bool mask[CRAFTAX_NUM_LEVELS][2];
-    int32_t attack_cooldown[CRAFTAX_NUM_LEVELS][2];
-    int32_t type_id[CRAFTAX_NUM_LEVELS][2];
+    int attack_cooldown[CRAFTAX_NUM_LEVELS][2];
+    int type_id[CRAFTAX_NUM_LEVELS][2];
 } CraftaxMobs2;
 
 typedef struct CraftaxState {
-    // === Hot data (accessed every step) ===
-    int32_t player_position[2];
-    int32_t player_level;
-    int32_t player_direction;
-
+    int player_position[2];
+    int player_level;
+    int player_direction;
     float player_health;
-    int32_t player_food;
-    int32_t player_drink;
-    int32_t player_energy;
-    int32_t player_mana;
+    int player_food;
+    int player_drink;
+    int player_energy;
+    int player_mana;
     bool is_sleeping;
     bool is_resting;
-
     float player_recover;
     float player_hunger;
     float player_thirst;
     float player_fatigue;
     float player_recover_mana;
-
-    int32_t player_xp;
-    int32_t player_dexterity;
-    int32_t player_strength;
-    int32_t player_intelligence;
+    int player_xp;
+    int player_dexterity;
+    int player_strength;
+    int player_intelligence;
 
     CraftaxInventory inventory;
 
@@ -82,29 +76,29 @@ typedef struct CraftaxState {
     CraftaxMobs2 ranged_mobs;
 
     CraftaxMobs3 mob_projectiles;
-    int32_t mob_projectile_directions[CRAFTAX_NUM_LEVELS][CRAFTAX_MAX_MOB_PROJECTILES][2];
+    int mob_projectile_directions[CRAFTAX_NUM_LEVELS][CRAFTAX_MAX_MOB_PROJECTILES][2];
     CraftaxMobs3 player_projectiles;
-    int32_t player_projectile_directions[CRAFTAX_NUM_LEVELS][CRAFTAX_MAX_PLAYER_PROJECTILES][2];
+    int player_projectile_directions[CRAFTAX_NUM_LEVELS][CRAFTAX_MAX_PLAYER_PROJECTILES][2];
 
-    int32_t growing_plants_positions[CRAFTAX_MAX_GROWING_PLANTS][2];
-    int32_t growing_plants_age[CRAFTAX_MAX_GROWING_PLANTS];
+    int growing_plants_positions[CRAFTAX_MAX_GROWING_PLANTS][2];
+    int growing_plants_age[CRAFTAX_MAX_GROWING_PLANTS];
     bool growing_plants_mask[CRAFTAX_MAX_GROWING_PLANTS];
 
-    int32_t potion_mapping[6];
+    int potion_mapping[6];
     bool learned_spells[2];
 
-    int32_t sword_enchantment;
-    int32_t bow_enchantment;
-    int32_t armour_enchantments[4];
+    int sword_enchantment;
+    int bow_enchantment;
+    int armour_enchantments[4];
 
-    int32_t boss_progress;
-    int32_t boss_timesteps_to_spawn_this_round;
+    int boss_progress;
+    int boss_timesteps_to_spawn_this_round;
 
     float light_level;
     bool achievements[CRAFTAX_NUM_ACHIEVEMENTS];
     uint32_t state_rng[2];
-    int32_t timestep;
-    int32_t fractal_noise_angles[4];
+    int timestep;
+    int fractal_noise_angles[4];
 
     // === Medium-hot bitmaps, read during mob updates, spawn scans, encode_obs ===
     uint64_t mob_bits[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE];
@@ -117,10 +111,10 @@ typedef struct CraftaxState {
     uint8_t item_map[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE][CRAFTAX_MAP_SIZE];
     uint8_t light_map[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE][CRAFTAX_MAP_SIZE];
 
-    int32_t down_ladders[CRAFTAX_NUM_LEVELS][2];
-    int32_t up_ladders[CRAFTAX_NUM_LEVELS][2];
+    int down_ladders[CRAFTAX_NUM_LEVELS][2];
+    int up_ladders[CRAFTAX_NUM_LEVELS][2];
     bool chests_opened[CRAFTAX_NUM_LEVELS];
-    int32_t monsters_killed[CRAFTAX_NUM_LEVELS];
+    int monsters_killed[CRAFTAX_NUM_LEVELS];
 } CraftaxState;
 
 typedef char CraftaxStateMatchesWorldState[
@@ -150,9 +144,9 @@ static inline uint64_t craftax_spawn_water_bit(uint8_t block) {
 
 static inline void craftax_refresh_spawn_bits_cell(
     CraftaxState* state,
-    int32_t level,
-    int32_t row,
-    int32_t col
+    int level,
+    int row,
+    int col
 ) {
     uint64_t bit = 1ULL << col;
     uint8_t block = state->map[level][row][col];
@@ -170,22 +164,22 @@ static inline void craftax_refresh_spawn_bits_cell(
 
 static inline void craftax_set_map_block(
     CraftaxState* state,
-    int32_t level,
-    int32_t row,
-    int32_t col,
-    int32_t block
+    int level,
+    int row,
+    int col,
+    int block
 ) {
     state->map[level][row][col] = (uint8_t)block;
     craftax_refresh_spawn_bits_cell(state, level, row, col);
 }
 
 static inline void craftax_refresh_spawn_bits_all(CraftaxState* state) {
-    for (int32_t level = 0; level < CRAFTAX_NUM_LEVELS; level++) {
-        for (int32_t row = 0; row < CRAFTAX_MAP_SIZE; row++) {
+    for (int level = 0; level < CRAFTAX_NUM_LEVELS; level++) {
+        for (int row = 0; row < CRAFTAX_MAP_SIZE; row++) {
             uint64_t all_bits = 0;
             uint64_t grave_bits = 0;
             uint64_t water_bits = 0;
-            for (int32_t col = 0; col < CRAFTAX_MAP_SIZE; col++) {
+            for (int col = 0; col < CRAFTAX_MAP_SIZE; col++) {
                 uint8_t block = state->map[level][row][col];
                 uint64_t bit = 1ULL << col;
                 all_bits |= (0ULL - craftax_spawn_all_bit(block)) & bit;
@@ -204,39 +198,39 @@ typedef struct CraftaxArena {
 } CraftaxArena;
 
 #ifdef CRAFTAX_ENABLE_ENV_IMPL
-static inline void craftax_change_floor(CraftaxState* state, int32_t action);
-static inline void craftax_do_crafting(CraftaxState* state, int32_t action);
+static inline void craftax_change_floor(CraftaxState* state, int action);
+static inline void craftax_do_crafting(CraftaxState* state, int action);
 static inline void craftax_do_action(
     CraftaxState* state,
-    int32_t action,
+    int action,
     CraftaxThreefryKey rng
 );
-static inline void craftax_place_block(CraftaxState* state, int32_t action);
+static inline void craftax_place_block(CraftaxState* state, int action);
 static inline void craftax_shoot_projectile(
     CraftaxState* state,
-    int32_t action
+    int action
 );
-static inline void craftax_cast_spell(CraftaxState* state, int32_t action);
-static inline void craftax_drink_potion(CraftaxState* state, int32_t action);
+static inline void craftax_cast_spell(CraftaxState* state, int action);
+static inline void craftax_drink_potion(CraftaxState* state, int action);
 static inline void craftax_read_book(
     CraftaxState* state,
     const uint32_t rng_words[2],
-    int32_t action
+    int action
 );
 static inline void craftax_enchant(
     CraftaxState* state,
-    int32_t action,
+    int action,
     CraftaxThreefryKey rng
 );
 static inline void craftax_boss_logic(CraftaxState* state);
 static inline void craftax_level_up_attributes(
     CraftaxState* state,
-    int32_t action,
-    int32_t max_attribute
+    int action,
+    int max_attribute
 );
 static inline void craftax_move_player(
     CraftaxState* state,
-    int32_t action
+    int action
 );
 static inline void craftax_update_mobs(
     CraftaxState* state,
@@ -249,7 +243,7 @@ static inline void craftax_spawn_mobs(
 static inline void craftax_update_plants(CraftaxState* state);
 static inline void craftax_update_player_intrinsics(
     CraftaxState* state,
-    int32_t action
+    int action
 );
 static inline void craftax_clip_inventory_and_intrinsics(
     CraftaxState* state
@@ -286,11 +280,11 @@ typedef struct Craftax {
     CraftaxArena* arena;
     CraftaxState* state;
     bool owns_state_storage;
-    int32_t render_view_mode;
+    int render_view_mode;
 
     float achievements[CRAFTAX_NUM_ACHIEVEMENTS];
     float episode_return_accum;
-    int32_t episode_length_accum;
+    int episode_length_accum;
 } Craftax;
 
 #ifdef CRAFTAX_ENABLE_RENDERING
@@ -428,7 +422,7 @@ static inline void craftax_encode_observation(
     craftax_encode_reset_observation((const CraftaxWorldState*)(const void*)state, obs);
 }
 
-static inline float craftax_calculate_light_level(int32_t timestep) {
+static inline float craftax_calculate_light_level(int timestep) {
     float progress = fmodf(
         (float)timestep / (float)CRAFTAX_DAY_LENGTH,
         1.0f
@@ -468,7 +462,7 @@ static void add_log(Craftax* env) {
 
 static float craftax_gameplay_step(
     CraftaxState* state,
-    int32_t action,
+    int action,
     CraftaxThreefryKey rng
 ) {
     bool init_achievements[CRAFTAX_NUM_ACHIEVEMENTS];
@@ -511,7 +505,7 @@ static float craftax_gameplay_step(
 
     float reward = 0.0f;
     for (int i = 0; i < CRAFTAX_NUM_ACHIEVEMENTS; i++) {
-        int32_t delta = (int32_t)state->achievements[i] - (int32_t)init_achievements[i];
+        int delta = (int)state->achievements[i] - (int)init_achievements[i];
         reward += (float)delta * CRAFTAX_ACHIEVEMENT_REWARD_MAP[i];
     }
 

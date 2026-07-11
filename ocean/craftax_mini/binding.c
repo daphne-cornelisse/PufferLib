@@ -118,16 +118,16 @@ void my_init(Env* env, Dict* kwargs) {
 
     item = dict_get_unsafe(kwargs, "current_goal_block");
     g_craftax_mini_config_goal_block = item != NULL
-        ? (int32_t)item->value
+        ? (int)item->value
         : CRAFTAX_BLOCK_DIAMOND;
 
     item = dict_get_unsafe(kwargs, "max_timesteps");
     g_craftax_mini_max_timesteps = item != NULL
-        ? (int32_t)item->value
+        ? (int)item->value
         : CRAFTAX_MINI_DEFAULT_MAX_TIMESTEPS;
 
     item = dict_get_unsafe(kwargs, "human_maps");
-    g_craftax_mini_use_human_maps = item == NULL || (int32_t)item->value != 0;
+    g_craftax_mini_use_human_maps = item == NULL || (int)item->value != 0;
 
     int reset_pool_size = 0;
     item = dict_get_unsafe(kwargs, "reset_pool_size");
@@ -136,7 +136,7 @@ void my_init(Env* env, Dict* kwargs) {
 
     item = dict_get_unsafe(kwargs, "view_mode");
     if (item != NULL) {
-        env->render_view_mode = (int32_t)item->value;
+        env->render_view_mode = (int)item->value;
     }
 
     c_init(env);

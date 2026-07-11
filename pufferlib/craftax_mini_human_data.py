@@ -172,7 +172,7 @@ class NativeCraftaxMiniWorlds:
                 uint32_t seed,
                 uint8_t* map_out,
                 uint8_t* item_map_out,
-                int32_t* player_pos_out
+                int* player_pos_out
             ) {
                 Craftax env;
                 memset(&env, 0, sizeof(env));
@@ -188,10 +188,10 @@ class NativeCraftaxMiniWorlds:
             }
 
             void craftax_mini_human_world_from_index(
-                int32_t index,
+                int index,
                 uint8_t* map_out,
                 uint8_t* item_map_out,
-                int32_t* player_pos_out
+                int* player_pos_out
             ) {
                 craftax_mini_human_world_from_seed(
                     (uint32_t)craftax_mini_human_seed_for_index(index),

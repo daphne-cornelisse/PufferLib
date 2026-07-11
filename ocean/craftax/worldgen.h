@@ -18,56 +18,56 @@ typedef struct CraftaxOverworldFloor {
     uint8_t map[CRAFTAX_OVERWORLD_SIZE][CRAFTAX_OVERWORLD_SIZE];
     uint8_t item_map[CRAFTAX_OVERWORLD_SIZE][CRAFTAX_OVERWORLD_SIZE];
     uint8_t light_map[CRAFTAX_OVERWORLD_SIZE][CRAFTAX_OVERWORLD_SIZE];
-    int32_t ladder_down[2];
-    int32_t ladder_up[2];
+    int ladder_down[2];
+    int ladder_up[2];
 } CraftaxOverworldFloor;
 
 typedef struct CraftaxWGInventory {
-    int32_t wood;
-    int32_t stone;
-    int32_t coal;
-    int32_t iron;
-    int32_t diamond;
-    int32_t sapling;
-    int32_t pickaxe;
-    int32_t sword;
-    int32_t bow;
-    int32_t arrows;
-    int32_t armour[4];
-    int32_t torches;
-    int32_t ruby;
-    int32_t sapphire;
-    int32_t potions[6];
-    int32_t books;
+    int wood;
+    int stone;
+    int coal;
+    int iron;
+    int diamond;
+    int sapling;
+    int pickaxe;
+    int sword;
+    int bow;
+    int arrows;
+    int armour[4];
+    int torches;
+    int ruby;
+    int sapphire;
+    int potions[6];
+    int books;
 } CraftaxWGInventory;
 
 typedef struct CraftaxWGMobs3 {
-    int32_t position[CRAFTAX_WG_NUM_LEVELS][3][2];
+    int position[CRAFTAX_WG_NUM_LEVELS][3][2];
     float health[CRAFTAX_WG_NUM_LEVELS][3];
     bool mask[CRAFTAX_WG_NUM_LEVELS][3];
-    int32_t attack_cooldown[CRAFTAX_WG_NUM_LEVELS][3];
-    int32_t type_id[CRAFTAX_WG_NUM_LEVELS][3];
+    int attack_cooldown[CRAFTAX_WG_NUM_LEVELS][3];
+    int type_id[CRAFTAX_WG_NUM_LEVELS][3];
 } CraftaxWGMobs3;
 
 typedef struct CraftaxWGMobs2 {
-    int32_t position[CRAFTAX_WG_NUM_LEVELS][2][2];
+    int position[CRAFTAX_WG_NUM_LEVELS][2][2];
     float health[CRAFTAX_WG_NUM_LEVELS][2];
     bool mask[CRAFTAX_WG_NUM_LEVELS][2];
-    int32_t attack_cooldown[CRAFTAX_WG_NUM_LEVELS][2];
-    int32_t type_id[CRAFTAX_WG_NUM_LEVELS][2];
+    int attack_cooldown[CRAFTAX_WG_NUM_LEVELS][2];
+    int type_id[CRAFTAX_WG_NUM_LEVELS][2];
 } CraftaxWGMobs2;
 
 typedef struct CraftaxWorldState {
     // === Hot data (accessed every step) ===
-    int32_t player_position[2];
-    int32_t player_level;
-    int32_t player_direction;
+    int player_position[2];
+    int player_level;
+    int player_direction;
 
     float player_health;
-    int32_t player_food;
-    int32_t player_drink;
-    int32_t player_energy;
-    int32_t player_mana;
+    int player_food;
+    int player_drink;
+    int player_energy;
+    int player_mana;
     bool is_sleeping;
     bool is_resting;
 
@@ -77,10 +77,10 @@ typedef struct CraftaxWorldState {
     float player_fatigue;
     float player_recover_mana;
 
-    int32_t player_xp;
-    int32_t player_dexterity;
-    int32_t player_strength;
-    int32_t player_intelligence;
+    int player_xp;
+    int player_dexterity;
+    int player_strength;
+    int player_intelligence;
 
     CraftaxWGInventory inventory;
 
@@ -89,29 +89,29 @@ typedef struct CraftaxWorldState {
     CraftaxWGMobs2 ranged_mobs;
 
     CraftaxWGMobs3 mob_projectiles;
-    int32_t mob_projectile_directions[CRAFTAX_WG_NUM_LEVELS][CRAFTAX_WG_MAX_MOB_PROJECTILES][2];
+    int mob_projectile_directions[CRAFTAX_WG_NUM_LEVELS][CRAFTAX_WG_MAX_MOB_PROJECTILES][2];
     CraftaxWGMobs3 player_projectiles;
-    int32_t player_projectile_directions[CRAFTAX_WG_NUM_LEVELS][CRAFTAX_WG_MAX_PLAYER_PROJECTILES][2];
+    int player_projectile_directions[CRAFTAX_WG_NUM_LEVELS][CRAFTAX_WG_MAX_PLAYER_PROJECTILES][2];
 
-    int32_t growing_plants_positions[CRAFTAX_WG_MAX_GROWING_PLANTS][2];
-    int32_t growing_plants_age[CRAFTAX_WG_MAX_GROWING_PLANTS];
+    int growing_plants_positions[CRAFTAX_WG_MAX_GROWING_PLANTS][2];
+    int growing_plants_age[CRAFTAX_WG_MAX_GROWING_PLANTS];
     bool growing_plants_mask[CRAFTAX_WG_MAX_GROWING_PLANTS];
 
-    int32_t potion_mapping[6];
+    int potion_mapping[6];
     bool learned_spells[2];
 
-    int32_t sword_enchantment;
-    int32_t bow_enchantment;
-    int32_t armour_enchantments[4];
+    int sword_enchantment;
+    int bow_enchantment;
+    int armour_enchantments[4];
 
-    int32_t boss_progress;
-    int32_t boss_timesteps_to_spawn_this_round;
+    int boss_progress;
+    int boss_timesteps_to_spawn_this_round;
 
     float light_level;
     bool achievements[CRAFTAX_WG_NUM_ACHIEVEMENTS];
     uint32_t state_rng[2];
-    int32_t timestep;
-    int32_t fractal_noise_angles[4];
+    int timestep;
+    int fractal_noise_angles[4];
 
     // === Medium-hot bitmaps ===
     uint64_t mob_bits[CRAFTAX_WG_NUM_LEVELS][CRAFTAX_WG_MAP_SIZE];
@@ -124,10 +124,10 @@ typedef struct CraftaxWorldState {
     uint8_t item_map[CRAFTAX_WG_NUM_LEVELS][CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE];
     uint8_t light_map[CRAFTAX_WG_NUM_LEVELS][CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE];
 
-    int32_t down_ladders[CRAFTAX_WG_NUM_LEVELS][2];
-    int32_t up_ladders[CRAFTAX_WG_NUM_LEVELS][2];
+    int down_ladders[CRAFTAX_WG_NUM_LEVELS][2];
+    int up_ladders[CRAFTAX_WG_NUM_LEVELS][2];
     bool chests_opened[CRAFTAX_WG_NUM_LEVELS];
-    int32_t monsters_killed[CRAFTAX_WG_NUM_LEVELS];
+    int monsters_killed[CRAFTAX_WG_NUM_LEVELS];
 } CraftaxWorldState;
 
 static inline float craftax_wg_clampf(float value, float low, float high) {
@@ -203,13 +203,13 @@ static inline uint32_t craftax_randint_u32_at(
     return minval + (uint32_t)(((h >> 32) * (uint64_t)span) >> 32);
 }
 
-static inline int32_t craftax_randint_i32_at(
+static inline int craftax_randint_i32_at(
     CraftaxThreefryKey key,
     uint64_t index,
-    int32_t minval,
-    int32_t maxval
+    int minval,
+    int maxval
 ) {
-    return (int32_t)craftax_randint_u32_at(
+    return (int)craftax_randint_u32_at(
         key,
         index,
         (uint32_t)minval,
@@ -257,7 +257,7 @@ static inline float craftax_torch_light_value(int row, int col, float default_li
 
 static inline void craftax_apply_ladder_light(
     uint8_t light_map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
-    const int32_t ladder_up[2],
+    const int ladder_up[2],
     float default_light
 ) {
     int start_row = ladder_up[0] - 4;
@@ -353,8 +353,8 @@ static inline void craftax_generate_smoothworld_config(
     uint8_t map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
     uint8_t item_map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
     uint8_t light_map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
-    int32_t ladder_down[2],
-    int32_t ladder_up[2]
+    int ladder_down[2],
+    int ladder_up[2]
 ) {
     const CraftaxSmoothGenConfig* config = &CRAFTAX_SMOOTHGEN_CONFIGS[config_idx];
     const int size = CRAFTAX_WG_MAP_SIZE;
@@ -406,7 +406,7 @@ static inline void craftax_generate_smoothworld_config(
             size_t idx = craftax_wg_index(row, col);
 
             water[idx] = water[idx] + proximity_water - 1.0f;
-            int32_t block = water[idx] > config->water_threshold
+            int block = water[idx] > config->water_threshold
                 ? config->sea_block
                 : config->default_block;
             bool sand = water[idx] > config->sand_threshold && block != config->sea_block;
@@ -521,8 +521,8 @@ static inline void craftax_generate_smoothworld_floor(
     uint8_t map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
     uint8_t item_map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
     uint8_t light_map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
-    int32_t ladder_down[2],
-    int32_t ladder_up[2]
+    int ladder_down[2],
+    int ladder_up[2]
 ) {
     int config_idx = craftax_smooth_config_index_for_floor(floor_idx);
     if (config_idx < 0) {
@@ -552,8 +552,8 @@ static inline void craftax_generate_dungeon_config(
     uint8_t map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
     uint8_t item_map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
     uint8_t light_map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
-    int32_t ladder_down[2],
-    int32_t ladder_up[2]
+    int ladder_down[2],
+    int ladder_up[2]
 ) {
     const CraftaxDungeonConfig* config = &CRAFTAX_DUNGEON_CONFIGS[config_idx];
     const int chunk_size = 16;
@@ -566,8 +566,8 @@ static inline void craftax_generate_dungeon_config(
     uint8_t padded_map[68][68];
     uint8_t padded_item_map[68][68];
     bool room_occupancy_chunks[9];
-    int32_t room_sizes[8][2];
-    int32_t room_positions[8][2];
+    int room_sizes[8][2];
+    int room_positions[8][2];
 
     for (int row = 0; row < padded_size; row++) {
         for (int col = 0; col < padded_size; col++) {
@@ -720,9 +720,9 @@ static inline void craftax_generate_dungeon_config(
         for (int col = 0; col < CRAFTAX_WG_MAP_SIZE; col++) {
             size_t idx = craftax_wg_index(row, col);
             bool rare = (1.0f - craftax_threefry_uniform_f32_at(rare_key, idx)) > 0.9f;
-            int32_t wall_map = rare ? CRAFTAX_WG_BLOCK_WALL_MOSS : CRAFTAX_WG_BLOCK_WALL;
+            int wall_map = rare ? CRAFTAX_WG_BLOCK_WALL_MOSS : CRAFTAX_WG_BLOCK_WALL;
             bool rare_path = rare && map[row][col] == CRAFTAX_WG_BLOCK_PATH && item_map[row][col] == CRAFTAX_WG_ITEM_NONE;
-            int32_t path_map = rare_path ? config->rare_path_replacement_block : map[row][col];
+            int path_map = rare_path ? config->rare_path_replacement_block : map[row][col];
             bool is_wall_map = map[row][col] == CRAFTAX_WG_BLOCK_WALL && adjacent_path[row][col];
             bool is_darkness_map = !adjacent_path[row][col];
 
@@ -765,8 +765,8 @@ static inline void craftax_generate_dungeon_floor(
     uint8_t map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
     uint8_t item_map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
     uint8_t light_map[CRAFTAX_WG_MAP_SIZE][CRAFTAX_WG_MAP_SIZE],
-    int32_t ladder_down[2],
-    int32_t ladder_up[2]
+    int ladder_down[2],
+    int ladder_up[2]
 ) {
     int config_idx = craftax_dungeon_config_index_for_floor(floor_idx);
     if (config_idx < 0) {
@@ -790,7 +790,7 @@ static inline void craftax_generate_dungeon_floor(
     );
 }
 
-static inline void craftax_permutation_6(CraftaxThreefryKey key, int32_t out[6]) {
+static inline void craftax_permutation_6(CraftaxThreefryKey key, int out[6]) {
     CraftaxThreefryKey carry;
     CraftaxThreefryKey sort_key;
     craftax_threefry_split(key, &carry, &sort_key);
@@ -804,7 +804,7 @@ static inline void craftax_permutation_6(CraftaxThreefryKey key, int32_t out[6])
 
     for (int i = 1; i < 6; i++) {
         uint32_t key_value = keys[i];
-        int32_t value = out[i];
+        int value = out[i];
         int j = i - 1;
         while (j >= 0 && keys[j] > key_value) {
             keys[j + 1] = keys[j];
@@ -952,7 +952,7 @@ static inline void craftax_generate_overworld_from_seed(
     craftax_generate_overworld_from_rng(craftax_overworld_rng_from_seed(seed), out);
 }
 
-static inline int craftax_wg_clamp_index(int32_t index, int32_t size) {
+static inline int craftax_wg_clamp_index(int index, int size) {
     if (index < 0) {
         index += size;
     }
@@ -966,8 +966,8 @@ static inline int craftax_wg_clamp_index(int32_t index, int32_t size) {
 }
 
 static inline bool craftax_wg_scatter_index(
-    int32_t index,
-    int32_t size,
+    int index,
+    int size,
     int* mapped_index
 ) {
     if (index < -size || index >= size) {

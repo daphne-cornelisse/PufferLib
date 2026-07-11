@@ -57,21 +57,21 @@ class NativeCraftaxMiniMonteCarlo:
             #include "ocean/craftax_mini/craftax_mini.h"
 
             typedef struct MiniMonteCarloResult {
-                int32_t success;
-                int32_t steps;
-                int32_t final_row;
-                int32_t final_col;
+                int success;
+                int steps;
+                int final_row;
+                int final_col;
                 float reward_sum;
             } MiniMonteCarloResult;
 
             void craftax_mini_random_rollout(
                 uint32_t world_seed,
                 uint32_t slot_id,
-                int32_t goal_block,
-                int32_t max_timesteps,
-                const int32_t* actions,
-                int32_t num_actions,
-                int32_t* positions_out,
+                int goal_block,
+                int max_timesteps,
+                const int* actions,
+                int num_actions,
+                int* positions_out,
                 MiniMonteCarloResult* result
             ) {
                 g_craftax_mini_config_goal_block = goal_block;
@@ -86,14 +86,14 @@ class NativeCraftaxMiniMonteCarlo:
                 env.seed = world_seed;
                 c_init(&env);
 
-                int32_t steps = 0;
+                int steps = 0;
                 float reward_sum = 0.0f;
-                int32_t success = 0;
+                int success = 0;
                 positions_out[0] = env.state->player_position[0];
                 positions_out[1] = env.state->player_position[1];
 
-                for (int32_t i = 0; i < num_actions; i++) {
-                    int32_t action = actions[i];
+                for (int i = 0; i < num_actions; i++) {
+                    int action = actions[i];
                     if (action < 0) action = 0;
                     if (action >= CRAFTAX_MINI_NUM_ACTIONS) {
                         action = CRAFTAX_MINI_NUM_ACTIONS - 1;

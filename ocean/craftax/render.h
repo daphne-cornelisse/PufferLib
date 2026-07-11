@@ -11,11 +11,11 @@ struct Client {
     bool headless_display;
     int view_mode;
     bool trail_initialized;
-    int32_t trail_level;
-    int32_t last_row;
-    int32_t last_col;
-    int32_t trail_rows[CRAFTAX_TRAIL_LEN];
-    int32_t trail_cols[CRAFTAX_TRAIL_LEN];
+    int trail_level;
+    int last_row;
+    int last_col;
+    int trail_rows[CRAFTAX_TRAIL_LEN];
+    int trail_cols[CRAFTAX_TRAIL_LEN];
     int trail_count;
     int trail_head;
 };
@@ -138,9 +138,9 @@ static inline void craftax_record_player_position(Craftax* env) {
         return;
     }
 
-    int32_t level = env->state->player_level;
-    int32_t row = env->state->player_position[0];
-    int32_t col = env->state->player_position[1];
+    int level = env->state->player_level;
+    int row = env->state->player_position[0];
+    int col = env->state->player_position[1];
 
     if (!client->trail_initialized) {
         craftax_reset_player_trail(env);
@@ -240,7 +240,7 @@ static inline void craftax_load_textures(void) {
     craftax_textures_loaded = true;
 }
 
-static inline int craftax_player_tex_id(int32_t direction, bool sleeping) {
+static inline int craftax_player_tex_id(int direction, bool sleeping) {
     if (sleeping) return CRAFTAX_TEX_PLAYER_SLEEP;
     switch (direction) {
         case 1: return CRAFTAX_TEX_PLAYER_LEFT;
@@ -291,7 +291,7 @@ static inline int craftax_mob_tex_id(bool passive, bool ranged) {
     return 47;
 }
 
-static inline int craftax_projectile_tex_id(const int32_t direction[2]) {
+static inline int craftax_projectile_tex_id(const int direction[2]) {
     if (direction[0] < 0) return 51;
     if (direction[0] > 0) return 50;
     if (direction[1] < 0) return 52;
@@ -299,7 +299,7 @@ static inline int craftax_projectile_tex_id(const int32_t direction[2]) {
     return 50;
 }
 
-static inline Color craftax_projectile_tint(int32_t type_id, bool hostile) {
+static inline Color craftax_projectile_tint(int type_id, bool hostile) {
     switch (type_id) {
         case CRAFTAX_PROJECTILE_FIREBALL:
         case CRAFTAX_PROJECTILE_FIREBALL2:
@@ -318,10 +318,10 @@ static inline Color craftax_projectile_tint(int32_t type_id, bool hostile) {
 
 static inline void craftax_draw_world_entity_scaled(
     int tex_id,
-    int32_t entity_row,
-    int32_t entity_col,
-    int32_t top_row,
-    int32_t left_col,
+    int entity_row,
+    int entity_col,
+    int top_row,
+    int left_col,
     int rows,
     int cols,
     int tile_px,
