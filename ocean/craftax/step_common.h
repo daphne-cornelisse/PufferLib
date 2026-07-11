@@ -43,7 +43,9 @@ static inline float craftax_step_maxf32(float a, float b) {
 }
 
 static inline int32_t craftax_step_get_max_health(const CraftaxState* state) {
-    return 8 + state->player_strength;
+    int32_t max_health = 8 + state->player_strength;
+    int32_t initial_health = (int32_t)ceilf(g_craftax_initial_health);
+    return initial_health > max_health ? initial_health : max_health;
 }
 
 static inline int32_t craftax_step_get_max_food(const CraftaxState* state) {

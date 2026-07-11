@@ -573,6 +573,15 @@ static inline void craftax_reset_state_from_reset_key(
 static int g_craftax_reset_pool_size = 0;
 static CraftaxState* g_craftax_reset_pool = NULL;
 static int g_craftax_reset_pool_ready = 0;
+static float g_craftax_initial_health = 9.0f;
+
+static inline void craftax_set_initial_health(float initial_health) {
+    g_craftax_initial_health = initial_health > 0.0f ? initial_health : 9.0f;
+}
+
+static inline void craftax_apply_reset_settings(CraftaxState* state) {
+    state->player_health = g_craftax_initial_health;
+}
 
 // Called from my_init which runs single-threaded during env creation
 // (vecenv.h iterates envs sequentially). First caller populates the
@@ -612,11 +621,13 @@ static inline void craftax_reset_state_from_seed(Craftax* env) {
         craftax_threefry_split(initial_key, &env->rng_key, &discard);
         int idx = (int)(env->seed % (uint64_t)g_craftax_reset_pool_size);
         memcpy(env->state, &g_craftax_reset_pool[idx], sizeof(CraftaxState));
+        craftax_apply_reset_settings(env->state);
         return;
     }
     CraftaxThreefryKey reset_key;
     craftax_threefry_split(initial_key, &env->rng_key, &reset_key);
     craftax_reset_state_from_reset_key(env->state, reset_key);
+    craftax_apply_reset_settings(env->state);
 }
 
 // Hot-path reset used by c_step on episode-done. Consults the reset pool
@@ -631,9 +642,11 @@ static inline void craftax_reset_state_on_done(
     if (g_craftax_reset_pool_size > 0) {
         uint32_t idx = reset_key.word[0] % (uint32_t)g_craftax_reset_pool_size;
         memcpy(out, &g_craftax_reset_pool[idx], sizeof(CraftaxState));
+        craftax_apply_reset_settings(out);
         return;
     }
     craftax_reset_state_from_reset_key(out, reset_key);
+    craftax_apply_reset_settings(out);
 }
 
 static inline void craftax_encode_observation(

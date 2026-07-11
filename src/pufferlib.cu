@@ -284,6 +284,7 @@ typedef struct {
     long total_timesteps;
     float max_grad_norm;
     // PPO
+    bool reward_clip;
     float clip_coef;
     float vf_clip_coef;
     float vf_coef;
@@ -1531,9 +1532,11 @@ void train_impl(PuffeRL& pufferl) {
             rollouts.action_mask.data, src.action_mask.data, T, B, mask_size);
     }
 
-    // We hard-clamp rewards to -1, 1. Our envs are mostly designed to respect this range
-    clamp_precision_kernel<<<grid_size(numel(rollouts.rewards.shape)), BLOCK_SIZE, 0, train_stream>>>(
-        rollouts.rewards.data, -1.0f, 1.0f, numel(rollouts.rewards.shape));
+    if (hypers.reward_clip) {
+        // We hard-clamp rewards to -1, 1. Our envs are mostly designed to respect this range.
+        clamp_precision_kernel<<<grid_size(numel(rollouts.rewards.shape)), BLOCK_SIZE, 0, train_stream>>>(
+            rollouts.rewards.data, -1.0f, 1.0f, numel(rollouts.rewards.shape));
+    }
 
     // Set importance weights to 1.0
     fill_precision_kernel<<<grid_size(numel(rollouts.ratio.shape)), BLOCK_SIZE, 0, train_stream>>>(

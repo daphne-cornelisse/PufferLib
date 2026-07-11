@@ -112,6 +112,13 @@ void my_init(Env* env, Dict* kwargs) {
     env->num_agents = 1;
     env->render_view_mode = CRAFTAX_VIEW_MODE_AGENT;
 
+    float initial_health = 9.0f;
+    DictItem* health_item = dict_get_unsafe(kwargs, "initial_health");
+    if (health_item != NULL) {
+        initial_health = (float)health_item->value;
+    }
+    craftax_set_initial_health(initial_health);
+
     uint64_t seed_offset = 0;
     DictItem* item = dict_get_unsafe(kwargs, "seed_offset");
     if (item != NULL) {

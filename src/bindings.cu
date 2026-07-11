@@ -429,6 +429,7 @@ std::unique_ptr<PuffeRL> create_pufferl(py::dict args) {
     hypers.total_timesteps = get_config(train_kwargs, "total_timesteps");
     hypers.max_grad_norm = get_config(train_kwargs, "max_grad_norm");
     // PPO
+    hypers.reward_clip = get_config(train_kwargs, "reward_clip");
     hypers.clip_coef = get_config(train_kwargs, "clip_coef");
     hypers.vf_clip_coef = get_config(train_kwargs, "vf_clip_coef");
     hypers.vf_coef = get_config(train_kwargs, "vf_coef");
@@ -566,6 +567,7 @@ PYBIND11_MODULE(_C, m) {
         .def_readwrite("eps", &HypersT::eps)
         .def_readwrite("total_timesteps", &HypersT::total_timesteps)
         .def_readwrite("max_grad_norm", &HypersT::max_grad_norm)
+        .def_readwrite("reward_clip", &HypersT::reward_clip)
         .def_readwrite("clip_coef", &HypersT::clip_coef)
         .def_readwrite("vf_clip_coef", &HypersT::vf_clip_coef)
         .def_readwrite("vf_coef", &HypersT::vf_coef)
