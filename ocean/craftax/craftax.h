@@ -12,8 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// State layout declarations matching craftax_state.py field order
-typedef struct CraftaxInventory {
+// State structs matching craftax_state.py 
+typedef struct {
     int wood;
     int stone;
     int coal;
@@ -32,15 +32,7 @@ typedef struct CraftaxInventory {
     int books;
 } CraftaxInventory;
 
-typedef struct CraftaxMobs3 {
-    int position[CRAFTAX_NUM_LEVELS][3][2];
-    float health[CRAFTAX_NUM_LEVELS][3];
-    bool mask[CRAFTAX_NUM_LEVELS][3];
-    int attack_cooldown[CRAFTAX_NUM_LEVELS][3];
-    int type_id[CRAFTAX_NUM_LEVELS][3];
-} CraftaxMobs3;
-
-typedef struct CraftaxMobs2 {
+typedef struct {
     int position[CRAFTAX_NUM_LEVELS][2][2];
     float health[CRAFTAX_NUM_LEVELS][2];
     bool mask[CRAFTAX_NUM_LEVELS][2];
@@ -48,10 +40,29 @@ typedef struct CraftaxMobs2 {
     int type_id[CRAFTAX_NUM_LEVELS][2];
 } CraftaxMobs2;
 
-typedef struct CraftaxState {
-    int player_position[2];
+typedef struct {
+    int position[CRAFTAX_NUM_LEVELS][3][2];
+    float health[CRAFTAX_NUM_LEVELS][3];
+    bool mask[CRAFTAX_NUM_LEVELS][3];
+    int attack_cooldown[CRAFTAX_NUM_LEVELS][3];
+    int type_id[CRAFTAX_NUM_LEVELS][3];
+} CraftaxMobs3;
+
+typedef struct {
+    // Arrays are [level][row][col]
+    uint8_t map[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE][CRAFTAX_MAP_SIZE];
+    uint8_t item_map[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE][CRAFTAX_MAP_SIZE];
+    uint8_t light_map[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE][CRAFTAX_MAP_SIZE];
+    int down_ladders[CRAFTAX_NUM_LEVELS][2];
+    int up_ladders[CRAFTAX_NUM_LEVELS][2];
+    bool chests_opened[CRAFTAX_NUM_LEVELS];
+    int monsters_killed[CRAFTAX_NUM_LEVELS];
+    
+    int player_position[2]; // [row, col]
     int player_level;
     int player_direction;
+
+    // Intrinsics
     float player_health;
     int player_food;
     int player_drink;
@@ -59,11 +70,15 @@ typedef struct CraftaxState {
     int player_mana;
     bool is_sleeping;
     bool is_resting;
+
+    // Second order intrinsics
     float player_recover;
     float player_hunger;
     float player_thirst;
     float player_fatigue;
     float player_recover_mana;
+
+    // Attributes
     int player_xp;
     int player_dexterity;
     int player_strength;
@@ -77,6 +92,12 @@ typedef struct CraftaxState {
 
     CraftaxMobs3 mob_projectiles;
     int mob_projectile_directions[CRAFTAX_NUM_LEVELS][CRAFTAX_MAX_MOB_PROJECTILES][2];
+
+    uint64_t mob_bits[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE];
+    uint64_t spawn_all_bits[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE];
+    uint64_t spawn_grave_bits[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE];
+    uint64_t spawn_water_bits[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE];
+
     CraftaxMobs3 player_projectiles;
     int player_projectile_directions[CRAFTAX_NUM_LEVELS][CRAFTAX_MAX_PLAYER_PROJECTILES][2];
 
@@ -98,23 +119,7 @@ typedef struct CraftaxState {
     bool achievements[CRAFTAX_NUM_ACHIEVEMENTS];
     uint32_t state_rng[2];
     int timestep;
-    int fractal_noise_angles[4];
-
-    // === Medium-hot bitmaps, read during mob updates, spawn scans, encode_obs ===
-    uint64_t mob_bits[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE];
-    uint64_t spawn_all_bits[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE];
-    uint64_t spawn_grave_bits[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE];
-    uint64_t spawn_water_bits[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE];
-
-    // === Cold data (large maps, scattered access) ===
-    uint8_t map[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE][CRAFTAX_MAP_SIZE];
-    uint8_t item_map[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE][CRAFTAX_MAP_SIZE];
-    uint8_t light_map[CRAFTAX_NUM_LEVELS][CRAFTAX_MAP_SIZE][CRAFTAX_MAP_SIZE];
-
-    int down_ladders[CRAFTAX_NUM_LEVELS][2];
-    int up_ladders[CRAFTAX_NUM_LEVELS][2];
-    bool chests_opened[CRAFTAX_NUM_LEVELS];
-    int monsters_killed[CRAFTAX_NUM_LEVELS];
+    int fractal_noise_angles[4];   
 } CraftaxState;
 
 typedef char CraftaxStateMatchesWorldState[
