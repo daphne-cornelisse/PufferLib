@@ -50,8 +50,8 @@ class NativeCraftaxWorldgen:
             ) {
                 CraftaxWorldState state;
                 craftax_generate_world_from_seed(seed, &state);
-                memcpy(map_out, state.map, CRAFTAX_WG_NUM_LEVELS * CRAFTAX_WG_MAP_SIZE * CRAFTAX_WG_MAP_SIZE);
-                memcpy(item_map_out, state.item_map, CRAFTAX_WG_NUM_LEVELS * CRAFTAX_WG_MAP_SIZE * CRAFTAX_WG_MAP_SIZE);
+                memcpy(map_out, state.map, CRAFTAX_NUM_LEVELS * CRAFTAX_MAP_SIZE * CRAFTAX_MAP_SIZE);
+                memcpy(item_map_out, state.item_map, CRAFTAX_NUM_LEVELS * CRAFTAX_MAP_SIZE * CRAFTAX_MAP_SIZE);
                 player_pos_out[0] = state.player_position[0];
                 player_pos_out[1] = state.player_position[1];
             }

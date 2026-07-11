@@ -428,7 +428,7 @@ static inline float craftax_calculate_light_level(int timestep) {
         (float)timestep / (float)CRAFTAX_DAY_LENGTH,
         1.0f
     ) + 0.3f;
-    float c = cosf(CRAFTAX_WG_PI * progress);
+    float c = cosf(CRAFTAX_PI * progress);
     return 1.0f - powf(fabsf(c), 3.0f);
 }
 
