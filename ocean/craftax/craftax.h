@@ -202,7 +202,6 @@ typedef struct CraftaxArena {
     CraftaxState* states;
 } CraftaxArena;
 
-#ifdef CRAFTAX_ENABLE_ENV_IMPL
 static inline void craftax_change_floor(CraftaxState* state, int action);
 static inline void craftax_do_crafting(CraftaxState* state, int action);
 static inline void craftax_do_action(
@@ -256,7 +255,6 @@ static inline void craftax_clip_inventory_and_intrinsics(
 static inline void craftax_calculate_inventory_achievements(
     CraftaxState* state
 );
-#endif
 
 typedef struct Log {
     float perf;
@@ -295,8 +293,6 @@ typedef struct Craftax {
 #ifdef CRAFTAX_ENABLE_RENDERING
 #include "render.h"
 #endif
-
-#ifdef CRAFTAX_ENABLE_ENV_IMPL
 
 static inline CraftaxThreefryKey craftax_next_key(
     CraftaxThreefryKey* rng
@@ -451,10 +447,8 @@ static inline void craftax_copy_achievements_to_env(
 }
 
 static void add_log(Craftax* env) {
-    int unlocked = 0;
     for (int i = 0; i < CRAFTAX_NUM_ACHIEVEMENTS; i++) {
         if (env->achievements[i] > 0.5f) {
-            unlocked++;
             env->log.achievements[i] += 1.0f;
         }
     }
@@ -633,6 +627,4 @@ static void c_render_mode(Craftax* env, int view_mode) {
 static void c_render(Craftax* env) {
     (void)env;
 }
-#endif
-
 #endif

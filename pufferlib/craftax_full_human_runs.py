@@ -109,7 +109,6 @@ class NativeCraftaxObservationEncoder:
         raylib_include = _raylib_include_dir(root)
         source = r"""
         #include <stdint.h>
-        #define CRAFTAX_ENABLE_ENV_IMPL
         #include "ocean/craftax/craftax.h"
         #include "ocean/craftax/step_crafting.h"
         #include "ocean/craftax/step_mobs.h"

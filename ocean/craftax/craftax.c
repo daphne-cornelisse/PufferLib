@@ -6,7 +6,6 @@
 // Run:
 //   ./craftax
 
-#define CRAFTAX_ENABLE_ENV_IMPL
 #define CRAFTAX_ENABLE_RENDERING
 #include "craftax.h"
 #include "step_crafting.h"
