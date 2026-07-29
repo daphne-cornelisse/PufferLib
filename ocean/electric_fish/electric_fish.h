@@ -575,6 +575,9 @@ typedef struct Log {
     float score;
     float episode_return;
     float episode_length;
+    float food_eaten_mean;
+    float eod_rate;
+    float collisions_fish;
     float n;
 } Log;
 
@@ -646,6 +649,8 @@ typedef struct FishEnv {
     FishFood food[FISH_MAX_FOOD];
     int num_food;
     int food_eaten;
+    int eod_agent_steps;
+    int collisions_fish;
     float episode_return;
 
     FishMonopole eod_sources[2 * MAX_AGENTS];
@@ -1039,6 +1044,8 @@ void c_reset(FishEnv* env) {
     }
     env->tick = 0;
     env->food_eaten = 0;
+    env->eod_agent_steps = 0;
+    env->collisions_fish = 0;
     env->episode_return = 0.0f;
 
     for (int i = 0; i < env->num_agents; i++) {
@@ -1213,6 +1220,12 @@ void add_log(FishEnv* env) {
     env->log.episode_return += env->episode_return;
     env->log.score += (float)env->food_eaten;
     env->log.perf += (float)env->food_eaten / (float)env->num_food;
+    env->log.food_eaten_mean +=
+        (float)env->food_eaten / (float)env->num_agents;
+    env->log.eod_rate +=
+        (float)env->eod_agent_steps /
+        (float)(env->tick * env->num_agents);
+    env->log.collisions_fish += (float)env->collisions_fish;
     env->log.n += 1.0f;
 }
 
@@ -1280,6 +1293,7 @@ void c_step(FishEnv* env) {
         agent->last_action[1] = (float)turn;
         agent->last_action[2] = agent->emits_eod ? 1.0f : 0.0f;
         agent->last_action[3] = agent->bite_action ? 1.0f : 0.0f;
+        env->eod_agent_steps += agent->emits_eod ? 1 : 0;
 
         if (!agent->bite_action && agent->eat_cooldown <= 0.0) {
             if (try_eat(env, i)) {
@@ -1300,6 +1314,7 @@ void c_step(FishEnv* env) {
         bool hit_wall = fish_commit_motion(
             &agent->movement, proposal, collided, env->arena_size_cm
         );
+        env->collisions_fish += collided ? 1 : 0;
         if (collided || hit_wall) {
             env->rewards[i] += FISH_COLLISION_REWARD;
         }

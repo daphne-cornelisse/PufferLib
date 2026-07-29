@@ -31,4 +31,7 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "score", log->score);
     dict_set(out, "episode_return", log->episode_return);
     dict_set(out, "episode_length", log->episode_length);
+    dict_set(out, "food_eaten_mean", log->food_eaten_mean);
+    dict_set(out, "eod_rate", log->eod_rate);
+    dict_set(out, "collisions_fish", log->collisions_fish);
 }
