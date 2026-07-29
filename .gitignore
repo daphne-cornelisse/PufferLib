@@ -47,6 +47,10 @@ MANIFEST
 
 # Mac files
 .DS_Store
+*.dSYM/
+
+# Standalone native environment executables
+/electric_fish
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -171,4 +175,3 @@ pufferlib/ocean/impulse_wars/benchmark/
 # Data
 resources/drive/data/*
 resources/drive/binaries/*
-
