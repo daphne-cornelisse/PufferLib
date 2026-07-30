@@ -23,6 +23,7 @@
 #include "raylib.h"
 
 // Constants
+#define PI_D 3.14159265358979323846264338327950288
 #define CM_TO_M 0.01
 #define K_COULOMB 8.99e9
 #define EPSILON_0 8.854e-12
@@ -50,7 +51,7 @@
 #define ACTION_SIZE 4
 #define EATING_RADIUS_CM 2.0
 #define BITING_RADIUS_CM 3.0
-#define EATING_ANGLE (PI / 4.0)
+#define EATING_ANGLE (PI_D / 4.0)
 #define EAT_REWARD 10.0f
 #define COLLISION_REWARD -0.5f
 #define BITTEN_REWARD -5.0f
@@ -406,7 +407,7 @@ static inline FishVec2 induce_dipole_moment(
     double conductor_contrast
 ) {
     double radius_m = conductor_radius_cm * CM_TO_M;
-    double volume_m3 = (4.0 / 3.0) * PI * radius_m * radius_m * radius_m;
+    double volume_m3 = (4.0 / 3.0) * PI_D * radius_m * radius_m * radius_m;
     double scale =
         3.0 * EPSILON_0 * volume_m3 * conductor_contrast;
     return (FishVec2){
@@ -513,7 +514,7 @@ radial_sensor(double angle, double body_radius_cm) {
 
 static inline double
 uniform_sensor_angle(size_t sensor_index, size_t num_sensors) {
-    return 2.0 * PI * (double)sensor_index / (double)num_sensors;
+    return 2.0 * PI_D * (double)sensor_index / (double)num_sensors;
 }
 
 /*
@@ -536,10 +537,10 @@ static inline double mormyromast_angle(
     }
     size_t rest_index = sensor_index - num_chin;
     if (num_rest == 1) {
-        return PI;
+        return PI_D;
     }
     return 0.5 * chin_angle +
-        (2.0 * PI - chin_angle) *
+        (2.0 * PI_D - chin_angle) *
         (double)rest_index / (double)num_rest;
 }
 
@@ -730,7 +731,7 @@ void compute_observations(FishEnv* env) {
         for (int sensor_idx = 0; sensor_idx < NUM_MORMYROMASTS;
                 sensor_idx++) {
             double angle = mormyromast_angle(
-                (size_t)sensor_idx, 10, 26, PI / 3.0
+                (size_t)sensor_idx, 10, 26, PI_D / 3.0
             );
             FishSensor sensor = transform_sensor(
                 radial_sensor(angle, agent->movement.body_radius_cm),
@@ -910,7 +911,7 @@ static inline void calibrate_electroreceptors(FishEnv* env) {
 
     for (int i = 0; i < NUM_MORMYROMASTS; i++) {
         double angle = mormyromast_angle(
-            (size_t)i, 10, 26, PI / 3.0
+            (size_t)i, 10, 26, PI_D / 3.0
         );
         FishSensor sensor = radial_sensor(angle, BODY_RADIUS_CM);
         sensor.position_cm.x += center.x;
@@ -1064,7 +1065,7 @@ void c_reset(FishEnv* env) {
         );
         agent.movement = (FishMovement){
             .position_cm = position,
-            .orientation = random_uniform(env, -PI, PI),
+            .orientation = random_uniform(env, -PI_D, PI_D),
             .body_radius_cm = BODY_RADIUS_CM,
             .min_linear_velocity = -5.0 / SIMULATION_HZ,
             .max_linear_velocity = 35.0 / SIMULATION_HZ,
@@ -1113,7 +1114,7 @@ void c_reset(FishEnv* env) {
             );
             double u2 = random_uniform(env, 0.0, 1.0);
             double normal_sample =
-                sqrt(-2.0 * log(u1)) * cos(2.0 * PI * u2);
+                sqrt(-2.0 * log(u1)) * cos(2.0 * PI_D * u2);
             patch_radii[i] = clamp(
                 env->patch_radius_cm +
                     normal_sample * env->patch_radius_std_cm,
@@ -1126,10 +1127,10 @@ void c_reset(FishEnv* env) {
         num_patches = (int)clamp(
             env->fixed_num_patches, 1, MAX_PATCHES
         );
-        double initial_angle = random_uniform(env, 0.0, 2.0 * PI);
+        double initial_angle = random_uniform(env, 0.0, 2.0 * PI_D);
         for (int i = 0; i < num_patches; i++) {
             double angle =
-                initial_angle + 2.0 * PI * i / num_patches;
+                initial_angle + 2.0 * PI_D * i / num_patches;
             patch_centers[i] = (FishVec2){
                 env->arena_size_cm.x * 0.5 *
                     (1.0 + env->placement_radius_frac * cos(angle)),
@@ -1151,7 +1152,7 @@ void c_reset(FishEnv* env) {
         );
         double u2 = random_uniform(env, 0.0, 1.0);
         double normal_sample =
-            sqrt(-2.0 * log(u1)) * cos(2.0 * PI * u2);
+            sqrt(-2.0 * log(u1)) * cos(2.0 * PI_D * u2);
         patch_radii[0] = clamp(
             env->patch_radius_cm +
                 normal_sample * env->patch_radius_std_cm,
@@ -1179,7 +1180,7 @@ void c_reset(FishEnv* env) {
             }
             int attempts = 0;
             do {
-                double angle = random_uniform(env, 0.0, 2.0 * PI);
+                double angle = random_uniform(env, 0.0, 2.0 * PI_D);
                 double radius = patch_radii[patch] * sqrt(
                     random_uniform(env, 0.0, 1.0)
                 );
@@ -1204,7 +1205,7 @@ void c_reset(FishEnv* env) {
         env->food[i] = (FishFood){
             .motion = {
                 .position_cm = food_position,
-                .orientation = random_uniform(env, 0.0, 2.0 * PI),
+                .orientation = random_uniform(env, 0.0, 2.0 * PI_D),
             },
             .active = true,
         };

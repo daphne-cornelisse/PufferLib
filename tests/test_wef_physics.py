@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Generated from KempnerInstitute/wef ElectricScene using the deterministic
 # two-fish/one-food fixture implemented by
-# `./electric_fish --physics-fixture`.
+# `./wef --physics-fixture`.
 UPSTREAM_FIXTURE = {
     "eod": [2.156647270767495e-05, 2.2287084167914553e-05],
     "intrinsic": [1.303699593123667e-11, 2.044228319704432e-11],
@@ -20,11 +20,11 @@ UPSTREAM_FIXTURE = {
 }
 
 
-def test_electric_fish_scene_matches_upstream_fixture():
-    executable = ROOT / "electric_fish"
+def test_wef_scene_matches_upstream_fixture():
+    executable = ROOT / "wef"
     if not executable.is_file():
         subprocess.run(
-            [str(ROOT / "build.sh"), "electric_fish", "--fast"],
+            [str(ROOT / "build.sh"), "wef", "--fast"],
             cwd=ROOT,
             check=True,
         )

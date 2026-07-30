@@ -2,14 +2,14 @@
  * Standalone random-policy demo.
  *
  * Build:
- *   ./build.sh electric_fish --local
+ *   ./build.sh wef --local
  * Run:
- *   ./electric_fish
+ *   ./wef
  */
 
 #include <time.h>
 #include <stdio.h>
-#include "electric_fish.h"
+#include "wef.h"
 
 static float random_action(unsigned int* rng) {
     return 2.0f * (float)rand_r(rng) / (float)RAND_MAX - 1.0f;
@@ -111,7 +111,7 @@ int main(int argc, char** argv) {
     }
 
     if (headless) {
-        printf("electric_fish headless smoke test: 1000 steps, %d food eaten\n",
+        printf("wef headless smoke test: 1000 steps, %d food eaten\n",
             env.food_eaten);
     }
     free_allocated(&env);

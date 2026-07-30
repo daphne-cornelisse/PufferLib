@@ -1,4 +1,4 @@
-#include "electric_fish.h"
+#include "wef.h"
 
 #define NUM_ATNS ACTION_SIZE
 #define ACT_SIZES {1, 1, 1, 1}
