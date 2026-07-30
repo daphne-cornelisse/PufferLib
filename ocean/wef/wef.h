@@ -1220,11 +1220,8 @@ void add_log(FishEnv* env) {
     env->log.episode_return += env->episode_return;
     env->log.score += (float)env->food_eaten;
     env->log.perf += (float)env->food_eaten / (float)env->num_food;
-    env->log.food_eaten_mean +=
-        (float)env->food_eaten / (float)env->num_agents;
-    env->log.eod_rate +=
-        (float)env->eod_agent_steps /
-        (float)(env->tick * env->num_agents);
+    env->log.food_eaten_mean += (float)env->food_eaten / (float)env->num_agents;
+    env->log.eod_rate += (float)env->eod_agent_steps / (float)(env->tick * env->num_agents);
     env->log.collisions_fish += (float)env->collisions_fish;
     env->log.n += 1.0f;
 }
@@ -1259,6 +1256,8 @@ bool try_eat(FishEnv* env, int agent_idx) {
 
 void c_step(FishEnv* env) {
     env->tick++;
+    
+    // Reset agent state variables
     for (int i = 0; i < env->num_agents; i++) {
         env->agents[i].was_bitten = false;
         env->agents[i].ate_food = false;
@@ -1266,7 +1265,6 @@ void c_step(FishEnv* env) {
         env->terminals[i] = 0.0f;
     }
 
-    // Prey update, eating/action processing, then movement. 
     for (int food_idx = 0; food_idx < env->num_food; food_idx++) {
         if (!env->food[food_idx].active) continue;
         FishFoodMotion* food = &env->food[food_idx].motion;
