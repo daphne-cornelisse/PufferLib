@@ -133,36 +133,36 @@ typedef struct FishFoodMotion {
     double orientation;
 } FishFoodMotion;
 
-static inline double vec_length_squared(FishVec2 v) {
+double vec_length_squared(FishVec2 v) {
     return v.x * v.x + v.y * v.y;
 }
 
-static inline double vec_length(FishVec2 v) {
+double vec_length(FishVec2 v) {
     return sqrt(vec_length_squared(v));
 }
 
-static inline double clamp(double value, double minimum, double maximum) {
+double clamp(double value, double minimum, double maximum) {
     return fmin(maximum, fmax(minimum, value));
 }
 
 /* Stable wrap to [-pi, pi], identical to movement._wrap_angle. */
-static inline double wrap_angle(double angle) {
+double wrap_angle(double angle) {
     return atan2(sin(angle), cos(angle));
 }
 
 /* Rotate a vector; add translation separately when transforming a position. */
-static inline FishVec2 rotate(FishVec2 v, double angle) {
+FishVec2 rotate(FishVec2 v, double angle) {
     double c = cos(angle);
     double s = sin(angle);
     return (FishVec2){c * v.x - s * v.y, s * v.x + c * v.y};
 }
 
-static inline FishVec2 transform_position(FishVec2 local_cm, FishVec2 origin_cm, double angle) {
+FishVec2 transform_position(FishVec2 local_cm, FishVec2 origin_cm, double angle) {
     FishVec2 rotated = rotate(local_cm, angle);
     return (FishVec2){rotated.x + origin_cm.x, rotated.y + origin_cm.y};
 }
 
-static inline FishSensor transform_sensor(FishSensor local, FishVec2 origin_cm, double angle) {
+FishSensor transform_sensor(FishSensor local, FishVec2 origin_cm, double angle) {
     FishSensor world = {
         .position_cm = transform_position(local.position_cm, origin_cm, angle),
         .normal = rotate(local.normal, angle),
@@ -171,7 +171,7 @@ static inline FishSensor transform_sensor(FishSensor local, FishVec2 origin_cm, 
 }
 
 // Biophysics and dynamics 
-static inline FishMotionProposal propose_motion(
+FishMotionProposal propose_motion(
     const FishMovement* fish,
     double move_command,
     double turn_command,
@@ -233,7 +233,7 @@ static inline FishMotionProposal propose_motion(
     return proposal;
 }
 
-static inline bool motion_collides(
+bool motion_collides(
     FishVec2 proposed_position_cm,
     double body_radius_cm,
     const FishMovement* others,
@@ -260,7 +260,7 @@ static inline bool motion_collides(
  * Commit a proposal and enforce a rectangular arena. Orientation always
  * changes even when translation is blocked, allowing turning in place.
  */
-static inline bool commit_motion(
+bool commit_motion(
     FishMovement* fish,
     FishMotionProposal proposal,
     bool collided,
@@ -304,7 +304,7 @@ static inline bool commit_motion(
     return hit_wall;
 }
 
-static inline bool point_in_forward_cone(
+bool point_in_forward_cone(
     FishVec2 position_cm,
     double orientation,
     FishVec2 target_position_cm,
@@ -323,7 +323,7 @@ static inline bool point_in_forward_cone(
 }
 
 // Electrostatic field model
-static inline FishMonopole transform_monopole(
+FishMonopole transform_monopole(
     FishMonopole local,
     FishVec2 position_cm,
     double orientation,
@@ -343,7 +343,7 @@ static inline FishMonopole transform_monopole(
  * This follows electric.measure_electric_field_original exactly, including
  * adding eps_m to the distance rather than to squared distance.
  */
-static inline FishVec2 measure_electric_field(
+FishVec2 measure_electric_field(
     FishVec2 measurement_position_cm,
     const FishMonopole* monopoles,
     size_t num_monopoles,
@@ -401,7 +401,7 @@ static inline FishVec2 measure_electric_field(
     return field;
 }
 
-static inline FishVec2 induce_dipole_moment(
+FishVec2 induce_dipole_moment(
     FishVec2 external_field_vm,
     double conductor_radius_cm,
     double conductor_contrast
@@ -417,7 +417,7 @@ static inline FishVec2 induce_dipole_moment(
 }
 
 // Field from the original sources plus their four first-order wall images.
-static inline FishVec2 measure_electric_field_with_reflections(
+FishVec2 measure_electric_field_with_reflections(
     FishVec2 measurement_position_cm,
     const FishMonopole* monopoles,
     size_t num_monopoles,
@@ -494,12 +494,12 @@ static inline FishVec2 measure_electric_field_with_reflections(
 }
 
 // Receptor geometry and transduction
-static inline double
+double
 project_field(FishVec2 field, FishVec2 sensor_normal) {
     return field.x * sensor_normal.x + field.y * sensor_normal.y;
 }
 
-static inline FishSensor
+FishSensor
 radial_sensor(double angle, double body_radius_cm) {
     FishVec2 normal = {cos(angle), sin(angle)};
     FishSensor sensor = {
@@ -512,7 +512,7 @@ radial_sensor(double angle, double body_radius_cm) {
     return sensor;
 }
 
-static inline double
+double
 uniform_sensor_angle(size_t sensor_index, size_t num_sensors) {
     return 2.0 * PI_D * (double)sensor_index / (double)num_sensors;
 }
@@ -522,7 +522,7 @@ uniform_sensor_angle(size_t sensor_index, size_t num_sensors) {
  * receptors span the forward-facing chin region, with the rest covering the
  * remaining circumference. Pass num_chin=10, num_rest=26 for the default 36.
  */
-static inline double mormyromast_angle(
+double mormyromast_angle(
     size_t sensor_index,
     size_t num_chin,
     size_t num_rest,
@@ -548,7 +548,7 @@ static inline double mormyromast_angle(
  * Sign-preserving logarithmic normalization used by all receptor channels.
  * Values below threshold map to signed zero and values above maximum saturate.
  */
-static inline double normalize_sensor_reading(
+double normalize_sensor_reading(
     double reading,
     double sensor_min,
     double sensor_max,
@@ -663,16 +663,16 @@ typedef struct FishEnv {
     Client* client;
 } FishEnv;
 
-static inline double random_uniform(FishEnv* env, double low, double high) {
+double random_uniform(FishEnv* env, double low, double high) {
     double unit = (double)rand_r(&env->rng) / (double)RAND_MAX;
     return low + (high - low) * unit;
 }
 
-static inline double random_multiplier(FishEnv* env, double fraction) {
+double random_multiplier(FishEnv* env, double fraction) {
     return random_uniform(env, 1.0 - fraction, 1.0 + fraction);
 }
 
-static inline void init(FishEnv* env) {
+void init(FishEnv* env) {
     if (env->num_agents <= 0) env->num_agents = 4;
     if (env->num_agents > MAX_AGENTS) env->num_agents = MAX_AGENTS;
     if (env->arena_size_cm.x <= 0.0) env->arena_size_cm.x = 70.0;
@@ -713,7 +713,7 @@ static inline void init(FishEnv* env) {
     if (env->rng == 0) env->rng = 1;
 }
 
-static inline void c_allocate(FishEnv* env) {
+void c_allocate(FishEnv* env) {
     init(env);
     env->observations = (float*)calloc((size_t)env->num_agents * OBS_SIZE, sizeof(float));
     env->actions = (float*)calloc((size_t)env->num_agents * ACTION_SIZE, sizeof(float));
@@ -866,7 +866,7 @@ void compute_observations(FishEnv* env) {
     }
 }
 
-static inline bool
+bool
 position_overlaps_agents(
     const FishEnv* env, FishVec2 position, int count, double radius
 ) {
@@ -885,7 +885,7 @@ position_overlaps_agents(
  * Matches SensingModel._calculate_corollary_discharge: baselines are computed
  * once for a representative fish at the arena center, orientation zero.
  */
-static inline void calibrate_electroreceptors(FishEnv* env) {
+void calibrate_electroreceptors(FishEnv* env) {
     FishVec2 center = {
         env->arena_size_cm.x * 0.5,
         env->arena_size_cm.y * 0.5,
@@ -941,7 +941,7 @@ static inline void calibrate_electroreceptors(FishEnv* env) {
     }
 }
 
-static inline void build_electric_scene(FishEnv* env) {
+void build_electric_scene(FishEnv* env) {
     env->num_intrinsic_sources = 0;
     env->num_induced_sources = 0;
     for (int i = 0; i < env->num_agents; i++) {
@@ -1370,7 +1370,7 @@ void c_step(FishEnv* env) {
     }
 }
 
-static inline Vector2 world_to_screen(const FishEnv* env, FishVec2 point_cm) {
+Vector2 world_to_screen(const FishEnv* env, FishVec2 point_cm) {
     Client* client = env->client;
     double usable_width = client->window_width - 2.0 * client->margin;
     double usable_height = client->window_height - 2.0 * client->margin;
@@ -1383,7 +1383,7 @@ static inline Vector2 world_to_screen(const FishEnv* env, FishVec2 point_cm) {
     return result;
 }
 
-static inline float render_scale(const FishEnv* env) {
+float render_scale(const FishEnv* env) {
     Client* client = env->client;
     double sx = (client->window_width - 2.0 * client->margin) /
         env->arena_size_cm.x;
@@ -1392,7 +1392,7 @@ static inline float render_scale(const FishEnv* env) {
     return (float)fmin(sx, sy);
 }
 
-static inline Client* make_client(void) {
+Client* make_client(void) {
     Client* client = (Client*)calloc(1, sizeof(Client));
     client->window_width = 900;
     client->window_height = 900;
@@ -1404,13 +1404,13 @@ static inline Client* make_client(void) {
     return client;
 }
 
-static inline Color field_color(double log_strength) {
+Color field_color(double log_strength) {
     double normalized = clamp((log_strength + 8.0) / 7.0, 0.0, 1.0);
     unsigned char shade = (unsigned char)(205.0 - 95.0 * normalized);
     return (Color){shade, shade, shade, 190};
 }
 
-static inline void render_field(
+void render_field(
     FishEnv* env,
     const FishMonopole* monopoles,
     const FishDipole* dipoles
@@ -1470,7 +1470,7 @@ static inline void render_field(
     }
 }
 
-static inline void c_render(FishEnv* env) {
+void c_render(FishEnv* env) {
     if (env->client == NULL) env->client = make_client();
     if (IsKeyPressed(KEY_TAB)) ToggleFullscreen();
     if (IsKeyPressed(KEY_F)) {
@@ -1634,7 +1634,7 @@ static inline void c_render(FishEnv* env) {
     EndDrawing();
 }
 
-static inline void c_close(FishEnv* env) {
+void c_close(FishEnv* env) {
     if (env->client != NULL) {
         if (IsWindowReady()) CloseWindow();
         free(env->client);
@@ -1642,7 +1642,7 @@ static inline void c_close(FishEnv* env) {
     }
 }
 
-static inline void free_allocated(FishEnv* env) {
+void free_allocated(FishEnv* env) {
     free(env->observations);
     free(env->actions);
     free(env->rewards);
