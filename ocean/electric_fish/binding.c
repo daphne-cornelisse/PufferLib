@@ -1,6 +1,6 @@
 #include "electric_fish.h"
 
-#define NUM_ATNS FISH_ACTION_SIZE
+#define NUM_ATNS ACTION_SIZE
 #define ACT_SIZES {1, 1, 1, 1}
 #define OBS_TENSOR_T FloatTensor
 

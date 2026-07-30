@@ -31,22 +31,22 @@ static void print_physics_fixture(FishEnv* env) {
     build_electric_scene(env);
 
     FishVec2 query = {35.0, 30.0};
-    FishVec2 eod = fish_measure_electric_field_with_reflections(
+    FishVec2 eod = measure_electric_field_with_reflections(
         query, env->eod_sources, 4, NULL, 0,
-        env->arena_size_cm, FISH_FIELD_EPS_M,
-        FISH_REFLECTION_SCALE, false
+        env->arena_size_cm, FIELD_EPS_M,
+        REFLECTION_SCALE, false
     );
-    FishVec2 intrinsic = fish_measure_electric_field_with_reflections(
+    FishVec2 intrinsic = measure_electric_field_with_reflections(
         query, NULL, 0, env->intrinsic_sources,
         (size_t)env->num_intrinsic_sources,
-        env->arena_size_cm, FISH_FIELD_EPS_M,
-        FISH_REFLECTION_SCALE, false
+        env->arena_size_cm, FIELD_EPS_M,
+        REFLECTION_SCALE, false
     );
-    FishVec2 induced = fish_measure_electric_field_with_reflections(
+    FishVec2 induced = measure_electric_field_with_reflections(
         query, NULL, 0, env->induced_sources,
         (size_t)env->num_induced_sources,
-        env->arena_size_cm, FISH_FIELD_EPS_M,
-        FISH_REFLECTION_SCALE, false
+        env->arena_size_cm, FIELD_EPS_M,
+        REFLECTION_SCALE, false
     );
     printf(
         "{\"eod\":[%.17g,%.17g],\"intrinsic\":[%.17g,%.17g],"
@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
     }
 
     unsigned int demo_rng = env.rng ^ 0x9e3779b9U;
-    float target_actions[MAX_AGENTS][FISH_ACTION_SIZE] = {{0}};
+    float target_actions[MAX_AGENTS][ACTION_SIZE] = {{0}};
     bool headless = argc > 1 && strcmp(argv[1], "--headless") == 0;
 
     if (!headless) c_render(&env);
@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
 
         /* Smooth random walk commands; EOD remains a discrete pulse action. */
         for (int i = 0; i < env.num_agents; i++) {
-            float* action = env.actions + i * FISH_ACTION_SIZE;
+            float* action = env.actions + i * ACTION_SIZE;
             action[0] += 0.06f * (target_actions[i][0] - action[0]);
             action[1] += 0.08f * (target_actions[i][1] - action[1]);
             action[2] = target_actions[i][2];
