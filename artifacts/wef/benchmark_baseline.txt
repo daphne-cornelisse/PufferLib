@@ -1,0 +1,264 @@
+# wef benchmark baseline
+# generated_at_utc: 2026-07-30T20:14:18Z
+# git_branch: fish
+# git_commit: eb2f63b250497b68cbc336c0231acb0743a3e915
+# git_commit_short: eb2f63b2
+# git_dirty_paths: 7
+# note: baseline captured from working tree; dirty_paths>0 means uncommitted changes were present
+# command: ./build.sh wef --fast && ./wef_benchmark_test
+#
+# dirty files:
+#    M build.sh
+#    M config/wef.ini
+#    M pufferlib/pufferl.py
+#    M pufferlib/sweep.py
+#    M wef
+#   ?? artifacts/
+#   ?? ocean/wef/benchmark_test.c
+#   ?? wef_benchmark_test
+#
+# --- benchmark stdout ---
+wef numerical stability (C)
+
+  seeds=0,1,2  steps=100  num_agents=4
+
+SPS benchmark (config/wef.ini [vec], env-only):
+
+  total_agents=4096  num_buffers=8  num_threads=8
+  num_agents=4  num_envs=1024  agents_per_buffer=512  workers_per_buffer=1
+  vec_steps=200  total_steps=819200  (flattened: total_agents * vec_steps)
+  elapsed=8.978s
+  SPS=91243.1  (total env steps/sec, flattened over agents)
+
+------------------------------------------------------------
+seed=0
+------------------------------------------------------------
+
+  steps=100  num_agents=4  num_food=16  env_rng=2738958700  action_seed=0
+  obs shape=(101, 4, 110)
+
+  observations finite=true
+  final observation sum=-3.3630700759240426
+  final observation min/max=-1 / 1
+  reward sum=-9.5
+  cumulative rewards per fish=[0, -9.5, 0, 0]
+  any terminal=false
+
+  final tick=100
+  food_eaten=0
+  collisions_fish=0
+  eod_agent_steps=205
+  episode_return=-9.5
+  rng=2841365603
+
+  obs_fnv1a=0x8bae40d98fdbe291
+  rewards_fnv1a=0xd0c33359e77a3548
+  actions_fnv1a=0xf9df9acdb0c11660
+  state_fnv1a=0x86d04b94c0a1e3dc
+
+  final environment state (agents):
+
+    fish 0:  pos=(44.089672623090209, 31.740410373388194)
+             ori=0.61627496774249191  size=0.16660249566966784
+             lin_vel=0  ang_vel=0
+
+    fish 1:  pos=(69, 24.135396533835433)
+             ori=-0.96256237836517444  size=0.40482557583824991
+             lin_vel=0  ang_vel=0
+
+    fish 2:  pos=(47.635207470703399, 22.778119309826167)
+             ori=-1.006784802522424  size=0.28482524877638798
+             lin_vel=0  ang_vel=0
+
+    fish 3:  pos=(11.160889062061571, 8.5062249553836171)
+             ori=-3.0213604860540171  size=0.23297507233590589
+             lin_vel=0  ang_vel=0
+
+  final environment state (active food):
+
+    food 0:  pos=(61.100243283948046, 1.6528113845981711)
+    food 1:  pos=(15.209954653498695, 65.709089364721024)
+    food 2:  pos=(64.316326586676908, 46.935781909588627)
+    food 3:  pos=(15.696602173008307, 55.26373251586395)
+    food 4:  pos=(43.863100085343746, 19.143855953190407)
+    food 5:  pos=(60.970455189687414, 6.0645934641662027)
+    food 6:  pos=(69.384816246752081, 29.629349103024857)
+    food 7:  pos=(38.805420528541049, 50.649269409780054)
+    food 8:  pos=(6.427817510640164, 9.592973314967459)
+    food 9:  pos=(65.601610855945211, 68.19774818522751)
+    food 10:  pos=(55.308186554027813, 26.793538423624604)
+    food 11:  pos=(64.91931919703228, 54.413622442825528)
+    food 12:  pos=(61.795718153843531, 30.770046562314988)
+    food 13:  pos=(53.931358113852959, 40.33655243941422)
+    food 14:  pos=(22.545241472565216, 48.329400633615158)
+    food 15:  pos=(8.7664516776643939, 27.753566772562248)
+
+    active_food_count=16 / 16
+
+  final observation (per fish, first 8 channels):
+
+    fish 0:  [-0.00391528, -0.0114805, -0.0175863, -0.020256, -0.0206636, -0.0215004, -0.0238886, -0.023823, ...]
+    fish 1:  [-0.0581866, -0.0559637, -0.0533815, -0.0507367, -0.0484739, -0.042852, -0.0422468, -0.0338735, ...]
+    fish 2:  [0.771111, 0.802314, 0.827758, 0.845998, 0.857004, 0.865008, 0.875223, 0.876705, ...]
+    fish 3:  [-0.152495, -0.15608, -0.160852, -0.159335, -0.153452, -0.149295, -0.134726, -0.123116, ...]
+
+  final rewards:    [0, -0.5, 0, 0]
+  final terminals:  [0, 0, 0, 0]
+
+  seed=0 RESULT: PASS (deterministic, finite)
+
+------------------------------------------------------------
+seed=1
+------------------------------------------------------------
+
+  steps=100  num_agents=4  num_food=16  env_rng=1  action_seed=1
+  obs shape=(101, 4, 110)
+
+  observations finite=true
+  final observation sum=-10.321332900901325
+  final observation min/max=-1 / 1
+  reward sum=-75
+  cumulative rewards per fish=[-45, 0, -30, 0]
+  any terminal=false
+
+  final tick=100
+  food_eaten=0
+  collisions_fish=0
+  eod_agent_steps=205
+  episode_return=-75
+  rng=1750653724
+
+  obs_fnv1a=0x1d265745fc8815bd
+  rewards_fnv1a=0x5819b5fec9a26de5
+  actions_fnv1a=0x97ef3992d671384c
+  state_fnv1a=0x32496ba61e9ee44e
+
+  final environment state (agents):
+
+    fish 0:  pos=(69, 45.280557434120958)
+             ori=1.1356759730884418  size=0.23547164547977581
+             lin_vel=0  ang_vel=0
+
+    fish 1:  pos=(55.370906407012114, 29.357932876721286)
+             ori=-0.19604108976150533  size=0.27439800942055786
+             lin_vel=0  ang_vel=0
+
+    fish 2:  pos=(52.049178359732814, 1)
+             ori=-1.7521209187323505  size=0.90470587224918686
+             lin_vel=0  ang_vel=0
+
+    fish 3:  pos=(53.756216440729368, 14.322839822618286)
+             ori=-0.66538552831311626  size=0.66652670114605073
+             lin_vel=0  ang_vel=0
+
+  final environment state (active food):
+
+    food 0:  pos=(62.168258317824574, 20.754343499780795)
+    food 1:  pos=(63.10364944539203, 65.371231294875614)
+    food 2:  pos=(51.208794932444022, 39.877958460654114)
+    food 3:  pos=(64.222610101207451, 53.619230903507784)
+    food 4:  pos=(57.436995826399418, 51.297968179591919)
+    food 5:  pos=(66.482261175514324, 11.575064860086453)
+    food 6:  pos=(59.131060293471002, 31.456316565841586)
+    food 7:  pos=(54.230623675617686, 22.860405353298599)
+    food 8:  pos=(31.149168895161324, 19.457772504285803)
+    food 9:  pos=(8.3962075637635802, 44.556320661006644)
+    food 10:  pos=(39.85401997335908, 20.574294370866518)
+    food 11:  pos=(28.356913639398719, 18.505263760921203)
+    food 12:  pos=(66.082089657933494, 48.665407071199922)
+    food 13:  pos=(45.738336264965277, 40.033548604712607)
+    food 14:  pos=(59.420321760429218, 42.698563622636051)
+    food 15:  pos=(66.811777398368235, 22.969861446400106)
+
+    active_food_count=16 / 16
+
+  final observation (per fish, first 8 channels):
+
+    fish 0:  [-0.627909, -0.668842, -0.690693, -0.703912, -0.716281, -0.718961, -0.722274, -0.732389, ...]
+    fish 1:  [-0.0694918, -0.0995323, -0.124421, -0.145789, -0.160383, -0.176343, -0.186363, -0.195, ...]
+    fish 2:  [-0, -0, -0, -0, -0, -0.00222547, -0.00397188, -0.00647457, ...]
+    fish 3:  [-0.8544, -0.837681, -0.830015, -0.809009, -0.788843, -0.753145, -0.688407, 0.649056, ...]
+
+  final rewards:    [-0.5, 0, -0.5, 0]
+  final terminals:  [0, 0, 0, 0]
+
+  seed=1 RESULT: PASS (deterministic, finite)
+
+------------------------------------------------------------
+seed=2
+------------------------------------------------------------
+
+  steps=100  num_agents=4  num_food=16  env_rng=2  action_seed=2
+  obs shape=(101, 4, 110)
+
+  observations finite=true
+  final observation sum=-22.531803305260837
+  final observation min/max=-1 / 1
+  reward sum=-96.5
+  cumulative rewards per fish=[-36, -27.5, -43, 10]
+  any terminal=false
+
+  final tick=100
+  food_eaten=1
+  collisions_fish=0
+  eod_agent_steps=203
+  episode_return=-96.5
+  rng=1618446755
+
+  obs_fnv1a=0x6cb65ad4d8d340d6
+  rewards_fnv1a=0x331e9aa8dcf9adfb
+  actions_fnv1a=0xd13e03727e5a0fd4
+  state_fnv1a=0x36f1278d3c62e58c
+
+  final environment state (agents):
+
+    fish 0:  pos=(69, 6.4331918080723174)
+             ori=-0.17375002263874004  size=0.63682261790932282
+             lin_vel=0  ang_vel=0
+
+    fish 1:  pos=(69, 25.4575618232106)
+             ori=-0.40986130928742176  size=0.12045271514004688
+             lin_vel=0  ang_vel=0
+
+    fish 2:  pos=(1, 1)
+             ori=-2.4013747392430509  size=0.55743748627483725
+             lin_vel=0  ang_vel=0
+
+    fish 3:  pos=(61.933990241272667, 24.903524666643207)
+             ori=0.48777512486808  size=0.78973966873704438
+             lin_vel=0  ang_vel=0
+
+  final environment state (active food):
+
+    food 0:  pos=(36.221265367335299, 44.009018062618104)
+    food 1:  pos=(45.620254997918501, 3.1483139531446218)
+    food 2:  pos=(35.006656406916051, 13.307444310424589)
+    food 3:  pos=(59.91342380173198, 42.2166241156946)
+    food 4:  pos=(51.038209712616272, 42.150625885534396)
+    food 5:  pos=(64.836561584303425, 18.997652106451643)
+    food 6:  pos=(55.722777073142481, 27.307328450170964)
+    food 7:  pos=(28.998493933583841, 52.484919709379277)
+    food 8:  pos=(18.289648493886759, 65.602999164537991)
+    food 9:  pos=(17.959533574972085, 45.615751429282014)
+    food 10:  pos=(27.369579606395948, 58.790777222621621)
+    food 11:  pos=(63.757841961345555, 53.594225963388681)
+    food 12:  pos=(28.586943116312355, 49.829843202526611)
+    food 13:  pos=(25.231499818727141, 53.246528866349969)
+    food 14:  pos=(50.292553440803921, 51.806165399870906)
+
+    active_food_count=15 / 16
+
+  final observation (per fish, first 8 channels):
+
+    fish 0:  [0.715322, 0.732516, 0.749536, 0.762829, 0.771446, 0.783503, 0.787142, 0.785064, ...]
+    fish 1:  [-0.973832, -0.983688, -0.994437, -1, -1, -1, -1, -1, ...]
+    fish 2:  [0.558673, 0.545383, 0.52862, 0.515518, 0.507381, 0.499087, 0.480806, 0.46613, ...]
+    fish 3:  [-0.302664, -0.304568, -0.305575, -0.302051, -0.297841, -0.293376, -0.286494, -0.276958, ...]
+
+  final rewards:    [-0.5, -0.5, -0.5, 0]
+  final terminals:  [0, 0, 0, 0]
+
+  seed=2 RESULT: PASS (deterministic, finite)
+
+============================================================
+OVERALL RESULT: PASS (all seeds deterministic, finite)

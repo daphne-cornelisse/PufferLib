@@ -1,0 +1,49 @@
+# Compact deterministic fingerprints for wef benchmark
+# Compare these after env changes (ignore SPS — wall-time varies).
+
+# git_commit=eb2f63b250497b68cbc336c0231acb0743a3e915
+# git_commit_short=eb2f63b2
+# git_branch=fish
+# generated_at_utc=2026-07-30T20:14:18Z
+# baseline_file=artifacts/wef/benchmark_baseline.txt
+
+overall_result=PASS (all seeds deterministic, finite)
+
+[seed 0]
+action_seed=0
+env_rng=2738958700
+reward sum=-9.5
+final observation sum=-3.3630700759240426
+food_eaten=0
+episode_return=-9.5
+rng=2841365603
+obs_fnv1a=0x8bae40d98fdbe291
+rewards_fnv1a=0xd0c33359e77a3548
+actions_fnv1a=0xf9df9acdb0c11660
+state_fnv1a=0x86d04b94c0a1e3dc
+
+[seed 1]
+action_seed=1
+env_rng=1
+reward sum=-75
+final observation sum=-10.321332900901325
+food_eaten=0
+episode_return=-75
+rng=1750653724
+obs_fnv1a=0x1d265745fc8815bd
+rewards_fnv1a=0x5819b5fec9a26de5
+actions_fnv1a=0x97ef3992d671384c
+state_fnv1a=0x32496ba61e9ee44e
+
+[seed 2]
+action_seed=2
+env_rng=2
+reward sum=-96.5
+final observation sum=-22.531803305260837
+food_eaten=1
+episode_return=-96.5
+rng=1618446755
+obs_fnv1a=0x6cb65ad4d8d340d6
+rewards_fnv1a=0x331e9aa8dcf9adfb
+actions_fnv1a=0xd13e03727e5a0fd4
+state_fnv1a=0x36f1278d3c62e58c
