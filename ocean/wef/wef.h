@@ -630,7 +630,7 @@ typedef struct FishEnv {
     float* terminals;
     int num_agents;
     int tick;
-    int max_steps;
+    int episode_length;
     unsigned int rng;
 
     FishVec2 arena_size_cm;
@@ -709,7 +709,7 @@ void init(FishEnv* env) {
     if (env->electric_field_radius_cm <= 0.0) {
         env->electric_field_radius_cm = 15.0;
     }
-    if (env->max_steps <= 0) env->max_steps = 4096;
+    if (env->episode_length <= 0) env->episode_length = 4096;
     if (env->rng == 0) env->rng = 1;
 }
 
@@ -1361,7 +1361,7 @@ void c_step(FishEnv* env) {
     build_electric_scene(env);
     compute_observations(env);
 
-    if (env->tick >= env->max_steps || env->food_eaten == env->num_food) {
+    if (env->tick >= env->episode_length || env->food_eaten == env->num_food) {
         add_log(env);
         c_reset(env);
         for (int i = 0; i < env->num_agents; i++) env->terminals[i] = 1.0f;

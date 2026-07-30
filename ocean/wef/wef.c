@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
         .num_agents = 4,
         .arena_size_cm = {70.0, 70.0},
         .electric_field_radius_cm = 15.0,
-        .max_steps = 4096,
+        .episode_length = 4096,
         .rng = (unsigned int)time(NULL),
     };
     c_allocate(&env);

@@ -22,7 +22,7 @@ void my_init(Env* env, Dict* kwargs) {
     env->patch_density = dict_get(kwargs, "patch_density")->value;
     env->placement_radius_frac = dict_get(kwargs, "placement_radius_frac")->value;
     env->electric_field_radius_cm = dict_get(kwargs, "electric_field_radius")->value;
-    env->max_steps = (int)dict_get(kwargs, "max_steps")->value;
+    env->episode_length = (int)dict_get(kwargs, "episode_length")->value;
     init(env);
 }
 
