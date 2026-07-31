@@ -1,0 +1,117 @@
+# wef pure-float vs original-double performance and numerical precision
+# recorded_at_utc: 2026-07-31T19:56:24Z
+# git_branch: fish
+# git_commit_short: 20e8133b
+# platform: linux amd64, clang -O3/-O2, OpenMP where noted
+#
+# "old"  = original double-precision pack (SI C, V/m, double physics)
+# "new"  = pure float wef.h after float conversion + integer eat/bite cooldowns
+#          (SI C, V/m, float physics; EAT_COOLDOWN_STEPS=3, BITE_COOLDOWN_STEPS=5)
+#
+# Trajectory protocol (precision): 4 fish, 16 food, FOOD_UNIFORM, arena 70x70 cm,
+#   100 steps, fixed random actions from seed, seeds {0,1,2}.
+# SPS protocol: total_agents=4096, num_fish=4, num_envs=1024, vec_steps=200,
+#   num_buffers=8, num_threads=8 (matches config/wef.ini [vec] / official harness).
+#
+# Fair precision compare uses the same integer-tick cooldowns on the double pack
+# so residual 1/3 freeze desync is not counted as float error.
+# Original double still uses cd -= 1/3 and is reported separately for seed 2.
+
+# =============================================================================
+# SECTION: memory
+# columns: build, sizeof_FishEnv_bytes
+# =============================================================================
+memory
+old_double	9920
+new_float	5072
+
+# =============================================================================
+# SECTION: sps
+# columns: build, mode, total_agents, steps, threads, sps_agent_steps_per_sec, source, notes
+# sps is agent-steps/sec = total_agents * vec_steps / wall_time
+# =============================================================================
+sps
+old_double	openmp	4096	200	8	91243.1	artifacts/wef/benchmark_baseline.txt	historical baseline capture 2026-07-30
+old_double	openmp	4096	200	8	92402.8	isolated pack mean of 3 runs 2026-07-31	runs 92296.8 92467.1 92444.6
+old_double	serial	4096	200	1	11715.0	isolated pack mean of 2 runs 2026-07-31	runs 11717.4 11712.5
+new_float	openmp	4096	200	8	113078.9	wef_benchmark_test official harness 2026-07-31	after integer cooldown fix
+new_float	openmp	4096	200	8	121223.6	isolated pack mean of 3 runs 2026-07-31 pre-report	pure float SI units; runs ~121127 121231 121313
+new_float	serial	4096	200	1	15490.9	isolated pack mean of 2 runs 2026-07-31	runs 15488.0 15493.9
+
+# Derived speedups (use mean isolated openmp where available)
+# new/old openmp (isolated means): 121223.6 / 92402.8 = 1.312
+# new/old serial: 15490.9 / 11715.0 = 1.322
+# new official / historical baseline: 113078.9 / 91243.1 = 1.239
+# memory ratio new/old: 5072/9920 = 0.511
+
+# =============================================================================
+# SECTION: precision_fair
+# float (new) vs double with integer cooldowns on BOTH sides
+# columns: seed, max_init_dpos_cm, field_E_max_relerr, field_E_mean_relerr,
+#          max_pose_dpos_cm, end_pose_dpos_max_cm, reward_step_mismatches,
+#          reward_mismatches_denom, reward_sum_float, reward_sum_double,
+#          food_eaten_float, food_eaten_double, obs0_delta, obs_end_delta,
+#          obs0_float, obs0_double, obs_end_float, obs_end_double
+# =============================================================================
+precision_fair
+0	2.267e-06	4.044e-06	1.691e-06	2.24194e-05	1.920e-05	0	400	-9.5	-9.5	0	0	-2.739699e-03	-4.340893e-03	1.2476715	1.2504112	-3.367411	-3.3630701
+1	1.319e-06	6.041e-06	1.913e-06	1.39879e-05	9.876e-06	0	400	-75.0	-75.0	0	0	2.068959e-03	7.934886e-04	-0.55060033	-0.55266929	-12.320539	-12.321333
+2	9.786e-07	6.940e-06	2.624e-06	1.90076e-05	1.722e-06	0	400	-96.5	-96.5	1	1	-1.719338e-03	3.343527e-03	-0.58384748	-0.58212814	-18.952954	-18.956298
+
+# =============================================================================
+# SECTION: precision_vs_original_double
+# float (new, int cooldown) vs original double pack (fractional 1/3 cooldown)
+# columns: seed, max_pose_dpos_cm, end_pose_dpos_max_cm, reward_step_mismatches,
+#          first_dpos_gt_1cm_step, first_dpos_gt_1cm_fish, notes
+# =============================================================================
+precision_vs_original_double
+0	2.24194e-05	1.920e-05	0		
+1	1.39879e-05	9.876e-06	0		
+2	0.560663	0.5607	2	80	3	extra freeze frame on original double after eat (1/3 residual)
+
+# =============================================================================
+# SECTION: official_harness_vs_baseline_fingerprints
+# current new_float vs artifacts/wef/benchmark_baseline_fingerprints.txt (double-era)
+# columns: seed, determinism, actions_match, rewards_sum_match, food_match, rng_match,
+#          obs_fnv_match, state_fnv_match, reward_sum, baseline_reward_sum,
+#          obs_sum, baseline_obs_sum, obs_sum_delta
+# =============================================================================
+official_vs_baseline
+0	PASS_DETERMINISM	1	1	1	1	0	0	-9.5	-9.5	-3.3674109688145109	-3.3630700759240426	0.0043408928904683
+1	PASS_DETERMINISM	1	1	1	1	0	0	-75	-75	-12.320539442123845	-10.321332900901325	1.99920654122252
+2	PASS_DETERMINISM	1	1	1	1	0	0	-96.5	-96.5	-18.952954070642591	-22.531803305260837	3.578849234618246
+
+# =============================================================================
+# SECTION: summary_scalars
+# convenient single-value rows for plotting
+# columns: metric, value, unit, notes
+# =============================================================================
+summary_scalars
+sizeof_old	9920	bytes	FishEnv
+sizeof_new	5072	bytes	FishEnv
+sizeof_ratio_new_over_old	0.5113		5072/9920
+sps_old_openmp_mean	92402.8	agent_steps_per_sec	isolated 3-run mean
+sps_new_openmp_mean	121223.6	agent_steps_per_sec	isolated 3-run mean pure float
+sps_new_openmp_official	113078.9	agent_steps_per_sec	wef_benchmark_test after int cooldown
+sps_old_baseline_artifact	91243.1	agent_steps_per_sec	benchmark_baseline.txt
+sps_speedup_openmp_isolated	1.312		121223.6/92402.8
+sps_speedup_serial_isolated	1.322		15490.9/11715.0
+sps_speedup_official_vs_baseline	1.239		113078.9/91243.1
+max_pose_dpos_fair_seed0_cm	2.24194e-05	cm	float vs double+int_cd
+max_pose_dpos_fair_seed1_cm	1.39879e-05	cm
+max_pose_dpos_fair_seed2_cm	1.90076e-05	cm
+max_pose_dpos_fair_all_seeds_cm	2.24194e-05	cm	max over seeds 0-2
+max_field_relerr_fair_all_seeds	6.940e-06		max |E| relerr over seeds
+reward_mismatches_fair_all_seeds	0		of 400 steps x 3 seeds
+max_pose_dpos_vs_orig_double_seed2_cm	0.560663	cm	original double 1/3 residual freeze
+
+# =============================================================================
+# SECTION: figure_notes
+# =============================================================================
+# Suggested figures:
+#   1) Bar: SPS old vs new (openmp isolated means and/or official)
+#   2) Bar: sizeof old vs new
+#   3) Bar or grouped: max pose dpos per seed (fair compare) — all ~1e-5 cm
+#   4) Optional: seed2 before/after cooldown fix (0.56 cm vs 1.9e-5 cm)
+# Parse: skip lines starting with #; section name is a single token line;
+#   following lines are tab-separated until blank or next section/comment.

@@ -23,23 +23,23 @@
 #include "raylib.h"
 
 // Constants
-#define PI_D 3.14159265358979323846264338327950288
-#define CM_TO_M 0.01
-#define K_COULOMB 8.99e9
-#define EPSILON_0 8.854e-12
-#define FIELD_EPS_M 1e-5
-#define REFLECTION_SCALE 1.0
-#define SENSOR_EPS 1e-25
+#define PI_F 3.14159265358979323846f
+#define CM_TO_M 0.01f
+#define K_COULOMB 8.99e9f
+#define EPSILON_0 8.854e-12f
+#define FIELD_EPS_M 1e-5f
+#define REFLECTION_SCALE 1.0f
+#define SENSOR_EPS 1e-25f
 
 // Values from upstream cfg.py and Table 1 of the accompanying publication
-#define SIMULATION_HZ 83.0
-#define BODY_RADIUS_CM 1.0
-#define FOOD_RADIUS_CM 0.25
-#define CONDUCTOR_CONTRAST -0.5
-#define EOD_CHARGE_C 1.11e-15
-#define EOD_POLE_OFFSET_CM 0.5
-#define INTRINSIC_MOMENT_C_M 1.11e-23
-#define FOOD_INTRINSIC_MOMENT_C_M 1.11e-24
+#define SIMULATION_HZ 83.0f
+#define BODY_RADIUS_CM 1.0f
+#define FOOD_RADIUS_CM 0.25f
+#define CONDUCTOR_CONTRAST -0.5f
+#define EOD_CHARGE_C 1.11e-15f
+#define EOD_POLE_OFFSET_CM 0.5f
+#define INTRINSIC_MOMENT_C_M 1.11e-23f
+#define FOOD_INTRINSIC_MOMENT_C_M 1.11e-24f
 
 #define NUM_MORMYROMASTS 36
 #define NUM_AMPULLARY 24
@@ -49,29 +49,32 @@
 #define MAX_DIPOLE_SOURCES (2 * MAX_AGENTS + 2 * MAX_FOOD)
 #define OBS_SIZE 110
 #define ACTION_SIZE 4
-#define EATING_RADIUS_CM 2.0
-#define BITING_RADIUS_CM 3.0
-#define EATING_ANGLE (PI_D / 4.0)
+#define EATING_RADIUS_CM 2.0f
+#define BITING_RADIUS_CM 3.0f
+#define EATING_ANGLE (PI_F / 4.0f)
 #define EAT_REWARD 10.0f
 #define COLLISION_REWARD -0.5f
 #define BITTEN_REWARD -5.0f
 #define MAX_PATCHES 90
 #define TRACE_LENGTH 128
 
-#define AMPULLARY_MIN_VM 2e-10
-#define AMPULLARY_MAX_VM 2e-8
-#define MORMYROMAST_MIN_VM 5e-8
-#define MORMYROMAST_MAX_VM 5e-2
-#define KNOLLEN_MIN_VM 2e-7
+#define EAT_COOLDOWN_STEPS 3
+#define BITE_COOLDOWN_STEPS 5
+
+#define AMPULLARY_MIN_VM 2e-10f
+#define AMPULLARY_MAX_VM 2e-8f
+#define MORMYROMAST_MIN_VM 5e-8f
+#define MORMYROMAST_MAX_VM 5e-2f
+#define KNOLLEN_MIN_VM 2e-7f
 
 typedef struct FishVec2 {
-    double x;
-    double y;
+    float x;
+    float y;
 } FishVec2;
 
 typedef struct FishMonopole {
     FishVec2 position_cm;
-    double charge_c;
+    float charge_c;
 } FishMonopole;
 
 typedef struct FishDipole {
@@ -98,22 +101,23 @@ typedef enum FishWall {
 
 typedef struct FishMovement {
     FishVec2 position_cm;
+    float orientation;
+    float max_linear_velocity;
+    float max_angular_velocity;
+
     FishVec2 displacement_ground_cm;
     FishVec2 displacement_ego_cm;
-    double orientation;
-    double last_orientation;
-    double linear_velocity;
-    double angular_velocity;
+    float last_orientation;
+    float linear_velocity;
+    float angular_velocity;
 
-    double body_radius_cm;
-    double min_linear_velocity;
-    double max_linear_velocity;
-    double max_linear_acceleration;
-    double min_angular_velocity;
-    double max_angular_velocity;
-    double max_angular_acceleration;
-    double linear_drag_factor;
-    double angular_drag_factor;
+    float body_radius_cm;
+    float min_linear_velocity;
+    float max_linear_acceleration;
+    float min_angular_velocity;
+    float max_angular_acceleration;
+    float linear_drag_factor;
+    float angular_drag_factor;
 
     int motion_order;
     bool backwards;
@@ -122,47 +126,47 @@ typedef struct FishMovement {
 
 typedef struct FishMotionProposal {
     FishVec2 position_cm;
-    double orientation;
-    double linear_velocity;
-    double angular_velocity;
+    float orientation;
+    float linear_velocity;
+    float angular_velocity;
 } FishMotionProposal;
 
 typedef struct FishFoodMotion {
     FishVec2 position_cm;
     FishVec2 velocity_cm;
-    double orientation;
+    float orientation;
 } FishFoodMotion;
 
-double vec_length_squared(FishVec2 v) {
+float vec_length_squared(FishVec2 v) {
     return v.x * v.x + v.y * v.y;
 }
 
-double vec_length(FishVec2 v) {
-    return sqrt(vec_length_squared(v));
+float vec_length(FishVec2 v) {
+    return sqrtf(vec_length_squared(v));
 }
 
-double clamp(double value, double minimum, double maximum) {
-    return fmin(maximum, fmax(minimum, value));
+float clamp(float value, float minimum, float maximum) {
+    return fminf(maximum, fmaxf(minimum, value));
 }
 
 /* Stable wrap to [-pi, pi], identical to movement._wrap_angle. */
-double wrap_angle(double angle) {
-    return atan2(sin(angle), cos(angle));
+float wrap_angle(float angle) {
+    return atan2f(sinf(angle), cosf(angle));
 }
 
 /* Rotate a vector; add translation separately when transforming a position. */
-FishVec2 rotate(FishVec2 v, double angle) {
-    double c = cos(angle);
-    double s = sin(angle);
+FishVec2 rotate(FishVec2 v, float angle) {
+    float c = cosf(angle);
+    float s = sinf(angle);
     return (FishVec2){c * v.x - s * v.y, s * v.x + c * v.y};
 }
 
-FishVec2 transform_position(FishVec2 local_cm, FishVec2 origin_cm, double angle) {
+FishVec2 transform_position(FishVec2 local_cm, FishVec2 origin_cm, float angle) {
     FishVec2 rotated = rotate(local_cm, angle);
     return (FishVec2){rotated.x + origin_cm.x, rotated.y + origin_cm.y};
 }
 
-FishSensor transform_sensor(FishSensor local, FishVec2 origin_cm, double angle) {
+FishSensor transform_sensor(FishSensor local, FishVec2 origin_cm, float angle) {
     FishSensor world = {
         .position_cm = transform_position(local.position_cm, origin_cm, angle),
         .normal = rotate(local.normal, angle),
@@ -171,71 +175,70 @@ FishSensor transform_sensor(FishSensor local, FishVec2 origin_cm, double angle) 
 }
 
 // Biophysics and dynamics 
+
 FishMotionProposal propose_motion(
     const FishMovement* fish,
-    double move_command,
-    double turn_command,
+    float move_command,
+    float turn_command,
     bool eating_frozen
 ) {
     FishMotionProposal proposal = {
         .position_cm = fish->position_cm,
         .orientation = fish->orientation,
-        .linear_velocity = 0.0,
-        .angular_velocity = 0.0,
+        .linear_velocity = 0.0f,
+        .angular_velocity = 0.0f,
     };
 
     if (fish->motion_order == MOTION_FIRST_ORDER) {
-        if (eating_frozen) {
-            move_command = 0.0;
-            turn_command = 0.0;
-        }
-        proposal.angular_velocity = turn_command * fish->max_angular_velocity;
-        proposal.linear_velocity = move_command * fish->max_linear_velocity;
+        float move = eating_frozen ? 0.0f : move_command;
+        float turn = eating_frozen ? 0.0f : turn_command;
+        proposal.angular_velocity = turn * fish->max_angular_velocity;
+        proposal.linear_velocity = move * fish->max_linear_velocity;
     } else {
         proposal.linear_velocity =
-            fish->linear_velocity + move_command * fish->max_linear_acceleration;
+            (float)fish->linear_velocity +
+            move_command * (float)fish->max_linear_acceleration;
         proposal.angular_velocity =
-            fish->angular_velocity + turn_command * fish->max_angular_acceleration;
+            (float)fish->angular_velocity +
+            turn_command * (float)fish->max_angular_acceleration;
 
         proposal.linear_velocity = clamp(
             proposal.linear_velocity,
-            fish->min_linear_velocity,
+            (float)fish->min_linear_velocity,
             fish->max_linear_velocity
         );
-        if (!fish->backwards && proposal.linear_velocity < 0.0) {
-            proposal.linear_velocity = 0.0;
+        if (!fish->backwards && proposal.linear_velocity < 0.0f) {
+            proposal.linear_velocity = 0.0f;
         }
 
-        proposal.linear_velocity *= fish->linear_drag_factor;
-        proposal.angular_velocity *= fish->angular_drag_factor;
+        proposal.linear_velocity *= (float)fish->linear_drag_factor;
+        proposal.angular_velocity *= (float)fish->angular_drag_factor;
         proposal.angular_velocity = clamp(
             proposal.angular_velocity,
-            fish->min_angular_velocity,
+            (float)fish->min_angular_velocity,
             fish->max_angular_velocity
         );
 
         if (eating_frozen) {
-            proposal.linear_velocity = 0.0;
-            proposal.angular_velocity = 0.0;
+            proposal.linear_velocity = 0.0f;
+            proposal.angular_velocity = 0.0f;
         }
     }
 
     proposal.orientation =
         wrap_angle(fish->orientation + proposal.angular_velocity);
-    FishVec2 heading = {
-        cos(proposal.orientation),
-        sin(proposal.orientation)
-    };
+    float hx = cosf(proposal.orientation);
+    float hy = sinf(proposal.orientation);
     proposal.position_cm = (FishVec2){
-        fish->position_cm.x + heading.x * proposal.linear_velocity,
-        fish->position_cm.y + heading.y * proposal.linear_velocity,
+        (float)((float)fish->position_cm.x + hx * proposal.linear_velocity),
+        (float)((float)fish->position_cm.y + hy * proposal.linear_velocity),
     };
     return proposal;
 }
 
 bool motion_collides(
     FishVec2 proposed_position_cm,
-    double body_radius_cm,
+    float body_radius_cm,
     const FishMovement* others,
     size_t num_others,
     size_t self_index
@@ -244,7 +247,7 @@ bool motion_collides(
         if (i == self_index) {
             continue;
         }
-        double radius = body_radius_cm + others[i].body_radius_cm;
+        float radius = body_radius_cm + others[i].body_radius_cm;
         FishVec2 delta = {
             proposed_position_cm.x - others[i].position_cm.x,
             proposed_position_cm.y - others[i].position_cm.y,
@@ -267,9 +270,9 @@ bool commit_motion(
     FishVec2 arena_size_cm
 ) {
     FishVec2 previous_position = fish->position_cm;
-    double previous_orientation = fish->orientation;
+    float previous_orientation = fish->orientation;
 
-    fish->last_orientation = previous_orientation;
+    fish->last_orientation = (float)previous_orientation;
     fish->orientation = proposal.orientation;
     if (!collided) {
         fish->position_cm = proposal.position_cm;
@@ -290,8 +293,10 @@ bool commit_motion(
     bool stopped = collided || hit_wall;
 
     if (fish->motion_order == MOTION_SECOND_ORDER) {
-        fish->linear_velocity = stopped ? 0.0 : proposal.linear_velocity;
-        fish->angular_velocity = stopped ? 0.0 : proposal.angular_velocity;
+        fish->linear_velocity =
+            stopped ? 0.0f : (float)proposal.linear_velocity;
+        fish->angular_velocity =
+            stopped ? 0.0f : (float)proposal.angular_velocity;
     }
 
     fish->collided = collided;
@@ -299,17 +304,18 @@ bool commit_motion(
         fish->position_cm.x - previous_position.x,
         fish->position_cm.y - previous_position.y,
     };
-    fish->displacement_ego_cm =
-        rotate(fish->displacement_ground_cm, -previous_orientation);
+    fish->displacement_ego_cm = rotate(
+        fish->displacement_ground_cm, (float)(-previous_orientation)
+    );
     return hit_wall;
 }
 
 bool point_in_forward_cone(
     FishVec2 position_cm,
-    double orientation,
+    float orientation,
     FishVec2 target_position_cm,
-    double radius_cm,
-    double cone_angle
+    float radius_cm,
+    float cone_angle
 ) {
     FishVec2 offset = {
         target_position_cm.x - position_cm.x,
@@ -318,22 +324,22 @@ bool point_in_forward_cone(
     if (vec_length_squared(offset) >= radius_cm * radius_cm) {
         return false;
     }
-    double bearing = atan2(offset.y, offset.x);
-    return fabs(wrap_angle(bearing - orientation)) <= cone_angle * 0.5;
+    float bearing = atan2f(offset.y, offset.x);
+    return fabsf(wrap_angle(bearing - orientation)) <= cone_angle * 0.5f;
 }
 
 // Electrostatic field model
 FishMonopole transform_monopole(
     FishMonopole local,
     FishVec2 position_cm,
-    double orientation,
+    float orientation,
     bool emits_eod
 ) {
     FishMonopole world = {
         .position_cm = transform_position(
             local.position_cm, position_cm, orientation
         ),
-        .charge_c = emits_eod ? local.charge_c : 0.0,
+        .charge_c = emits_eod ? local.charge_c : 0.0f,
     };
     return world;
 }
@@ -349,13 +355,13 @@ FishVec2 measure_electric_field(
     size_t num_monopoles,
     const FishDipole* dipoles,
     size_t num_dipoles,
-    double eps_m
+    float eps_m
 ) {
     FishVec2 measurement_m = {
         measurement_position_cm.x * CM_TO_M,
         measurement_position_cm.y * CM_TO_M,
     };
-    FishVec2 field = {0.0, 0.0};
+    FishVec2 field = {0.0f, 0.0f};
 
     for (size_t i = 0; i < num_monopoles; i++) {
         FishVec2 source_m = {
@@ -366,8 +372,8 @@ FishVec2 measure_electric_field(
             measurement_m.x - source_m.x,
             measurement_m.y - source_m.y,
         };
-        double distance = vec_length(offset) + eps_m;
-        double weight =
+        float distance = vec_length(offset) + eps_m;
+        float weight =
             K_COULOMB * monopoles[i].charge_c /
             (distance * distance * distance);
         field.x += offset.x * weight;
@@ -383,14 +389,14 @@ FishVec2 measure_electric_field(
             measurement_m.x - source_m.x,
             measurement_m.y - source_m.y,
         };
-        double distance = vec_length(offset) + eps_m;
-        double r2 = distance * distance;
-        double r3 = r2 * distance;
-        double r5 = r3 * r2;
-        double moment_dot_offset =
+        float distance = vec_length(offset) + eps_m;
+        float r2 = distance * distance;
+        float r3 = r2 * distance;
+        float r5 = r3 * r2;
+        float moment_dot_offset =
             dipoles[i].moment_c_m.x * offset.x +
             dipoles[i].moment_c_m.y * offset.y;
-        double axial = 3.0 * moment_dot_offset / r5;
+        float axial = 3.0f * moment_dot_offset / r5;
         field.x += K_COULOMB * (
             offset.x * axial - dipoles[i].moment_c_m.x / r3
         );
@@ -403,13 +409,13 @@ FishVec2 measure_electric_field(
 
 FishVec2 induce_dipole_moment(
     FishVec2 external_field_vm,
-    double conductor_radius_cm,
-    double conductor_contrast
+    float conductor_radius_cm,
+    float conductor_contrast
 ) {
-    double radius_m = conductor_radius_cm * CM_TO_M;
-    double volume_m3 = (4.0 / 3.0) * PI_D * radius_m * radius_m * radius_m;
-    double scale =
-        3.0 * EPSILON_0 * volume_m3 * conductor_contrast;
+    float radius_m = conductor_radius_cm * CM_TO_M;
+    float volume_m3 = (4.0f / 3.0f) * PI_F * radius_m * radius_m * radius_m;
+    float scale =
+        3.0f * EPSILON_0 * volume_m3 * conductor_contrast;
     return (FishVec2){
         external_field_vm.x * scale,
         external_field_vm.y * scale,
@@ -424,8 +430,8 @@ FishVec2 measure_electric_field_with_reflections(
     const FishDipole* dipoles,
     size_t num_dipoles,
     FishVec2 arena_size_cm,
-    double eps_m,
-    double reflection_scale,
+    float eps_m,
+    float reflection_scale,
     bool flip_on_reflection
 ) {
     FishVec2 field = measure_electric_field(
@@ -441,15 +447,15 @@ FishVec2 measure_electric_field_with_reflections(
                 image.position_cm.x = -image.position_cm.x;
             } else if (wall == WALL_RIGHT) {
                 image.position_cm.x =
-                    2.0 * arena_size_cm.x - image.position_cm.x;
+                    2.0f * arena_size_cm.x - image.position_cm.x;
             } else if (wall == WALL_BOTTOM) {
                 image.position_cm.y = -image.position_cm.y;
             } else {
                 image.position_cm.y =
-                    2.0 * arena_size_cm.y - image.position_cm.y;
+                    2.0f * arena_size_cm.y - image.position_cm.y;
             }
             image.charge_c *=
-                reflection_scale * (flip_on_reflection ? -1.0 : 1.0);
+                reflection_scale * (flip_on_reflection ? -1.0f : 1.0f);
             FishVec2 contribution = measure_electric_field(
                 measurement_position_cm, &image, 1, NULL, 0, eps_m
             );
@@ -465,7 +471,7 @@ FishVec2 measure_electric_field_with_reflections(
                 }
             } else if (wall == WALL_RIGHT) {
                 image.position_cm.x =
-                    2.0 * arena_size_cm.x - image.position_cm.x;
+                    2.0f * arena_size_cm.x - image.position_cm.x;
                 if (flip_on_reflection) {
                     image.moment_c_m.x = -image.moment_c_m.x;
                 }
@@ -476,7 +482,7 @@ FishVec2 measure_electric_field_with_reflections(
                 }
             } else {
                 image.position_cm.y =
-                    2.0 * arena_size_cm.y - image.position_cm.y;
+                    2.0f * arena_size_cm.y - image.position_cm.y;
                 if (flip_on_reflection) {
                     image.moment_c_m.y = -image.moment_c_m.y;
                 }
@@ -494,14 +500,17 @@ FishVec2 measure_electric_field_with_reflections(
 }
 
 // Receptor geometry and transduction
-double
+float
 project_field(FishVec2 field, FishVec2 sensor_normal) {
-    return field.x * sensor_normal.x + field.y * sensor_normal.y;
+    return (float)(
+        (float)field.x * (float)sensor_normal.x +
+        (float)field.y * (float)sensor_normal.y
+    );
 }
 
 FishSensor
-radial_sensor(double angle, double body_radius_cm) {
-    FishVec2 normal = {cos(angle), sin(angle)};
+radial_sensor(float angle, float body_radius_cm) {
+    FishVec2 normal = {cosf(angle), sinf(angle)};
     FishSensor sensor = {
         .position_cm = {
             normal.x * body_radius_cm,
@@ -512,62 +521,64 @@ radial_sensor(double angle, double body_radius_cm) {
     return sensor;
 }
 
-double
+float
 uniform_sensor_angle(size_t sensor_index, size_t num_sensors) {
-    return 2.0 * PI_D * (double)sensor_index / (double)num_sensors;
+    return 2.0f * PI_F * (float)sensor_index / (float)num_sensors;
 }
 
 /*
  * Mormyromast layout from sensing.calculate_mormyromast_angles: 30% of the
  * receptors span the forward-facing chin region, with the rest covering the
- * remaining circumference. Pass num_chin=10, num_rest=26 for the default 36.
+ * remaining circumference. Pass num_chin=10, num_rest=26 for the default 36.f
  */
-double mormyromast_angle(
+float mormyromast_angle(
     size_t sensor_index,
     size_t num_chin,
     size_t num_rest,
-    double chin_angle
+    float chin_angle
 ) {
     if (sensor_index < num_chin) {
         if (num_chin == 1) {
-            return 0.0;
+            return 0.0f;
         }
-        return -0.5 * chin_angle +
-            chin_angle * (double)sensor_index / (double)(num_chin - 1);
+        return -0.5f * chin_angle +
+            chin_angle * (float)sensor_index / (float)(num_chin - 1);
     }
     size_t rest_index = sensor_index - num_chin;
     if (num_rest == 1) {
-        return PI_D;
+        return PI_F;
     }
-    return 0.5 * chin_angle +
-        (2.0 * PI_D - chin_angle) *
-        (double)rest_index / (double)num_rest;
+    return 0.5f * chin_angle +
+        (2.0f * PI_F - chin_angle) *
+        (float)rest_index / (float)num_rest;
 }
 
 /*
  * Sign-preserving logarithmic normalization used by all receptor channels.
  * Values below threshold map to signed zero and values above maximum saturate.
  */
-double normalize_sensor_reading(
-    double reading,
-    double sensor_min,
-    double sensor_max,
-    double eps
+float normalize_sensor_reading(
+    float reading,
+    float sensor_min,
+    float sensor_max,
+    float eps
 ) {
-    if (reading == 0.0) {
-        return 0.0;
+    if (reading == 0.0f) {
+        return 0.0f;
     }
-    double sign = reading < 0.0 ? -1.0 : 1.0;
-    double magnitude = fabs(reading);
-    magnitude = clamp(magnitude, sensor_min, sensor_max);
-    magnitude = fmax(magnitude, eps);
-    double denominator = log10(sensor_max) - log10(sensor_min);
-    if (denominator <= 0.0) {
-        return 0.0;
+    float r = (float)reading;
+    float sign = r < 0.0f ? -1.0f : 1.0f;
+    float magnitude = fabsf(r);
+    magnitude = clamp(magnitude, (float)sensor_min, (float)sensor_max);
+    magnitude = fmaxf(magnitude, (float)eps);
+    float denominator =
+        log10f((float)sensor_max) - log10f((float)sensor_min);
+    if (denominator <= 0.0f) {
+        return 0.0f;
     }
-    double normalized =
-        (log10(magnitude) - log10(sensor_min)) / denominator;
-    return sign * clamp(normalized, 0.0, 1.0);
+    float normalized =
+        (log10f(magnitude) - log10f((float)sensor_min)) / denominator;
+    return (float)(sign * clamp(normalized, 0.0f, 1.0f));
 }
 
 typedef struct Log {
@@ -598,15 +609,15 @@ typedef struct Client {
 
 typedef struct FishAgentState {
     FishMovement movement;
-    double size;
-    double bite_cooldown;
-    double eat_cooldown;
+    float size;
+    int bite_cooldown;  /* remaining steps; 0 = ready */
+    int eat_cooldown;   /* remaining steps; 0 = free to move / eat */
     bool emits_eod;
     bool bite_action;
     bool was_bitten;
     bool ate_food;
     float last_action[ACTION_SIZE];
-    double ampullary_ema[NUM_AMPULLARY];
+    float ampullary_ema[NUM_AMPULLARY];
 } FishAgentState;
 
 typedef struct FishFood {
@@ -636,15 +647,15 @@ typedef struct FishEnv {
     FishVec2 arena_size_cm;
     FishVec2 min_arena_size_cm;
     FishVec2 max_arena_size_cm;
-    double electric_field_radius_cm;
+    float electric_field_radius_cm;
     FoodDistribution food_distribution;
     FoodDistribution active_food_distribution;
     int configured_num_food;
     int fixed_num_patches;
-    double patch_radius_cm;
-    double patch_radius_std_cm;
-    double patch_density;
-    double placement_radius_frac;
+    float patch_radius_cm;
+    float patch_radius_std_cm;
+    float patch_density;
+    float placement_radius_frac;
     FishAgentState agents[MAX_AGENTS];
     FishFood food[MAX_FOOD];
     int num_food;
@@ -658,35 +669,35 @@ typedef struct FishEnv {
     FishDipole induced_sources[MAX_AGENTS + MAX_FOOD];
     int num_intrinsic_sources;
     int num_induced_sources;
-    double mormyromast_cd[NUM_MORMYROMASTS];
-    double amp_intrinsic_baseline[NUM_AMPULLARY];
+    float mormyromast_cd[NUM_MORMYROMASTS];
+    float amp_intrinsic_baseline[NUM_AMPULLARY];
     Client* client;
 } FishEnv;
 
-double random_uniform(FishEnv* env, double low, double high) {
-    double unit = (double)rand_r(&env->rng) / (double)RAND_MAX;
+float random_uniform(FishEnv* env, float low, float high) {
+    float unit = (float)rand_r(&env->rng) / (float)RAND_MAX;
     return low + (high - low) * unit;
 }
 
-double random_multiplier(FishEnv* env, double fraction) {
-    return random_uniform(env, 1.0 - fraction, 1.0 + fraction);
+float random_multiplier(FishEnv* env, float fraction) {
+    return (float)random_uniform(env, 1.0f - (float)fraction, 1.0f + (float)fraction);
 }
 
 void init(FishEnv* env) {
     if (env->num_agents <= 0) env->num_agents = 4;
     if (env->num_agents > MAX_AGENTS) env->num_agents = MAX_AGENTS;
-    if (env->arena_size_cm.x <= 0.0) env->arena_size_cm.x = 70.0;
-    if (env->arena_size_cm.y <= 0.0) env->arena_size_cm.y = 70.0;
-    if (env->min_arena_size_cm.x <= 0.0) {
+    if (env->arena_size_cm.x <= 0.0f) env->arena_size_cm.x = 70.0f;
+    if (env->arena_size_cm.y <= 0.0f) env->arena_size_cm.y = 70.0f;
+    if (env->min_arena_size_cm.x <= 0.0f) {
         env->min_arena_size_cm.x = env->arena_size_cm.x;
     }
-    if (env->min_arena_size_cm.y <= 0.0) {
+    if (env->min_arena_size_cm.y <= 0.0f) {
         env->min_arena_size_cm.y = env->arena_size_cm.y;
     }
-    if (env->max_arena_size_cm.x <= 0.0) {
+    if (env->max_arena_size_cm.x <= 0.0f) {
         env->max_arena_size_cm.x = env->min_arena_size_cm.x;
     }
-    if (env->max_arena_size_cm.y <= 0.0) {
+    if (env->max_arena_size_cm.y <= 0.0f) {
         env->max_arena_size_cm.y = env->min_arena_size_cm.y;
     }
     if (env->configured_num_food <= 0) env->configured_num_food = MAX_FOOD;
@@ -694,20 +705,20 @@ void init(FishEnv* env) {
         env->configured_num_food = MAX_FOOD;
     }
     if (env->fixed_num_patches <= 0) env->fixed_num_patches = 4;
-    if (env->patch_radius_cm <= 0.0) env->patch_radius_cm = 6.0;
-    if (env->patch_radius_std_cm < 0.0) env->patch_radius_std_cm = 1.5;
-    if (env->patch_density <= 0.0) env->patch_density = 0.001;
-    if (env->placement_radius_frac <= 0.0) {
-        env->placement_radius_frac = 0.75;
+    if (env->patch_radius_cm <= 0.0f) env->patch_radius_cm = 6.0f;
+    if (env->patch_radius_std_cm < 0.0f) env->patch_radius_std_cm = 1.5f;
+    if (env->patch_density <= 0.0f) env->patch_density = 0.001f;
+    if (env->placement_radius_frac <= 0.0f) {
+        env->placement_radius_frac = 0.75f;
     }
     env->placement_radius_frac =
-        clamp(env->placement_radius_frac, 0.0, 1.0);
+        clamp(env->placement_radius_frac, 0.0f, 1.0f);
     if (env->food_distribution < FOOD_UNIFORM ||
             env->food_distribution > FOOD_RANDOM) {
         env->food_distribution = FOOD_UNIFORM;
     }
-    if (env->electric_field_radius_cm <= 0.0) {
-        env->electric_field_radius_cm = 15.0;
+    if (env->electric_field_radius_cm <= 0.0f) {
+        env->electric_field_radius_cm = 15.0f;
     }
     if (env->episode_length <= 0) env->episode_length = 4096;
     if (env->rng == 0) env->rng = 1;
@@ -730,12 +741,13 @@ void compute_observations(FishEnv* env) {
         /* Mormyromasts: active/collective image after direct-EOD subtraction. */
         for (int sensor_idx = 0; sensor_idx < NUM_MORMYROMASTS;
                 sensor_idx++) {
-            double angle = mormyromast_angle(
-                (size_t)sensor_idx, 10, 26, PI_D / 3.0
+            float angle = mormyromast_angle(
+                (size_t)sensor_idx, 10, 26, PI_F / 3.0f
             );
             FishSensor sensor = transform_sensor(
                 radial_sensor(angle, agent->movement.body_radius_cm),
-                agent->movement.position_cm, agent->movement.orientation
+                agent->movement.position_cm,
+                (float)agent->movement.orientation
             );
             FishVec2 induced = measure_electric_field_with_reflections(
                 sensor.position_cm, NULL, 0,
@@ -743,11 +755,11 @@ void compute_observations(FishEnv* env) {
                 env->arena_size_cm, FIELD_EPS_M,
                 REFLECTION_SCALE, false
             );
-            double reading = project_field(induced, sensor.normal);
+            float reading = project_field(induced, sensor.normal);
             if (!agent->emits_eod) {
-                reading *= 100.0;
+                reading *= 100.0f;
             }
-            reading *= random_multiplier(env, 0.05);
+            reading *= random_multiplier(env, 0.05f);
             obs[cursor++] = (float)normalize_sensor_reading(
                 reading, MORMYROMAST_MIN_VM,
                 MORMYROMAST_MAX_VM, SENSOR_EPS
@@ -757,12 +769,13 @@ void compute_observations(FishEnv* env) {
         // Ampullary receptors: intrinsic sources with static self-field removed
         for (int sensor_idx = 0; sensor_idx < NUM_AMPULLARY;
                 sensor_idx++) {
-            double angle = uniform_sensor_angle(
+            float angle = uniform_sensor_angle(
                 (size_t)sensor_idx, NUM_AMPULLARY
             );
             FishSensor sensor = transform_sensor(
                 radial_sensor(angle, agent->movement.body_radius_cm),
-                agent->movement.position_cm, agent->movement.orientation
+                agent->movement.position_cm,
+                (float)agent->movement.orientation
             );
             FishVec2 field = measure_electric_field_with_reflections(
                 sensor.position_cm, NULL, 0,
@@ -770,7 +783,7 @@ void compute_observations(FishEnv* env) {
                 env->arena_size_cm, FIELD_EPS_M,
                 REFLECTION_SCALE, false
             );
-            double reading =
+            float reading =
                 project_field(field, sensor.normal) -
                 env->amp_intrinsic_baseline[sensor_idx];
             bool cons_eod = false;
@@ -780,8 +793,8 @@ void compute_observations(FishEnv* env) {
                     break;
                 }
             }
-            reading *= random_multiplier(env, cons_eod ? 0.5 : 0.05);
-            double processed = normalize_sensor_reading(
+            reading *= random_multiplier(env, cons_eod ? 0.5f : 0.05f);
+            float processed = normalize_sensor_reading(
                 reading, AMPULLARY_MIN_VM,
                 AMPULLARY_MAX_VM, SENSOR_EPS
             );
@@ -798,9 +811,9 @@ void compute_observations(FishEnv* env) {
             bool valid = other < env->num_agents && env->agents[other].emits_eod;
             for (int sensor_idx = 0; sensor_idx < NUM_KNOLLEN;
                     sensor_idx++) {
-                double value = 0.0;
+                float value = 0.0f;
                 if (valid) {
-                    double angle = uniform_sensor_angle(
+                    float angle = uniform_sensor_angle(
                         (size_t)sensor_idx, NUM_KNOLLEN
                     );
                     FishSensor sensor = transform_sensor(
@@ -808,19 +821,19 @@ void compute_observations(FishEnv* env) {
                             angle, agent->movement.body_radius_cm
                         ),
                         agent->movement.position_cm,
-                        agent->movement.orientation
+                        (float)agent->movement.orientation
                     );
                     FishVec2 field = measure_electric_field(
                         sensor.position_cm,
                         &env->eod_sources[2 * other], 2,
                         NULL, 0, FIELD_EPS_M
                     );
-                    double raw_knollen =
+                    float raw_knollen =
                         project_field(field, sensor.normal);
-                    raw_knollen *= random_multiplier(env, 0.05);
-                    value = fabs(raw_knollen) <= KNOLLEN_MIN_VM
-                        ? 0.0
-                        : (raw_knollen < 0.0 ? -1.0 : 1.0);
+                    raw_knollen *= random_multiplier(env, 0.05f);
+                    value = fabsf(raw_knollen) <= KNOLLEN_MIN_VM
+                        ? 0.0f
+                        : (raw_knollen < 0.0f ? -1.0f : 1.0f);
                 }
                 obs[cursor++] = (float)value;
             }
@@ -832,11 +845,11 @@ void compute_observations(FishEnv* env) {
                     break;
                 }
             }
-            double metadata = -1.0;
+            float metadata = -1.0f;
             if (valid && detected) {
                 metadata = agent->size - env->agents[other].size;
-                metadata += random_uniform(env, -0.05, 0.05);
-                metadata = clamp(metadata, -1.0, 1.0);
+                metadata += random_uniform(env, -0.05f, 0.05f);
+                metadata = clamp(metadata, -1.0f, 1.0f);
             }
             obs[metadata_start + cons_slot] = (float)metadata;
             cons_slot++;
@@ -853,29 +866,29 @@ void compute_observations(FishEnv* env) {
         obs[cursor++] = 0.0f; /* fatigue, retained for upstream layout */
         obs[cursor++] = agent->was_bitten ? 1.0f : 0.0f;
         obs[cursor++] = (float)agent->size;
-        obs[cursor++] = (float)agent->bite_cooldown;
+        obs[cursor++] =
+            (float)agent->bite_cooldown / (float)BITE_COOLDOWN_STEPS;
         obs[cursor++] = (float)clamp(
             agent->movement.displacement_ego_cm.x /
-                agent->movement.max_linear_velocity, -1.0, 1.0
-        );
+                (float)agent->movement.max_linear_velocity, -1.0f, 1.0f);
         obs[cursor++] = (float)clamp(
             agent->movement.displacement_ego_cm.y /
-                agent->movement.max_linear_velocity, -1.0, 1.0
-        );
-        obs[cursor++] = (float)agent->eat_cooldown;
+                (float)agent->movement.max_linear_velocity, -1.0f, 1.0f);
+        obs[cursor++] =
+            (float)agent->eat_cooldown / (float)EAT_COOLDOWN_STEPS;
     }
 }
 
 bool
 position_overlaps_agents(
-    const FishEnv* env, FishVec2 position, int count, double radius
+    const FishEnv* env, FishVec2 position, int count, float radius
 ) {
     for (int i = 0; i < count; i++) {
         FishVec2 delta = {
             position.x - env->agents[i].movement.position_cm.x,
             position.y - env->agents[i].movement.position_cm.y,
         };
-        double minimum = radius + env->agents[i].movement.body_radius_cm;
+        float minimum = radius + env->agents[i].movement.body_radius_cm;
         if (vec_length_squared(delta) < minimum * minimum) return true;
     }
     return false;
@@ -887,8 +900,8 @@ position_overlaps_agents(
  */
 void calibrate_electroreceptors(FishEnv* env) {
     FishVec2 center = {
-        env->arena_size_cm.x * 0.5,
-        env->arena_size_cm.y * 0.5,
+        env->arena_size_cm.x * 0.5f,
+        env->arena_size_cm.y * 0.5f,
     };
     FishMonopole eod[2] = {
         {
@@ -906,12 +919,12 @@ void calibrate_electroreceptors(FishEnv* env) {
     };
     FishDipole intrinsic = {
         .position_cm = center,
-        .moment_c_m = {INTRINSIC_MOMENT_C_M, 0.0},
+        .moment_c_m = {INTRINSIC_MOMENT_C_M, 0.0f},
     };
 
     for (int i = 0; i < NUM_MORMYROMASTS; i++) {
-        double angle = mormyromast_angle(
-            (size_t)i, 10, 26, PI_D / 3.0
+        float angle = mormyromast_angle(
+            (size_t)i, 10, 26, PI_F / 3.0f
         );
         FishSensor sensor = radial_sensor(angle, BODY_RADIUS_CM);
         sensor.position_cm.x += center.x;
@@ -925,7 +938,7 @@ void calibrate_electroreceptors(FishEnv* env) {
     }
 
     for (int i = 0; i < NUM_AMPULLARY; i++) {
-        double angle = uniform_sensor_angle(
+        float angle = uniform_sensor_angle(
             (size_t)i, NUM_AMPULLARY
         );
         FishSensor sensor = radial_sensor(angle, BODY_RADIUS_CM);
@@ -947,26 +960,27 @@ void build_electric_scene(FishEnv* env) {
     for (int i = 0; i < env->num_agents; i++) {
         FishAgentState* agent = &env->agents[i];
         FishMonopole positive = {
-            .position_cm = {EOD_POLE_OFFSET_CM, 0.0},
+            .position_cm = {EOD_POLE_OFFSET_CM, 0.0f},
             .charge_c = EOD_CHARGE_C,
         };
         FishMonopole negative = {
-            .position_cm = {-EOD_POLE_OFFSET_CM, 0.0},
+            .position_cm = {-EOD_POLE_OFFSET_CM, 0.0f},
             .charge_c = -EOD_CHARGE_C,
         };
+        float agent_ori = (float)agent->movement.orientation;
         env->eod_sources[2 * i] = transform_monopole(
-            positive, agent->movement.position_cm, agent->movement.orientation,
+            positive, agent->movement.position_cm, agent_ori,
             agent->emits_eod
         );
         env->eod_sources[2 * i + 1] = transform_monopole(
-            negative, agent->movement.position_cm, agent->movement.orientation,
+            negative, agent->movement.position_cm, agent_ori,
             agent->emits_eod
         );
         env->intrinsic_sources[env->num_intrinsic_sources++] = (FishDipole){
             .position_cm = agent->movement.position_cm,
             .moment_c_m = rotate(
-                (FishVec2){INTRINSIC_MOMENT_C_M, 0.0},
-                agent->movement.orientation
+                (FishVec2){INTRINSIC_MOMENT_C_M, 0.0f},
+                agent_ori
             ),
         };
     }
@@ -976,7 +990,7 @@ void build_electric_scene(FishEnv* env) {
         FishDipole intrinsic = {
             .position_cm = env->food[i].motion.position_cm,
             .moment_c_m = rotate(
-                (FishVec2){0.0, FOOD_INTRINSIC_MOMENT_C_M},
+                (FishVec2){0.0f, FOOD_INTRINSIC_MOMENT_C_M},
                 env->food[i].motion.orientation
             ),
         };
@@ -986,7 +1000,7 @@ void build_electric_scene(FishEnv* env) {
     // EOD fields induce dipoles on prey and agent bodies (Chen et al., Eq. 6) 
     for (int i = 0; i < env->num_agents; i++) {
         FishVec2 position = env->agents[i].movement.position_cm;
-        FishVec2 moment = {0.0, 0.0};
+        FishVec2 moment = {0.0f, 0.0f};
         if (!env->agents[i].emits_eod) {
             FishVec2 field = measure_electric_field(
                 position, env->eod_sources, (size_t)(2 * env->num_agents),
@@ -997,11 +1011,11 @@ void build_electric_scene(FishEnv* env) {
                 CONDUCTOR_CONTRAST
             );
         }
-        double moment_magnitude = vec_length(moment);
-        double max_moment =
+        float moment_magnitude = vec_length(moment);
+        float max_moment =
             EOD_CHARGE_C * env->agents[i].movement.body_radius_cm;
-        if (EOD_CHARGE_C >= 0.0 && moment_magnitude > max_moment) {
-            double moment_scale = max_moment / moment_magnitude;
+        if (EOD_CHARGE_C >= 0.0f && moment_magnitude > max_moment) {
+            float moment_scale = max_moment / moment_magnitude;
             moment = (FishVec2){
                 moment.x * moment_scale,
                 moment.y * moment_scale,
@@ -1050,13 +1064,13 @@ void c_reset(FishEnv* env) {
 
     for (int i = 0; i < env->num_agents; i++) {
         FishAgentState agent = {0};
-        agent.size = random_uniform(env, 0.0, 1.0);
+        agent.size = random_uniform(env, 0.0f, 1.0f);
         FishVec2 position;
         int attempts = 0;
         do {
             position = (FishVec2){
-                random_uniform(env, 3.0, env->arena_size_cm.x - 3.0),
-                random_uniform(env, 3.0, env->arena_size_cm.y - 3.0)
+                (float)random_uniform(env, 3.0f, (float)env->arena_size_cm.x - 3.0f),
+                (float)random_uniform(env, 3.0f, (float)env->arena_size_cm.y - 3.0f)
             };
         } while (
             position_overlaps_agents(
@@ -1065,26 +1079,26 @@ void c_reset(FishEnv* env) {
         );
         agent.movement = (FishMovement){
             .position_cm = position,
-            .orientation = random_uniform(env, -PI_D, PI_D),
+            .orientation = random_uniform(env, -PI_F, PI_F),
+            .max_linear_velocity = 35.0f / (float)SIMULATION_HZ,
+            .max_angular_velocity = 3.6f / (float)SIMULATION_HZ,
             .body_radius_cm = BODY_RADIUS_CM,
-            .min_linear_velocity = -5.0 / SIMULATION_HZ,
-            .max_linear_velocity = 35.0 / SIMULATION_HZ,
-            .max_linear_acceleration = 650.0 / (SIMULATION_HZ * SIMULATION_HZ),
-            .min_angular_velocity = -3.5 / SIMULATION_HZ,
-            .max_angular_velocity = 3.6 / SIMULATION_HZ,
-            .max_angular_acceleration = 318.0 / (SIMULATION_HZ * SIMULATION_HZ),
-            .linear_drag_factor = 0.95,
-            .angular_drag_factor = 0.95,
+            .min_linear_velocity = -5.0f / SIMULATION_HZ,
+            .max_linear_acceleration = 650.0f / (SIMULATION_HZ * SIMULATION_HZ),
+            .min_angular_velocity = -3.5f / SIMULATION_HZ,
+            .max_angular_acceleration = 318.0f / (SIMULATION_HZ * SIMULATION_HZ),
+            .linear_drag_factor = 0.95f,
+            .angular_drag_factor = 0.95f,
             .motion_order = MOTION_FIRST_ORDER,
             .backwards = false,
         };
-        double size_multiplier = 1.0 + agent.size;
-        agent.movement.min_linear_velocity *= size_multiplier;
+        float size_multiplier = 1.0f + agent.size;
+        agent.movement.min_linear_velocity *= (float)size_multiplier;
         agent.movement.max_linear_velocity *= size_multiplier;
-        agent.movement.max_linear_acceleration *= size_multiplier;
-        agent.movement.min_angular_velocity *= size_multiplier;
+        agent.movement.max_linear_acceleration *= (float)size_multiplier;
+        agent.movement.min_angular_velocity *= (float)size_multiplier;
         agent.movement.max_angular_velocity *= size_multiplier;
-        agent.movement.max_angular_acceleration *= size_multiplier;
+        agent.movement.max_angular_acceleration *= (float)size_multiplier;
         agent.emits_eod = true;
         env->agents[i] = agent;
         env->rewards[i] = 0.0f;
@@ -1092,33 +1106,33 @@ void c_reset(FishEnv* env) {
     }
 
     FishVec2 patch_centers[MAX_PATCHES];
-    double patch_radii[MAX_PATCHES];
-    double patch_weights[MAX_PATCHES];
+    float patch_radii[MAX_PATCHES];
+    float patch_weights[MAX_PATCHES];
     int num_patches = 0;
-    double total_patch_weight = 0.0;
-    double minimum_edge = fmin(env->arena_size_cm.x, env->arena_size_cm.y);
+    float total_patch_weight = 0.0f;
+    float minimum_edge = fminf(env->arena_size_cm.x, env->arena_size_cm.y);
 
     if (env->active_food_distribution == FOOD_PATCHY) {
-        num_patches = (int)ceil(
+        num_patches = (int)ceilf(
             env->patch_density *
             env->arena_size_cm.x * env->arena_size_cm.y
         );
         num_patches = (int)clamp(num_patches, 1, MAX_PATCHES);
         for (int i = 0; i < num_patches; i++) {
             patch_centers[i] = (FishVec2){
-                random_uniform(env, 0.0, env->arena_size_cm.x),
-                random_uniform(env, 0.0, env->arena_size_cm.y),
+                random_uniform(env, 0.0f, env->arena_size_cm.x),
+                random_uniform(env, 0.0f, env->arena_size_cm.y),
             };
-            double u1 = fmax(
-                random_uniform(env, 0.0, 1.0), 1.0 / (double)RAND_MAX
+            float u1 = fmaxf(
+                random_uniform(env, 0.0f, 1.0f), 1.0f / (float)RAND_MAX
             );
-            double u2 = random_uniform(env, 0.0, 1.0);
-            double normal_sample =
-                sqrt(-2.0 * log(u1)) * cos(2.0 * PI_D * u2);
+            float u2 = random_uniform(env, 0.0f, 1.0f);
+            float normal_sample =
+                sqrtf(-2.0f * logf(u1)) * cosf(2.0f * PI_F * u2);
             patch_radii[i] = clamp(
                 env->patch_radius_cm +
                     normal_sample * env->patch_radius_std_cm,
-                1.0, minimum_edge / 2.0
+                1.0f, minimum_edge / 2.0f
             );
             patch_weights[i] = patch_radii[i] * patch_radii[i];
             total_patch_weight += patch_weights[i];
@@ -1127,36 +1141,36 @@ void c_reset(FishEnv* env) {
         num_patches = (int)clamp(
             env->fixed_num_patches, 1, MAX_PATCHES
         );
-        double initial_angle = random_uniform(env, 0.0, 2.0 * PI_D);
+        float initial_angle = random_uniform(env, 0.0f, 2.0f * PI_F);
         for (int i = 0; i < num_patches; i++) {
-            double angle =
-                initial_angle + 2.0 * PI_D * i / num_patches;
+            float angle =
+                initial_angle + 2.0f * PI_F * i / num_patches;
             patch_centers[i] = (FishVec2){
-                env->arena_size_cm.x * 0.5 *
-                    (1.0 + env->placement_radius_frac * cos(angle)),
-                env->arena_size_cm.y * 0.5 *
-                    (1.0 + env->placement_radius_frac * sin(angle)),
+                env->arena_size_cm.x * 0.5f *
+                    (1.0f + env->placement_radius_frac * cosf(angle)),
+                env->arena_size_cm.y * 0.5f *
+                    (1.0f + env->placement_radius_frac * sinf(angle)),
             };
-            patch_radii[i] = fmin(env->patch_radius_cm, minimum_edge / 2.0);
+            patch_radii[i] = fminf(env->patch_radius_cm, minimum_edge / 2.0f);
             patch_weights[i] = patch_radii[i] * patch_radii[i];
             total_patch_weight += patch_weights[i];
         }
     } else if (env->active_food_distribution == FOOD_ONE_PATCH) {
         num_patches = 1;
         patch_centers[0] = (FishVec2){
-            env->arena_size_cm.x / 2.0,
-            env->arena_size_cm.y / 2.0,
+            env->arena_size_cm.x / 2.0f,
+            env->arena_size_cm.y / 2.0f,
         };
-        double u1 = fmax(
-            random_uniform(env, 0.0, 1.0), 1.0 / (double)RAND_MAX
+        float u1 = fmaxf(
+            random_uniform(env, 0.0f, 1.0f), 1.0f / (float)RAND_MAX
         );
-        double u2 = random_uniform(env, 0.0, 1.0);
-        double normal_sample =
-            sqrt(-2.0 * log(u1)) * cos(2.0 * PI_D * u2);
+        float u2 = random_uniform(env, 0.0f, 1.0f);
+        float normal_sample =
+            sqrtf(-2.0f * logf(u1)) * cosf(2.0f * PI_F * u2);
         patch_radii[0] = clamp(
             env->patch_radius_cm +
                 normal_sample * env->patch_radius_std_cm,
-            0.1, minimum_edge / 2.0
+            0.1f, minimum_edge / 2.0f
         );
         patch_weights[0] = patch_radii[0] * patch_radii[0];
         total_patch_weight = patch_weights[0];
@@ -1167,12 +1181,12 @@ void c_reset(FishEnv* env) {
         FishVec2 food_position;
         if (env->active_food_distribution == FOOD_UNIFORM) {
             food_position = (FishVec2){
-                random_uniform(env, 0.0, env->arena_size_cm.x),
-                random_uniform(env, 0.0, env->arena_size_cm.y),
+                random_uniform(env, 0.0f, env->arena_size_cm.x),
+                random_uniform(env, 0.0f, env->arena_size_cm.y),
             };
         } else {
-            double target =
-                random_uniform(env, 0.0, total_patch_weight);
+            float target =
+                random_uniform(env, 0.0f, total_patch_weight);
             int patch = 0;
             while (patch < num_patches - 1 &&
                     target > patch_weights[patch]) {
@@ -1180,32 +1194,32 @@ void c_reset(FishEnv* env) {
             }
             int attempts = 0;
             do {
-                double angle = random_uniform(env, 0.0, 2.0 * PI_D);
-                double radius = patch_radii[patch] * sqrt(
-                    random_uniform(env, 0.0, 1.0)
+                float angle = random_uniform(env, 0.0f, 2.0f * PI_F);
+                float radius = patch_radii[patch] * sqrtf(
+                    random_uniform(env, 0.0f, 1.0f)
                 );
                 food_position = (FishVec2){
-                    patch_centers[patch].x + radius * cos(angle),
-                    patch_centers[patch].y + radius * sin(angle),
+                    patch_centers[patch].x + radius * cosf(angle),
+                    patch_centers[patch].y + radius * sinf(angle),
                 };
             } while (
-                (food_position.x < 0.0 ||
+                (food_position.x < 0.0f ||
                  food_position.x >= env->arena_size_cm.x ||
-                 food_position.y < 0.0 ||
+                 food_position.y < 0.0f ||
                  food_position.y >= env->arena_size_cm.y) &&
                 ++attempts < 1000
             );
             food_position.x = clamp(
-                food_position.x, 0.0, env->arena_size_cm.x
+                food_position.x, 0.0f, env->arena_size_cm.x
             );
             food_position.y = clamp(
-                food_position.y, 0.0, env->arena_size_cm.y
+                food_position.y, 0.0f, env->arena_size_cm.y
             );
         }
         env->food[i] = (FishFood){
             .motion = {
                 .position_cm = food_position,
-                .orientation = random_uniform(env, 0.0, 2.0 * PI_D),
+                .orientation = random_uniform(env, 0.0f, 2.0f * PI_F),
             },
             .active = true,
         };
@@ -1229,18 +1243,19 @@ void add_log(FishEnv* env) {
 bool try_eat(FishEnv* env, int agent_idx) {
     FishAgentState* agent = &env->agents[agent_idx];
     int nearest = -1;
-    double nearest_distance = INFINITY;
+    float nearest_distance = INFINITY;
     for (int i = 0; i < env->num_food; i++) {
         if (!env->food[i].active) continue;
         if (!point_in_forward_cone(
-                agent->movement.position_cm, agent->movement.orientation,
+                agent->movement.position_cm,
+                (float)agent->movement.orientation,
                 env->food[i].motion.position_cm,
                 EATING_RADIUS_CM, EATING_ANGLE)) continue;
         FishVec2 offset = {
             env->food[i].motion.position_cm.x - agent->movement.position_cm.x,
             env->food[i].motion.position_cm.y - agent->movement.position_cm.y,
         };
-        double distance = vec_length_squared(offset);
+        float distance = vec_length_squared(offset);
         if (distance < nearest_distance) {
             nearest = i;
             nearest_distance = distance;
@@ -1250,7 +1265,7 @@ bool try_eat(FishEnv* env, int agent_idx) {
     env->food[nearest].active = false;
     env->food_eaten++;
     agent->ate_food = true;
-    agent->eat_cooldown = 1.0;
+    agent->eat_cooldown = EAT_COOLDOWN_STEPS;
     return true;
 }
 
@@ -1270,36 +1285,36 @@ void c_step(FishEnv* env) {
         FishFoodMotion* food = &env->food[food_idx].motion;
         food->position_cm.x = clamp(
             food->position_cm.x + food->velocity_cm.x,
-            0.0, env->arena_size_cm.x
+            0.0f, env->arena_size_cm.x
         );
         food->position_cm.y = clamp(
             food->position_cm.y + food->velocity_cm.y,
-            0.0, env->arena_size_cm.y
+            0.0f, env->arena_size_cm.y
         );
     }
 
     for (int i = 0; i < env->num_agents; i++) {
         FishAgentState* agent = &env->agents[i];
         float* raw_action = env->actions + i * ACTION_SIZE;
-        double move = 1.0 / (1.0 + exp(-(double)raw_action[0]));
-        double turn = tanh((double)raw_action[1]);
+        float move = 1.0f / (1.0f + expf(-(float)raw_action[0]));
+        float turn = tanhf((float)raw_action[1]);
         agent->emits_eod = raw_action[2] > 0.0f;
         agent->bite_action =
-            raw_action[3] > 0.0f && agent->bite_cooldown <= 0.0;
-        if (agent->bite_action) agent->bite_cooldown = 1.0;
+            raw_action[3] > 0.0f && agent->bite_cooldown <= 0;
+        if (agent->bite_action) agent->bite_cooldown = BITE_COOLDOWN_STEPS;
         agent->last_action[0] = (float)move;
         agent->last_action[1] = (float)turn;
         agent->last_action[2] = agent->emits_eod ? 1.0f : 0.0f;
         agent->last_action[3] = agent->bite_action ? 1.0f : 0.0f;
         env->eod_agent_steps += agent->emits_eod ? 1 : 0;
 
-        if (!agent->bite_action && agent->eat_cooldown <= 0.0) {
+        if (!agent->bite_action && agent->eat_cooldown <= 0) {
             if (try_eat(env, i)) {
                 env->rewards[i] += EAT_REWARD;
             }
         }
         FishMotionProposal proposal = propose_motion(
-            &agent->movement, move, turn, agent->eat_cooldown > 0.0
+            &agent->movement, move, turn, agent->eat_cooldown > 0
         );
         FishMovement movement_views[MAX_AGENTS];
         for (int j = 0; j < env->num_agents; j++) {
@@ -1323,12 +1338,12 @@ void c_step(FishEnv* env) {
         FishAgentState* attacker = &env->agents[i];
         if (!attacker->bite_action) continue;
         int victim = -1;
-        double nearest = INFINITY;
+        float nearest = INFINITY;
         for (int j = 0; j < env->num_agents; j++) {
             if (i == j) continue;
             if (!point_in_forward_cone(
                     attacker->movement.position_cm,
-                    attacker->movement.orientation,
+                    (float)attacker->movement.orientation,
                     env->agents[j].movement.position_cm,
                     BITING_RADIUS_CM, EATING_ANGLE)) continue;
             FishVec2 offset = {
@@ -1337,7 +1352,7 @@ void c_step(FishEnv* env) {
                 env->agents[j].movement.position_cm.y -
                     attacker->movement.position_cm.y,
             };
-            double distance = vec_length_squared(offset);
+            float distance = vec_length_squared(offset);
             if (distance < nearest) {
                 victim = j;
                 nearest = distance;
@@ -1345,17 +1360,15 @@ void c_step(FishEnv* env) {
         }
         if (victim >= 0) {
             env->agents[victim].was_bitten = true;
-            double size_difference =
-                attacker->size - env->agents[victim].size;
-            env->rewards[victim] +=
-                BITTEN_REWARD * (float)(1.0 + fmax(0.0, size_difference));
+            float size_difference = attacker->size - env->agents[victim].size;
+            env->rewards[victim] += BITTEN_REWARD * (float)(1.0f + fmaxf(0.0f, size_difference));
         }
     }
 
     for (int i = 0; i < env->num_agents; i++) {
         FishAgentState* agent = &env->agents[i];
-        agent->eat_cooldown = fmax(0.0, agent->eat_cooldown - 1.0 / 3.0);
-        agent->bite_cooldown = fmax(0.0, agent->bite_cooldown - 1.0 / 5.0);
+        if (agent->eat_cooldown > 0) agent->eat_cooldown -= 1;
+        if (agent->bite_cooldown > 0) agent->bite_cooldown -= 1;
         env->episode_return += env->rewards[i];
     }
     build_electric_scene(env);
@@ -1370,8 +1383,8 @@ void c_step(FishEnv* env) {
 
 Vector2 world_to_screen(const FishEnv* env, FishVec2 point_cm) {
     Client* client = env->client;
-    double usable_width = client->window_width - 2.0 * client->margin;
-    double usable_height = client->window_height - 2.0 * client->margin;
+    float usable_width = client->window_width - 2.0f * client->margin;
+    float usable_height = client->window_height - 2.0f * client->margin;
     Vector2 result = {
         (float)(client->margin +
             point_cm.x / env->arena_size_cm.x * usable_width),
@@ -1383,11 +1396,11 @@ Vector2 world_to_screen(const FishEnv* env, FishVec2 point_cm) {
 
 float render_scale(const FishEnv* env) {
     Client* client = env->client;
-    double sx = (client->window_width - 2.0 * client->margin) /
+    float sx = (client->window_width - 2.0f * client->margin) /
         env->arena_size_cm.x;
-    double sy = (client->window_height - 2.0 * client->margin) /
+    float sy = (client->window_height - 2.0f * client->margin) /
         env->arena_size_cm.y;
-    return (float)fmin(sx, sy);
+    return (float)fminf(sx, sy);
 }
 
 Client* make_client(void) {
@@ -1402,9 +1415,9 @@ Client* make_client(void) {
     return client;
 }
 
-Color field_color(double log_strength) {
-    double normalized = clamp((log_strength + 8.0) / 7.0, 0.0, 1.0);
-    unsigned char shade = (unsigned char)(205.0 - 95.0 * normalized);
+Color field_color(float log_strength) {
+    float normalized = clamp((log_strength + 8.0f) / 7.0f, 0.0f, 1.0f);
+    unsigned char shade = (unsigned char)(205.0f - 95.0f * normalized);
     return (Color){shade, shade, shade, 190};
 }
 
@@ -1418,17 +1431,15 @@ void render_field(
     for (int row = 0; row < rows; row++) {
         for (int column = 0; column < columns; column++) {
             FishVec2 position = {
-                env->arena_size_cm.x * (column + 0.5) / columns,
-                env->arena_size_cm.y * (row + 0.5) / rows
+                env->arena_size_cm.x * (column + 0.5f) / columns,
+                env->arena_size_cm.y * (row + 0.5f) / rows
             };
             bool near_fish = false;
-            double radius_squared =
+            float radius_squared =
                 env->electric_field_radius_cm * env->electric_field_radius_cm;
             for (int i = 0; i < env->num_agents; i++) {
-                double dx =
-                    position.x - env->agents[i].movement.position_cm.x;
-                double dy =
-                    position.y - env->agents[i].movement.position_cm.y;
+                float dx = position.x - env->agents[i].movement.position_cm.x;
+                float dy = position.y - env->agents[i].movement.position_cm.y;
                 if (dx * dx + dy * dy <= radius_squared) {
                     near_fish = true;
                     break;
@@ -1447,11 +1458,11 @@ void render_field(
                 REFLECTION_SCALE,
                 false
             );
-            double strength = vec_length(field);
-            if (strength <= 0.0) continue;
-            double log_strength = log10(strength);
-            double arrow_length = 4.0 + 10.0 *
-                clamp((log_strength + 8.0) / 7.0, 0.0, 1.0);
+            float strength = vec_length(field);
+            if (strength <= 0.0f) continue;
+            float log_strength = log10f(strength);
+            float arrow_length = 4.0f + 10.0f *
+                clamp((log_strength + 8.0f) / 7.0f, 0.0f, 1.0f);
             FishVec2 direction = {
                 field.x / strength,
                 field.y / strength,
@@ -1505,10 +1516,10 @@ void c_render(FishEnv* env) {
     ClearBackground(WHITE);
 
     Vector2 arena_min = world_to_screen(
-        env, (FishVec2){0.0, env->arena_size_cm.y}
+        env, (FishVec2){0.0f, env->arena_size_cm.y}
     );
     Vector2 arena_max = world_to_screen(
-        env, (FishVec2){env->arena_size_cm.x, 0.0}
+        env, (FishVec2){env->arena_size_cm.x, 0.0f}
     );
     DrawRectangleRec(
         (Rectangle){
@@ -1588,14 +1599,16 @@ void c_render(FishEnv* env) {
         if (env->client->show_sensors) {
             for (int sensor_idx = 0; sensor_idx < NUM_KNOLLEN;
                     sensor_idx++) {
-                double angle = uniform_sensor_angle(
+                float angle = uniform_sensor_angle(
                     (size_t)sensor_idx, NUM_KNOLLEN
                 );
                 FishSensor sensor = radial_sensor(
                     angle, fish->body_radius_cm
                 );
                 sensor = transform_sensor(
-                    sensor, fish->position_cm, fish->orientation
+                    sensor,
+                    fish->position_cm,
+                    (float)fish->orientation
                 );
                 DrawCircleV(
                     world_to_screen(env, sensor.position_cm),

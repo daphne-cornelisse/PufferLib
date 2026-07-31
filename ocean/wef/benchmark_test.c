@@ -3,14 +3,16 @@
  *
  * Creates a 4-fish arena, steps with seeded random actions, and reports
  * observations plus internal environment state. For each seed in {0,1,2},
- * runs the trajectory twice and asserts bit-identical results so biophysics
- * approximations can be checked against this baseline later without changing
- * the true physics.
+ * runs the trajectory twice and asserts bit-identical results, then compares
+ * fingerprints against the double-precision baseline at
+ * artifacts/wef/benchmark_baseline_fingerprints.txt so biophysics changes
+ * (e.g. double→float) are easy to detect.
  *
  * Build (standalone wef also builds this binary):
  *   ./build.sh wef --fast
  *   ./wef_benchmark_test
- * 
+ *   ./wef_benchmark_test --baseline path/to/fingerprints.txt
+ *
  * Manual build:
  *   clang -O2 -I./raylib-5.5_linux_amd64/include -I./src -I./vendor \
  *     -I./ocean/wef ocean/wef/benchmark_test.c \
@@ -36,7 +38,34 @@
 #define NUM_STEPS 100
 #define NUM_FOOD 16
 #define NUM_TEST_SEEDS 3
+#define DEFAULT_BASELINE_PATH "artifacts/wef/benchmark_baseline_fingerprints.txt"
+/* Reward / episode_return are multiples of 0.5; allow tiny float noise. */
+#define BASELINE_REWARD_ATOL 1e-5
+#define BASELINE_OBS_SUM_ATOL 1e-4
+#define BASELINE_OBS_SUM_RTOL 1e-6
+
 static const unsigned int TEST_SEEDS[NUM_TEST_SEEDS] = {0u, 1u, 2u};
+
+typedef struct SeedMetrics {
+    unsigned int seed;
+    double reward_sum;
+    double final_obs_sum;
+    int food_eaten;
+    float episode_return;
+    unsigned int rng_end;
+    uint64_t obs_fnv1a;
+    uint64_t rewards_fnv1a;
+    uint64_t actions_fnv1a;
+    uint64_t state_fnv1a;
+} SeedMetrics;
+
+typedef struct BaselineTable {
+    bool loaded;
+    char path[512];
+    char commit[128];
+    SeedMetrics seeds[NUM_TEST_SEEDS];
+    bool seed_present[NUM_TEST_SEEDS];
+} BaselineTable;
 
 /*
  * SPS benchmark sizing from config/wef.ini:
@@ -406,43 +435,31 @@ static void report_sps(const SpsResult* sps) {
     printf("  SPS=%.1f  (total env steps/sec, flattened over agents)\n", sps->sps);
 }
 
-static void report_trajectory(const TrajectorySnapshot* snap, unsigned int seed) {
+static SeedMetrics compute_metrics(
+    const TrajectorySnapshot* snap, unsigned int seed
+) {
+    SeedMetrics m = {0};
+    m.seed = seed;
     const size_t obs_n = (size_t)(NUM_STEPS + 1) * NUM_FISH * OBS_SIZE;
     const size_t rew_n = (size_t)NUM_STEPS * NUM_FISH;
     const size_t act_n = (size_t)NUM_STEPS * NUM_FISH * ACTION_SIZE;
     const float* final_obs =
         snap->observations + (size_t)NUM_STEPS * NUM_FISH * OBS_SIZE;
-    const float* final_rewards =
-        snap->rewards + (size_t)(NUM_STEPS - 1) * NUM_FISH;
-    const float* final_terminals =
-        snap->terminals + (size_t)(NUM_STEPS - 1) * NUM_FISH;
 
-    double obs_sum = 0.0;
-    double obs_min = final_obs[0];
-    double obs_max = final_obs[0];
     for (size_t i = 0; i < (size_t)NUM_FISH * OBS_SIZE; i++) {
-        double v = (double)final_obs[i];
-        obs_sum += v;
-        if (v < obs_min) obs_min = v;
-        if (v > obs_max) obs_max = v;
+        m.final_obs_sum += (double)final_obs[i];
     }
-
-    double reward_sum = 0.0;
-    double cumulative[NUM_FISH] = {0};
-    bool any_terminal = false;
     for (int t = 0; t < NUM_STEPS; t++) {
         for (int i = 0; i < NUM_FISH; i++) {
-            float r = snap->rewards[t * NUM_FISH + i];
-            float d = snap->terminals[t * NUM_FISH + i];
-            reward_sum += (double)r;
-            cumulative[i] += (double)r;
-            if (d != 0.0f) any_terminal = true;
+            m.reward_sum += (double)snap->rewards[t * NUM_FISH + i];
         }
     }
-
-    uint64_t obs_hash = hash_bytes(snap->observations, obs_n * sizeof(float));
-    uint64_t rew_hash = hash_bytes(snap->rewards, rew_n * sizeof(float));
-    uint64_t act_hash = hash_bytes(snap->actions, act_n * sizeof(float));
+    m.food_eaten = snap->food_eaten[NUM_STEPS];
+    m.episode_return = snap->episode_return[NUM_STEPS];
+    m.rng_end = snap->rng[NUM_STEPS];
+    m.obs_fnv1a = hash_bytes(snap->observations, obs_n * sizeof(float));
+    m.rewards_fnv1a = hash_bytes(snap->rewards, rew_n * sizeof(float));
+    m.actions_fnv1a = hash_bytes(snap->actions, act_n * sizeof(float));
     uint64_t state_hash = FNV_OFFSET;
     state_hash = fnv1a_update(state_hash, snap->agent_x, sizeof(snap->agent_x));
     state_hash = fnv1a_update(state_hash, snap->agent_y, sizeof(snap->agent_y));
@@ -455,6 +472,202 @@ static void report_trajectory(const TrajectorySnapshot* snap, unsigned int seed)
     state_hash = fnv1a_update(state_hash, snap->food_active, sizeof(snap->food_active));
     state_hash = fnv1a_update(state_hash, snap->tick, sizeof(snap->tick));
     state_hash = fnv1a_update(state_hash, snap->rng, sizeof(snap->rng));
+    m.state_fnv1a = state_hash;
+    return m;
+}
+
+static int seed_index(unsigned int seed) {
+    for (int i = 0; i < NUM_TEST_SEEDS; i++) {
+        if (TEST_SEEDS[i] == seed) return i;
+    }
+    return -1;
+}
+
+static bool parse_u64_hex(const char* s, uint64_t* out) {
+    char* end = NULL;
+    unsigned long long v = strtoull(s, &end, 0);
+    if (end == s) return false;
+    *out = (uint64_t)v;
+    return true;
+}
+
+static bool load_baseline(const char* path, BaselineTable* table) {
+    memset(table, 0, sizeof(*table));
+    snprintf(table->path, sizeof(table->path), "%s", path);
+
+    FILE* f = fopen(path, "r");
+    if (f == NULL) {
+        return false;
+    }
+
+    char line[512];
+    int current = -1;
+    while (fgets(line, sizeof(line), f) != NULL) {
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') {
+            if (strncmp(line, "# git_commit=", 13) == 0) {
+                snprintf(
+                    table->commit, sizeof(table->commit), "%s", line + 13
+                );
+                /* strip trailing newline */
+                size_t n = strlen(table->commit);
+                while (n > 0 &&
+                        (table->commit[n - 1] == '\n' ||
+                         table->commit[n - 1] == '\r')) {
+                    table->commit[--n] = '\0';
+                }
+            }
+            continue;
+        }
+
+        unsigned int seed = 0;
+        if (sscanf(line, "[seed %u]", &seed) == 1) {
+            current = seed_index(seed);
+            if (current >= 0) {
+                table->seed_present[current] = true;
+                table->seeds[current].seed = seed;
+            }
+            continue;
+        }
+        if (current < 0) continue;
+
+        char key[128];
+        char value[128];
+        if (sscanf(line, "%127[^=]=%127s", key, value) != 2) continue;
+
+        SeedMetrics* m = &table->seeds[current];
+        if (strcmp(key, "reward sum") == 0) {
+            m->reward_sum = strtod(value, NULL);
+        } else if (strcmp(key, "final observation sum") == 0) {
+            m->final_obs_sum = strtod(value, NULL);
+        } else if (strcmp(key, "food_eaten") == 0) {
+            m->food_eaten = (int)strtol(value, NULL, 10);
+        } else if (strcmp(key, "episode_return") == 0) {
+            m->episode_return = (float)strtod(value, NULL);
+        } else if (strcmp(key, "rng") == 0) {
+            m->rng_end = (unsigned int)strtoul(value, NULL, 10);
+        } else if (strcmp(key, "obs_fnv1a") == 0) {
+            parse_u64_hex(value, &m->obs_fnv1a);
+        } else if (strcmp(key, "rewards_fnv1a") == 0) {
+            parse_u64_hex(value, &m->rewards_fnv1a);
+        } else if (strcmp(key, "actions_fnv1a") == 0) {
+            parse_u64_hex(value, &m->actions_fnv1a);
+        } else if (strcmp(key, "state_fnv1a") == 0) {
+            parse_u64_hex(value, &m->state_fnv1a);
+        }
+    }
+    fclose(f);
+    table->loaded = true;
+    return true;
+}
+
+static bool float_close(double a, double b, double atol, double rtol) {
+    double diff = fabs(a - b);
+    return diff <= atol + rtol * fmax(fabs(a), fabs(b));
+}
+
+/* Returns number of mismatched fields (0 = match). */
+static int compare_to_baseline(
+    const SeedMetrics* got, const BaselineTable* baseline
+) {
+    int idx = seed_index(got->seed);
+    if (idx < 0 || !baseline->loaded || !baseline->seed_present[idx]) {
+        printf("  baseline:  MISSING seed=%u in %s\n", got->seed, baseline->path);
+        return 1;
+    }
+    const SeedMetrics* exp = &baseline->seeds[idx];
+    int mismatches = 0;
+
+    printf("  baseline compare (commit %s):\n",
+        baseline->commit[0] ? baseline->commit : "?");
+
+    #define CHECK_EXACT_U64(name, field) do { \
+        bool ok = (got->field == exp->field); \
+        printf("    %-22s got=0x%016llx  exp=0x%016llx  %s\n", \
+            name, \
+            (unsigned long long)got->field, \
+            (unsigned long long)exp->field, \
+            ok ? "MATCH" : "DIFF"); \
+        if (!ok) mismatches++; \
+    } while (0)
+
+    #define CHECK_EXACT_INT(name, field) do { \
+        bool ok = (got->field == exp->field); \
+        printf("    %-22s got=%d  exp=%d  %s\n", \
+            name, (int)got->field, (int)exp->field, ok ? "MATCH" : "DIFF"); \
+        if (!ok) mismatches++; \
+    } while (0)
+
+    #define CHECK_EXACT_UINT(name, field) do { \
+        bool ok = (got->field == exp->field); \
+        printf("    %-22s got=%u  exp=%u  %s\n", \
+            name, (unsigned)got->field, (unsigned)exp->field, \
+            ok ? "MATCH" : "DIFF"); \
+        if (!ok) mismatches++; \
+    } while (0)
+
+    #define CHECK_CLOSE(name, field, atol, rtol) do { \
+        bool ok = float_close( \
+            (double)got->field, (double)exp->field, atol, rtol); \
+        printf("    %-22s got=%.17g  exp=%.17g  diff=%.3g  %s\n", \
+            name, (double)got->field, (double)exp->field, \
+            fabs((double)got->field - (double)exp->field), \
+            ok ? "MATCH" : "DIFF"); \
+        if (!ok) mismatches++; \
+    } while (0)
+
+    CHECK_EXACT_U64("actions_fnv1a", actions_fnv1a);
+    CHECK_EXACT_U64("obs_fnv1a", obs_fnv1a);
+    CHECK_EXACT_U64("rewards_fnv1a", rewards_fnv1a);
+    CHECK_EXACT_U64("state_fnv1a", state_fnv1a);
+    CHECK_EXACT_INT("food_eaten", food_eaten);
+    CHECK_EXACT_UINT("rng", rng_end);
+    CHECK_CLOSE("reward sum", reward_sum, BASELINE_REWARD_ATOL, 0.0);
+    CHECK_CLOSE(
+        "episode_return", episode_return, BASELINE_REWARD_ATOL, 0.0
+    );
+    CHECK_CLOSE(
+        "final observation sum",
+        final_obs_sum,
+        BASELINE_OBS_SUM_ATOL,
+        BASELINE_OBS_SUM_RTOL
+    );
+
+    #undef CHECK_EXACT_U64
+    #undef CHECK_EXACT_INT
+    #undef CHECK_EXACT_UINT
+    #undef CHECK_CLOSE
+
+    printf("    baseline fields mismatched: %d\n", mismatches);
+    return mismatches;
+}
+
+static void report_trajectory(
+    const TrajectorySnapshot* snap, unsigned int seed, const SeedMetrics* metrics
+) {
+    const size_t obs_n = (size_t)(NUM_STEPS + 1) * NUM_FISH * OBS_SIZE;
+    const float* final_obs =
+        snap->observations + (size_t)NUM_STEPS * NUM_FISH * OBS_SIZE;
+    const float* final_rewards =
+        snap->rewards + (size_t)(NUM_STEPS - 1) * NUM_FISH;
+    const float* final_terminals =
+        snap->terminals + (size_t)(NUM_STEPS - 1) * NUM_FISH;
+
+    double obs_min = final_obs[0];
+    double obs_max = final_obs[0];
+    for (size_t i = 0; i < (size_t)NUM_FISH * OBS_SIZE; i++) {
+        double v = (double)final_obs[i];
+        if (v < obs_min) obs_min = v;
+        if (v > obs_max) obs_max = v;
+    }
+
+    double cumulative[NUM_FISH] = {0};
+    bool any_terminal = false;
+    for (int t = 0; t < NUM_STEPS; t++) {
+        for (int i = 0; i < NUM_FISH; i++) {
+            cumulative[i] += (double)snap->rewards[t * NUM_FISH + i];
+            if (snap->terminals[t * NUM_FISH + i] != 0.0f) any_terminal = true;
+        }
+    }
 
     printf("------------------------------------------------------------\n");
     printf("seed=%u\n", seed);
@@ -467,9 +680,9 @@ static void report_trajectory(const TrajectorySnapshot* snap, unsigned int seed)
     printf("\n");
     printf("  observations finite=%s\n",
         all_finite_float(snap->observations, obs_n) ? "true" : "false");
-    printf("  final observation sum=%.17g\n", obs_sum);
+    printf("  final observation sum=%.17g\n", metrics->final_obs_sum);
     printf("  final observation min/max=%.17g / %.17g\n", obs_min, obs_max);
-    printf("  reward sum=%.17g\n", reward_sum);
+    printf("  reward sum=%.17g\n", metrics->reward_sum);
     printf("  cumulative rewards per fish=[");
     for (int i = 0; i < NUM_FISH; i++) {
         printf("%s%.17g", i ? ", " : "", cumulative[i]);
@@ -479,17 +692,17 @@ static void report_trajectory(const TrajectorySnapshot* snap, unsigned int seed)
 
     printf("\n");
     printf("  final tick=%d\n", snap->tick[NUM_STEPS]);
-    printf("  food_eaten=%d\n", snap->food_eaten[NUM_STEPS]);
+    printf("  food_eaten=%d\n", metrics->food_eaten);
     printf("  collisions_fish=%d\n", snap->collisions_fish[NUM_STEPS]);
     printf("  eod_agent_steps=%d\n", snap->eod_agent_steps[NUM_STEPS]);
-    printf("  episode_return=%.17g\n", (double)snap->episode_return[NUM_STEPS]);
-    printf("  rng=%u\n", snap->rng[NUM_STEPS]);
+    printf("  episode_return=%.17g\n", (double)metrics->episode_return);
+    printf("  rng=%u\n", metrics->rng_end);
 
     printf("\n");
-    printf("  obs_fnv1a=0x%016llx\n", (unsigned long long)obs_hash);
-    printf("  rewards_fnv1a=0x%016llx\n", (unsigned long long)rew_hash);
-    printf("  actions_fnv1a=0x%016llx\n", (unsigned long long)act_hash);
-    printf("  state_fnv1a=0x%016llx\n", (unsigned long long)state_hash);
+    printf("  obs_fnv1a=0x%016llx\n", (unsigned long long)metrics->obs_fnv1a);
+    printf("  rewards_fnv1a=0x%016llx\n", (unsigned long long)metrics->rewards_fnv1a);
+    printf("  actions_fnv1a=0x%016llx\n", (unsigned long long)metrics->actions_fnv1a);
+    printf("  state_fnv1a=0x%016llx\n", (unsigned long long)metrics->state_fnv1a);
 
     printf("\n");
     printf("  final environment state (agents):\n");
@@ -551,7 +764,13 @@ static void report_trajectory(const TrajectorySnapshot* snap, unsigned int seed)
     printf("]\n");
 }
 
-static int run_seed(unsigned int seed, TrajectorySnapshot* a, TrajectorySnapshot* b) {
+static int run_seed(
+    unsigned int seed,
+    TrajectorySnapshot* a,
+    TrajectorySnapshot* b,
+    const BaselineTable* baseline,
+    bool require_baseline_match
+) {
     memset(a, 0, sizeof(*a));
     memset(b, 0, sizeof(*b));
 
@@ -573,11 +792,32 @@ static int run_seed(unsigned int seed, TrajectorySnapshot* a, TrajectorySnapshot
         failed = 1;
     }
 
-    report_trajectory(a, seed);
+    SeedMetrics metrics = compute_metrics(a, seed);
+    report_trajectory(a, seed, &metrics);
+
+    printf("\n");
+    int baseline_mismatches = 0;
+    if (baseline != NULL && baseline->loaded) {
+        baseline_mismatches = compare_to_baseline(&metrics, baseline);
+        if (require_baseline_match && baseline_mismatches > 0) {
+            failed = 1;
+        }
+    } else {
+        printf("  baseline:  skipped (file not loaded)\n");
+    }
 
     printf("\n");
     if (failed) {
         printf("  seed=%u RESULT: FAIL\n", seed);
+    } else if (baseline != NULL && baseline->loaded && baseline_mismatches == 0) {
+        printf("  seed=%u RESULT: PASS (deterministic, finite, matches baseline)\n",
+            seed);
+    } else if (baseline != NULL && baseline->loaded) {
+        printf(
+            "  seed=%u RESULT: PASS_DETERMINISM "
+            "(finite + self-consistent; baseline DIFF — outcomes changed)\n",
+            seed
+        );
     } else {
         printf("  seed=%u RESULT: PASS (deterministic, finite)\n", seed);
     }
@@ -585,7 +825,24 @@ static int run_seed(unsigned int seed, TrajectorySnapshot* a, TrajectorySnapshot
     return failed;
 }
 
-static int run_test(void) {
+static void print_usage(const char* argv0) {
+    printf(
+        "Usage: %s [--baseline PATH] [--require-baseline-match] [--skip-sps]\n"
+        "\n"
+        "  --baseline PATH              Fingerprint file to compare against\n"
+        "                               (default: %s)\n"
+        "  --require-baseline-match     Exit non-zero if any baseline field differs\n"
+        "                               (default: only determinism/finite fail the run;\n"
+        "                               baseline diffs are still printed)\n"
+        "  --skip-sps                   Skip the multi-env SPS timing section\n",
+        argv0,
+        DEFAULT_BASELINE_PATH
+    );
+}
+
+static int run_test(
+    const char* baseline_path, bool require_baseline_match, bool skip_sps
+) {
     TrajectorySnapshot* a = (TrajectorySnapshot*)calloc(1, sizeof(TrajectorySnapshot));
     TrajectorySnapshot* b = (TrajectorySnapshot*)calloc(1, sizeof(TrajectorySnapshot));
     if (a == NULL || b == NULL) {
@@ -595,6 +852,17 @@ static int run_test(void) {
         return 1;
     }
 
+    BaselineTable baseline = {0};
+    if (baseline_path != NULL) {
+        if (!load_baseline(baseline_path, &baseline)) {
+            fprintf(
+                stderr,
+                "warning: could not load baseline fingerprints from %s\n",
+                baseline_path
+            );
+        }
+    }
+
     printf("wef numerical stability (C)\n");
     printf("\n");
     printf("  seeds=");
@@ -602,22 +870,44 @@ static int run_test(void) {
         printf("%s%u", i ? "," : "", TEST_SEEDS[i]);
     }
     printf("  steps=%d  num_agents=%d\n", NUM_STEPS, NUM_FISH);
+    if (baseline.loaded) {
+        printf("  baseline=%s\n", baseline.path);
+        if (baseline.commit[0]) {
+            printf("  baseline_commit=%s\n", baseline.commit);
+        }
+        printf(
+            "  require_baseline_match=%s\n",
+            require_baseline_match ? "true" : "false"
+        );
+    } else {
+        printf("  baseline=none\n");
+    }
     printf("\n");
 
-    SpsResult sps = measure_sps();
-    report_sps(&sps);
-    printf("\n");
+    if (!skip_sps) {
+        SpsResult sps = measure_sps();
+        report_sps(&sps);
+        printf("\n");
+    }
 
     int failed = 0;
+    int baseline_failed_seeds = 0;
     for (int i = 0; i < NUM_TEST_SEEDS; i++) {
-        failed |= run_seed(TEST_SEEDS[i], a, b);
+        int before = failed;
+        failed |= run_seed(
+            TEST_SEEDS[i], a, b, &baseline, require_baseline_match
+        );
+        if (require_baseline_match && failed != before) {
+            baseline_failed_seeds++;
+        }
+        (void)baseline_failed_seeds;
     }
 
     printf("============================================================\n");
     if (failed) {
         printf("OVERALL RESULT: FAIL\n");
     } else {
-        printf("OVERALL RESULT: PASS (all seeds deterministic, finite)\n");
+        printf("OVERALL RESULT: PASS\n");
     }
 
     free(a);
@@ -626,7 +916,26 @@ static int run_test(void) {
 }
 
 int main(int argc, char** argv) {
-    (void)argc;
-    (void)argv;
-    return run_test();
+    const char* baseline_path = DEFAULT_BASELINE_PATH;
+    bool require_baseline_match = false;
+    bool skip_sps = false;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--baseline") == 0 && i + 1 < argc) {
+            baseline_path = argv[++i];
+        } else if (strcmp(argv[i], "--require-baseline-match") == 0) {
+            require_baseline_match = true;
+        } else if (strcmp(argv[i], "--skip-sps") == 0) {
+            skip_sps = true;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        } else {
+            fprintf(stderr, "unknown argument: %s\n", argv[i]);
+            print_usage(argv[0]);
+            return 2;
+        }
+    }
+
+    return run_test(baseline_path, require_baseline_match, skip_sps);
 }
