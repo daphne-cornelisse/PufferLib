@@ -67,6 +67,9 @@
 #define MORMYROMAST_MAX_VM 5e-2f
 #define KNOLLEN_MIN_VM 2e-7f
 
+// Approximate influence range for first-order wall images (cm) for electric field calculations.
+#define REFLECTION_WALL_RANGE_CM 100.0f
+
 typedef struct FishVec2 {
     float x;
     float y;
@@ -92,12 +95,12 @@ typedef enum FishMotionOrder {
     MOTION_SECOND_ORDER = 2,
 } FishMotionOrder;
 
-typedef enum FishWall {
-    WALL_LEFT = 0,
-    WALL_RIGHT = 1,
-    WALL_BOTTOM = 2,
-    WALL_TOP = 3,
-} FishWall;
+/* Arena wall indices for first-order image charges. */
+#define WALL_LEFT 0
+#define WALL_RIGHT 1
+#define WALL_BOTTOM 2
+#define WALL_TOP 3
+#define NUM_WALLS 4
 
 typedef struct FishMovement {
     FishVec2 position_cm;
@@ -175,7 +178,6 @@ FishSensor transform_sensor(FishSensor local, FishVec2 origin_cm, float angle) {
 }
 
 // Biophysics and dynamics 
-
 FishMotionProposal propose_motion(
     const FishMovement* fish,
     float move_command,
@@ -422,7 +424,64 @@ FishVec2 induce_dipole_moment(
     };
 }
 
-// Field from the original sources plus their four first-order wall images.
+/* Perpendicular distance from a point to a rectangular arena wall. */
+static inline float distance_to_wall_cm(
+    FishVec2 position_cm, FishVec2 arena_size_cm, int wall
+) {
+    if (wall == WALL_LEFT) return position_cm.x;
+    if (wall == WALL_RIGHT) return arena_size_cm.x - position_cm.x;
+    if (wall == WALL_BOTTOM) return position_cm.y;
+    if (wall == WALL_TOP) return arena_size_cm.y - position_cm.y;
+    return 0.0f;
+}
+
+/*
+ * Reflect a source across one arena wall (shared by monopoles and dipoles).
+ * position_cm is always updated. If moment_c_m is non-NULL (dipole), its normal
+ * component is flipped when requested and both components are scaled. If
+ * charge_c is non-NULL (monopole), charge is scaled (and optionally sign-flipped).
+ */
+static inline void reflect_source_across_wall(
+    FishVec2* position_cm,
+    FishVec2* moment_c_m,
+    float* charge_c,
+    FishVec2 arena_size_cm,
+    int wall,
+    float reflection_scale,
+    bool flip_on_reflection
+) {
+    if (wall == WALL_LEFT) {
+        position_cm->x = -position_cm->x;
+        if (moment_c_m != NULL && flip_on_reflection) {
+            moment_c_m->x = -moment_c_m->x;
+        }
+    } else if (wall == WALL_RIGHT) {
+        position_cm->x = 2.0f * arena_size_cm.x - position_cm->x;
+        if (moment_c_m != NULL && flip_on_reflection) {
+            moment_c_m->x = -moment_c_m->x;
+        }
+    } else if (wall == WALL_BOTTOM) {
+        position_cm->y = -position_cm->y;
+        if (moment_c_m != NULL && flip_on_reflection) {
+            moment_c_m->y = -moment_c_m->y;
+        }
+    } else if (wall == WALL_TOP) {
+        position_cm->y = 2.0f * arena_size_cm.y - position_cm->y;
+        if (moment_c_m != NULL && flip_on_reflection) {
+            moment_c_m->y = -moment_c_m->y;
+        }
+    }
+
+    if (charge_c != NULL) {
+        *charge_c *= reflection_scale * (flip_on_reflection ? -1.0f : 1.0f);
+    }
+    if (moment_c_m != NULL) {
+        moment_c_m->x *= reflection_scale;
+        moment_c_m->y *= reflection_scale;
+    }
+}
+
+// Field from the original sources plus first-order wall images (near walls only).
 FishVec2 measure_electric_field_with_reflections(
     FishVec2 measurement_position_cm,
     const FishMonopole* monopoles,
@@ -440,22 +499,35 @@ FishVec2 measure_electric_field_with_reflections(
         dipoles, num_dipoles,
         eps_m
     );
-    for (int wall = WALL_LEFT; wall <= WALL_TOP; wall++) {
+
+    /* Collect wall indices within range once, then only loop those. */
+    int near_walls[NUM_WALLS];
+    int num_near_walls = 0;
+    for (int wall = 0; wall < NUM_WALLS; wall++) {
+        float dist = distance_to_wall_cm(
+            measurement_position_cm, arena_size_cm, wall
+        );
+        if (dist <= REFLECTION_WALL_RANGE_CM) {
+            near_walls[num_near_walls++] = wall;
+        }
+    }
+    if (num_near_walls == 0) {
+        return field;
+    }
+
+    for (int w = 0; w < num_near_walls; w++) {
+        int wall = near_walls[w];
         for (size_t i = 0; i < num_monopoles; i++) {
             FishMonopole image = monopoles[i];
-            if (wall == WALL_LEFT) {
-                image.position_cm.x = -image.position_cm.x;
-            } else if (wall == WALL_RIGHT) {
-                image.position_cm.x =
-                    2.0f * arena_size_cm.x - image.position_cm.x;
-            } else if (wall == WALL_BOTTOM) {
-                image.position_cm.y = -image.position_cm.y;
-            } else {
-                image.position_cm.y =
-                    2.0f * arena_size_cm.y - image.position_cm.y;
-            }
-            image.charge_c *=
-                reflection_scale * (flip_on_reflection ? -1.0f : 1.0f);
+            reflect_source_across_wall(
+                &image.position_cm,
+                NULL,
+                &image.charge_c,
+                arena_size_cm,
+                wall,
+                reflection_scale,
+                flip_on_reflection
+            );
             FishVec2 contribution = measure_electric_field(
                 measurement_position_cm, &image, 1, NULL, 0, eps_m
             );
@@ -464,31 +536,15 @@ FishVec2 measure_electric_field_with_reflections(
         }
         for (size_t i = 0; i < num_dipoles; i++) {
             FishDipole image = dipoles[i];
-            if (wall == WALL_LEFT) {
-                image.position_cm.x = -image.position_cm.x;
-                if (flip_on_reflection) {
-                    image.moment_c_m.x = -image.moment_c_m.x;
-                }
-            } else if (wall == WALL_RIGHT) {
-                image.position_cm.x =
-                    2.0f * arena_size_cm.x - image.position_cm.x;
-                if (flip_on_reflection) {
-                    image.moment_c_m.x = -image.moment_c_m.x;
-                }
-            } else if (wall == WALL_BOTTOM) {
-                image.position_cm.y = -image.position_cm.y;
-                if (flip_on_reflection) {
-                    image.moment_c_m.y = -image.moment_c_m.y;
-                }
-            } else {
-                image.position_cm.y =
-                    2.0f * arena_size_cm.y - image.position_cm.y;
-                if (flip_on_reflection) {
-                    image.moment_c_m.y = -image.moment_c_m.y;
-                }
-            }
-            image.moment_c_m.x *= reflection_scale;
-            image.moment_c_m.y *= reflection_scale;
+            reflect_source_across_wall(
+                &image.position_cm,
+                &image.moment_c_m,
+                NULL,
+                arena_size_cm,
+                wall,
+                reflection_scale,
+                flip_on_reflection
+            );
             FishVec2 contribution = measure_electric_field(
                 measurement_position_cm, NULL, 0, &image, 1, eps_m
             );
