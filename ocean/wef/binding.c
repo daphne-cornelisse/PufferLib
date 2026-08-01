@@ -9,11 +9,12 @@
 
 void my_init(Env* env, Dict* kwargs) {
     env->num_agents = (int)dict_get(kwargs, "num_agents")->value;
-    env->min_arena_size_cm.x = dict_get(kwargs, "min_arena_width")->value;
-    env->min_arena_size_cm.y = dict_get(kwargs, "min_arena_height")->value;
-    env->max_arena_size_cm.x = dict_get(kwargs, "max_arena_width")->value;
-    env->max_arena_size_cm.y = dict_get(kwargs, "max_arena_height")->value;
-    env->arena_size_cm = env->min_arena_size_cm;
+    env->min_arena_size_x = dict_get(kwargs, "min_arena_width")->value;
+    env->min_arena_size_y = dict_get(kwargs, "min_arena_height")->value;
+    env->max_arena_size_x = dict_get(kwargs, "max_arena_width")->value;
+    env->max_arena_size_y = dict_get(kwargs, "max_arena_height")->value;
+    env->arena_size_x = env->min_arena_size_x;
+    env->arena_size_y = env->min_arena_size_y;
     env->food_distribution = (FoodDistribution)(int)dict_get(kwargs, "food_distribution")->value;
     env->configured_num_food = (int)dict_get(kwargs, "num_food")->value;
     env->patch_radius_cm = dict_get(kwargs, "patch_radius")->value;
