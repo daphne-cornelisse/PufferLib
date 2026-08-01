@@ -69,8 +69,10 @@
 
 // Approximate influence range for first-order wall images (cm) for electric field 
 // calculations. Reducing this will speed up the simulation but may reduce accuracy
-// near walls.
+// near walls. Override at compile time: -DREFLECTION_WALL_RANGE_CM=30.0f
+#ifndef REFLECTION_WALL_RANGE_CM
 #define REFLECTION_WALL_RANGE_CM 100.0f
+#endif
 
 #define MOTION_FIRST_ORDER 1
 #define MOTION_SECOND_ORDER 2
@@ -378,8 +380,7 @@ void measure_electric_field(
         float ox = measurement_mx - source_mx;
         float oy = measurement_my - source_my;
         float distance = vec_length(ox, oy) + eps_m;
-        float weight =
-            K_COULOMB * mono_q[i] / (distance * distance * distance);
+        float weight = K_COULOMB * mono_q[i] / (distance * distance * distance);
         field_x += ox * weight;
         field_y += oy * weight;
     }
@@ -417,7 +418,7 @@ void induce_dipole_moment(
     *out_y = external_field_y * scale;
 }
 
-/* Perpendicular distance from a point to a rectangular arena wall. */
+// Perpendicular distance from a point to a rectangular arena wall. 
 static inline float distance_to_wall_cm(
     float pos_x, float pos_y, float arena_size_x, float arena_size_y, int wall
 ) {
@@ -862,7 +863,7 @@ void compute_observations(FishEnv* env) {
     for (int i = 0; i < env->num_agents; i++) {
         FishAgent* agent = &env->agents[i];
         float* obs = env->observations + i * OBS_SIZE;
-        int cursor = 0;
+        int obs_idx = 0;
 
         bool cons_eod = false;
         for (int other = 0; other < env->num_agents; other++) {
@@ -881,8 +882,7 @@ void compute_observations(FishEnv* env) {
                 agent->pos_x, agent->pos_y, agent->orientation,
                 &sx, &sy, &snx, &sny
             );
-            float fx, fy;
-            measure_electric_field_with_reflections(
+            float fx, fy; measure_electric_field_with_reflections(
                 sx, sy,
                 NULL, NULL, NULL, 0,
                 ind_x, ind_y, ind_mx, ind_my, (size_t)n_induced,
@@ -894,7 +894,7 @@ void compute_observations(FishEnv* env) {
                 reading *= 100.0f;
             }
             reading *= random_multiplier(env, 0.05f);
-            obs[cursor++] = normalize_sensor_reading(
+            obs[obs_idx++] = normalize_sensor_reading(
                 reading, MORMYROMAST_MIN_VM,
                 MORMYROMAST_MAX_VM, SENSOR_EPS
             );
@@ -921,7 +921,7 @@ void compute_observations(FishEnv* env) {
                 project_field(fx, fy, snx, sny) -
                 env->amp_intrinsic_baseline[sensor_idx];
             reading *= random_multiplier(env, cons_eod ? 0.5f : 0.05f);
-            obs[cursor++] = normalize_sensor_reading(
+            obs[obs_idx++] = normalize_sensor_reading(
                 reading, AMPULLARY_MIN_VM,
                 AMPULLARY_MAX_VM, SENSOR_EPS
             );
@@ -963,10 +963,10 @@ void compute_observations(FishEnv* env) {
                         ? 0.0f
                         : (raw_knollen < 0.0f ? -1.0f : 1.0f);
                 }
-                obs[cursor++] = value;
+                obs[obs_idx++] = value;
             }
             bool detected = false;
-            int block_start = cursor - NUM_KNOLLEN;
+            int block_start = obs_idx - NUM_KNOLLEN;
             for (int k = 0; k < NUM_KNOLLEN; k++) {
                 if (obs[block_start + k] != 0.0f) {
                     detected = true;
@@ -983,24 +983,24 @@ void compute_observations(FishEnv* env) {
             cons_slot++;
         }
         while (cons_slot < MAX_AGENTS - 1) {
-            for (int k = 0; k < NUM_KNOLLEN; k++) obs[cursor++] = 0.0f;
+            for (int k = 0; k < NUM_KNOLLEN; k++) obs[obs_idx++] = 0.0f;
             obs[metadata_start + cons_slot++] = 0.0f;
         }
-        cursor = metadata_start + MAX_AGENTS - 1;
+        obs_idx = metadata_start + MAX_AGENTS - 1;
 
         for (int action_idx = 0; action_idx < ACTION_SIZE; action_idx++) {
-            obs[cursor++] = agent->last_action[action_idx];
+            obs[obs_idx++] = agent->last_action[action_idx];
         }
-        obs[cursor++] = 0.0f; /* fatigue, retained for upstream layout */
-        obs[cursor++] = agent->was_bitten ? 1.0f : 0.0f;
-        obs[cursor++] = agent->size;
-        obs[cursor++] =
+        obs[obs_idx++] = 0.0f; /* fatigue, retained for upstream layout */
+        obs[obs_idx++] = agent->was_bitten ? 1.0f : 0.0f;
+        obs[obs_idx++] = agent->size;
+        obs[obs_idx++] =
             (float)agent->bite_cooldown / (float)BITE_COOLDOWN_STEPS;
-        obs[cursor++] = clamp(
+        obs[obs_idx++] = clamp(
             agent->disp_ego_x / agent->max_linear_velocity, -1.0f, 1.0f);
-        obs[cursor++] = clamp(
+        obs[obs_idx++] = clamp(
             agent->disp_ego_y / agent->max_linear_velocity, -1.0f, 1.0f);
-        obs[cursor++] =
+        obs[obs_idx++] =
             (float)agent->eat_cooldown / (float)EAT_COOLDOWN_STEPS;
     }
 }
