@@ -95,7 +95,7 @@ typedef enum FishMotionOrder {
     MOTION_SECOND_ORDER = 2,
 } FishMotionOrder;
 
-/* Arena wall indices for first-order image charges. */
+// Arena wall indices for first-order image charges. 
 #define WALL_LEFT 0
 #define WALL_RIGHT 1
 #define WALL_BOTTOM 2
@@ -684,8 +684,6 @@ typedef struct FishFood {
 typedef enum FoodDistribution {
     FOOD_UNIFORM,
     FOOD_PATCHY,
-    FOOD_N_PATCH,
-    FOOD_ONE_PATCH,
     FOOD_RANDOM,
 } FoodDistribution;
 
@@ -707,11 +705,9 @@ typedef struct FishEnv {
     FoodDistribution food_distribution;
     FoodDistribution active_food_distribution;
     int configured_num_food;
-    int fixed_num_patches;
     float patch_radius_cm;
     float patch_radius_std_cm;
     float patch_density;
-    float placement_radius_frac;
     FishAgentState agents[MAX_AGENTS];
     FishFood food[MAX_FOOD];
     int num_food;
@@ -760,15 +756,9 @@ void init(FishEnv* env) {
     if (env->configured_num_food > MAX_FOOD) {
         env->configured_num_food = MAX_FOOD;
     }
-    if (env->fixed_num_patches <= 0) env->fixed_num_patches = 4;
     if (env->patch_radius_cm <= 0.0f) env->patch_radius_cm = 6.0f;
     if (env->patch_radius_std_cm < 0.0f) env->patch_radius_std_cm = 1.5f;
     if (env->patch_density <= 0.0f) env->patch_density = 0.001f;
-    if (env->placement_radius_frac <= 0.0f) {
-        env->placement_radius_frac = 0.75f;
-    }
-    env->placement_radius_frac =
-        clamp(env->placement_radius_frac, 0.0f, 1.0f);
     if (env->food_distribution < FOOD_UNIFORM ||
             env->food_distribution > FOOD_RANDOM) {
         env->food_distribution = FOOD_UNIFORM;
@@ -1099,18 +1089,18 @@ void build_electric_scene(FishEnv* env) {
 
 void c_reset(FishEnv* env) {
     init(env);
+
+    // Sample arena size 
     env->arena_size_cm = (FishVec2){
-        random_uniform(
-            env, env->min_arena_size_cm.x, env->max_arena_size_cm.x
-        ),
-        random_uniform(
-            env, env->min_arena_size_cm.y, env->max_arena_size_cm.y
-        ),
+        random_uniform(env, env->min_arena_size_cm.x, env->max_arena_size_cm.x),
+        random_uniform(env, env->min_arena_size_cm.y, env->max_arena_size_cm.y),
     };
+
+    // Sample food distribution (if random) and reset episode state
     env->active_food_distribution = env->food_distribution;
     if (env->food_distribution == FOOD_RANDOM) {
         env->active_food_distribution =
-            (FoodDistribution)(rand_r(&env->rng) % 4);
+            (FoodDistribution)(rand_r(&env->rng) % 2);
     }
     env->tick = 0;
     env->food_eaten = 0;
@@ -1118,6 +1108,7 @@ void c_reset(FishEnv* env) {
     env->collisions_fish = 0;
     env->episode_return = 0.0f;
 
+    // Initialize agents with random positions and orientations, avoiding overlaps
     for (int i = 0; i < env->num_agents; i++) {
         FishAgentState agent = {0};
         agent.size = random_uniform(env, 0.0f, 1.0f);
@@ -1193,43 +1184,6 @@ void c_reset(FishEnv* env) {
             patch_weights[i] = patch_radii[i] * patch_radii[i];
             total_patch_weight += patch_weights[i];
         }
-    } else if (env->active_food_distribution == FOOD_N_PATCH) {
-        num_patches = (int)clamp(
-            env->fixed_num_patches, 1, MAX_PATCHES
-        );
-        float initial_angle = random_uniform(env, 0.0f, 2.0f * PI_F);
-        for (int i = 0; i < num_patches; i++) {
-            float angle =
-                initial_angle + 2.0f * PI_F * i / num_patches;
-            patch_centers[i] = (FishVec2){
-                env->arena_size_cm.x * 0.5f *
-                    (1.0f + env->placement_radius_frac * cosf(angle)),
-                env->arena_size_cm.y * 0.5f *
-                    (1.0f + env->placement_radius_frac * sinf(angle)),
-            };
-            patch_radii[i] = fminf(env->patch_radius_cm, minimum_edge / 2.0f);
-            patch_weights[i] = patch_radii[i] * patch_radii[i];
-            total_patch_weight += patch_weights[i];
-        }
-    } else if (env->active_food_distribution == FOOD_ONE_PATCH) {
-        num_patches = 1;
-        patch_centers[0] = (FishVec2){
-            env->arena_size_cm.x / 2.0f,
-            env->arena_size_cm.y / 2.0f,
-        };
-        float u1 = fmaxf(
-            random_uniform(env, 0.0f, 1.0f), 1.0f / (float)RAND_MAX
-        );
-        float u2 = random_uniform(env, 0.0f, 1.0f);
-        float normal_sample =
-            sqrtf(-2.0f * logf(u1)) * cosf(2.0f * PI_F * u2);
-        patch_radii[0] = clamp(
-            env->patch_radius_cm +
-                normal_sample * env->patch_radius_std_cm,
-            0.1f, minimum_edge / 2.0f
-        );
-        patch_weights[0] = patch_radii[0] * patch_radii[0];
-        total_patch_weight = patch_weights[0];
     }
 
     env->num_food = env->configured_num_food;
@@ -1329,13 +1283,14 @@ void c_step(FishEnv* env) {
     env->tick++;
     
     // Reset agent state variables
+    // NOTE(DC): zeroing out rewards and terminals is already done in vecenv, shall we delete it here?
     for (int i = 0; i < env->num_agents; i++) {
         env->agents[i].was_bitten = false;
         env->agents[i].ate_food = false;
         env->rewards[i] = 0.0f;
         env->terminals[i] = 0.0f;
     }
-
+    // What does this do?
     for (int food_idx = 0; food_idx < env->num_food; food_idx++) {
         if (!env->food[food_idx].active) continue;
         FishFoodMotion* food = &env->food[food_idx].motion;
