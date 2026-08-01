@@ -67,8 +67,9 @@
 #define MORMYROMAST_MAX_VM 5e-2f
 #define KNOLLEN_MIN_VM 2e-7f
 
-// Approximate influence range for first-order 
-// wall images (cm) for electric field calculations.
+// Approximate influence range for first-order wall images (cm) for electric field 
+// calculations. Reducing this will speed up the simulation but may reduce accuracy
+// near walls.
 #define REFLECTION_WALL_RANGE_CM 100.0f
 
 #define MOTION_FIRST_ORDER 1
@@ -81,16 +82,7 @@
 #define WALL_TOP 3
 #define NUM_WALLS 4
 
-/* Temporary propose/commit payload for agent motion. */
-typedef struct FishMotionProposal {
-    float pos_x;
-    float pos_y;
-    float orientation;
-    float linear_velocity;
-    float angular_velocity;
-} FishMotionProposal;
-
-// All fish agent attributes: pose, dynamics, electric sources, sensors, actions.
+// All fish agent attributes: pose, dynamics, electric sources, sensors, actions
 typedef struct FishAgent {
     float pos_x;
     float pos_y;
@@ -166,12 +158,10 @@ float clamp(float value, float minimum, float maximum) {
     return fminf(maximum, fmaxf(minimum, value));
 }
 
-/* Stable wrap to [-pi, pi], identical to movement._wrap_angle. */
 float wrap_angle(float angle) {
     return atan2f(sinf(angle), cosf(angle));
 }
 
-/* Rotate a vector; add translation separately when transforming a position. */
 void rotate(float x, float y, float angle, float* out_x, float* out_y) {
     float c = cosf(angle);
     float s = sinf(angle);
@@ -206,67 +196,63 @@ void world_sensor(
 }
 
 float project_field(
-    float field_x, float field_y, float normal_x, float normal_y
-) {
+    float field_x, float field_y, float normal_x, float normal_y) {
     return field_x * normal_x + field_y * normal_y;
 }
 
-FishMotionProposal propose_motion(
-    const FishAgent* fish,
+// Integrate commanded motion onto the agent (pose + velocities)
+void propose_motion(
+    FishAgent* fish,
     float move_command,
     float turn_command,
     bool eating_frozen
 ) {
-    FishMotionProposal proposal = {
-        .pos_x = fish->pos_x,
-        .pos_y = fish->pos_y,
-        .orientation = fish->orientation,
-        .linear_velocity = 0.0f,
-        .angular_velocity = 0.0f,
-    };
+    float linear_velocity = 0.0f;
+    float angular_velocity = 0.0f;
 
     if (fish->motion_order == MOTION_FIRST_ORDER) {
         float move = eating_frozen ? 0.0f : move_command;
         float turn = eating_frozen ? 0.0f : turn_command;
-        proposal.angular_velocity = turn * fish->max_angular_velocity;
-        proposal.linear_velocity = move * fish->max_linear_velocity;
+        angular_velocity = turn * fish->max_angular_velocity;
+        linear_velocity = move * fish->max_linear_velocity;
     } else { // Second-order motion with acceleration and drag
-        proposal.linear_velocity =
+        linear_velocity =
             fish->linear_velocity +
             move_command * fish->max_linear_acceleration;
-        proposal.angular_velocity =
+        angular_velocity =
             fish->angular_velocity +
             turn_command * fish->max_angular_acceleration;
 
-        proposal.linear_velocity = clamp(
-            proposal.linear_velocity,
+        linear_velocity = clamp(
+            linear_velocity,
             fish->min_linear_velocity,
             fish->max_linear_velocity
         );
-        if (!fish->backwards && proposal.linear_velocity < 0.0f) {
-            proposal.linear_velocity = 0.0f;
+        if (!fish->backwards && linear_velocity < 0.0f) {
+            linear_velocity = 0.0f;
         }
 
-        proposal.linear_velocity *= fish->linear_drag_factor;
-        proposal.angular_velocity *= fish->angular_drag_factor;
-        proposal.angular_velocity = clamp(
-            proposal.angular_velocity,
+        linear_velocity *= fish->linear_drag_factor;
+        angular_velocity *= fish->angular_drag_factor;
+        angular_velocity = clamp(
+            angular_velocity,
             fish->min_angular_velocity,
             fish->max_angular_velocity
         );
 
         if (eating_frozen) {
-            proposal.linear_velocity = 0.0f;
-            proposal.angular_velocity = 0.0f;
+            linear_velocity = 0.0f;
+            angular_velocity = 0.0f;
         }
+        fish->linear_velocity = linear_velocity;
+        fish->angular_velocity = angular_velocity;
     }
 
-    proposal.orientation = wrap_angle(fish->orientation + proposal.angular_velocity);
-    float hx = cosf(proposal.orientation);
-    float hy = sinf(proposal.orientation);
-    proposal.pos_x = fish->pos_x + hx * proposal.linear_velocity;
-    proposal.pos_y = fish->pos_y + hy * proposal.linear_velocity;
-    return proposal;
+    fish->orientation = wrap_angle(fish->orientation + angular_velocity);
+    float hx = cosf(fish->orientation);
+    float hy = sinf(fish->orientation);
+    fish->pos_x += hx * linear_velocity;
+    fish->pos_y += hy * linear_velocity;
 }
 
 bool motion_collides(
@@ -292,25 +278,22 @@ bool motion_collides(
 }
 
 /*
- * Commit a proposal and enforce a rectangular arena. Orientation always
- * changes even when translation is blocked, allowing turning in place.
+ * Resolve collisions/walls after propose_motion. Orientation from propose is
+ * always kept (turn in place). prev_* is pose before propose.
  */
 bool commit_motion(
     FishAgent* fish,
-    FishMotionProposal proposal,
+    float prev_x,
+    float prev_y,
+    float prev_orientation,
     bool collided,
     float arena_size_x,
     float arena_size_y
 ) {
-    float previous_x = fish->pos_x;
-    float previous_y = fish->pos_y;
-    float previous_orientation = fish->orientation;
-
-    fish->last_orientation = previous_orientation;
-    fish->orientation = proposal.orientation;
-    if (!collided) {
-        fish->pos_x = proposal.pos_x;
-        fish->pos_y = proposal.pos_y;
+    fish->last_orientation = prev_orientation;
+    if (collided) {
+        fish->pos_x = prev_x;
+        fish->pos_y = prev_y;
     }
 
     float unclipped_x = fish->pos_x;
@@ -328,19 +311,17 @@ bool commit_motion(
     bool hit_wall = fish->pos_x != unclipped_x || fish->pos_y != unclipped_y;
     bool stopped = collided || hit_wall;
 
-    if (fish->motion_order == MOTION_SECOND_ORDER) {
-        fish->linear_velocity =
-            stopped ? 0.0f : proposal.linear_velocity;
-        fish->angular_velocity =
-            stopped ? 0.0f : proposal.angular_velocity;
+    if (fish->motion_order == MOTION_SECOND_ORDER && stopped) {
+        fish->linear_velocity = 0.0f;
+        fish->angular_velocity = 0.0f;
     }
 
     fish->collided = collided;
-    fish->disp_ground_x = fish->pos_x - previous_x;
-    fish->disp_ground_y = fish->pos_y - previous_y;
+    fish->disp_ground_x = fish->pos_x - prev_x;
+    fish->disp_ground_y = fish->pos_y - prev_y;
     rotate(
         fish->disp_ground_x, fish->disp_ground_y,
-        -previous_orientation,
+        -prev_orientation,
         &fish->disp_ego_x, &fish->disp_ego_y
     );
     return hit_wall;
@@ -866,7 +847,7 @@ void c_allocate(FishEnv* env) {
 }
 
 void compute_observations(FishEnv* env) {
-    /* Pack dipole sources once; all agents share the same electric scene. */
+    // Pack dipole sources once; all agents share the same electric scene 
     float ind_x[MAX_AGENTS + MAX_FOOD];
     float ind_y[MAX_AGENTS + MAX_FOOD];
     float ind_mx[MAX_AGENTS + MAX_FOOD];
@@ -891,7 +872,7 @@ void compute_observations(FishEnv* env) {
             }
         }
 
-        /* Mormyromasts: active/collective image after direct-EOD subtraction. */
+        // Mormyromasts: active/collective image after direct-EOD subtraction.
         for (int sensor_idx = 0; sensor_idx < NUM_MORMYROMASTS; sensor_idx++) {
             float sx, sy, snx, sny;
             world_sensor(
@@ -946,7 +927,7 @@ void compute_observations(FishEnv* env) {
             );
         }
 
-        /* Knollenorgans: one directional 12-receptor block per conspecific. */
+        // Knollenorgans: one directional 12-receptor block per conspecific.
         int metadata_start =
             NUM_MORMYROMASTS + NUM_AMPULLARY +
             NUM_KNOLLEN * (MAX_AGENTS - 1);
@@ -1327,13 +1308,14 @@ void c_step(FishEnv* env) {
     env->tick++;
     
     // Reset agent state variables
-    // NOTE(DC): zeroing out rewards and terminals is already done in vecenv, shall we delete it here?
     for (int i = 0; i < env->num_agents; i++) {
         env->agents[i].was_bitten = false;
         env->agents[i].ate_food = false;
         env->rewards[i] = 0.0f;
         env->terminals[i] = 0.0f;
     }
+
+    // Move fish and update state
     for (int i = 0; i < env->num_agents; i++) {
         FishAgent* agent = &env->agents[i];
         float* raw_action = env->actions + i * ACTION_SIZE;
@@ -1353,15 +1335,16 @@ void c_step(FishEnv* env) {
                 env->rewards[i] += EAT_REWARD;
             }
         }
-        FishMotionProposal proposal = propose_motion(
-            agent, move, turn, agent->eat_cooldown > 0
-        );
+        float prev_x = agent->pos_x;
+        float prev_y = agent->pos_y;
+        float prev_ori = agent->orientation;
+        propose_motion(agent, move, turn, agent->eat_cooldown > 0);
         bool collided = motion_collides(
-            proposal.pos_x, proposal.pos_y, agent->body_radius_cm,
+            agent->pos_x, agent->pos_y, agent->body_radius_cm,
             env->agents, (size_t)env->num_agents, (size_t)i
         );
         bool hit_wall = commit_motion(
-            agent, proposal, collided,
+            agent, prev_x, prev_y, prev_ori, collided,
             env->arena_size_x, env->arena_size_y
         );
         env->collisions_fish += collided ? 1 : 0;
@@ -1370,7 +1353,7 @@ void c_step(FishEnv* env) {
         }
     }
 
-    /* Bite resolution occurs after all fish have moved. */
+    // Bite dynamics occur after all fish have moved. 
     for (int i = 0; i < env->num_agents; i++) {
         FishAgent* attacker = &env->agents[i];
         if (!attacker->bite_action) continue;
@@ -1396,13 +1379,15 @@ void c_step(FishEnv* env) {
             env->rewards[victim] += BITTEN_REWARD * (1.0f + fmaxf(0.0f, size_difference));
         }
     }
-
+    
+    // Update cooldowns and accumulate rewards
     for (int i = 0; i < env->num_agents; i++) {
         FishAgent* agent = &env->agents[i];
         if (agent->eat_cooldown > 0) agent->eat_cooldown -= 1;
         if (agent->bite_cooldown > 0) agent->bite_cooldown -= 1;
         env->episode_return += env->rewards[i];
     }
+
     build_electric_scene(env);
     compute_observations(env);
 
