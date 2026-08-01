@@ -24,8 +24,9 @@ static void print_physics_fixture(FishEnv* env) {
     env->agents[1].movement.position_cm = (FishVec2){45.0, 40.0};
     env->agents[1].movement.orientation = -1.0;
     env->agents[1].emits_eod = false;
-    env->food[0].motion.position_cm = (FishVec2){30.0, 25.0};
-    env->food[0].motion.orientation = 0.7;
+    env->food[0].pos_x = 30.0f;
+    env->food[0].pos_y = 25.0f;
+    env->food[0].orientation = 0.7f;
     env->food[0].active = true;
     calibrate_electroreceptors(env);
     build_electric_scene(env);
