@@ -90,7 +90,7 @@ typedef struct FishMotionProposal {
     float angular_velocity;
 } FishMotionProposal;
 
-/* All per-fish state: pose, dynamics, electric sources, sensors, actions. */
+// All fish agent attributes: pose, dynamics, electric sources, sensors, actions.
 typedef struct FishAgent {
     float pos_x;
     float pos_y;
@@ -119,8 +119,8 @@ typedef struct FishAgent {
     bool collided;
 
     float size;
-    int bite_cooldown;  /* remaining steps; 0 = ready */
-    int eat_cooldown;   /* remaining steps; 0 = free to move / eat */
+    int bite_cooldown;  
+    int eat_cooldown; 
     bool emits_eod;
     bool bite_action;
     bool was_bitten;
@@ -128,18 +128,18 @@ typedef struct FishAgent {
     float last_action[ACTION_SIZE];
     float ampullary_ema[NUM_AMPULLARY];
 
-    /* EOD monopole pair in world frame (updated each scene rebuild). */
+    // Electric Organ Discharge (EOD) monopole pair in world frame
     float eod_pos_x[2];
     float eod_pos_y[2];
     float eod_charge[2];
 
-    /* Body dipoles in world frame (position is agent pos). */
+    // Body dipoles in world frame
     float intrinsic_moment_x;
     float intrinsic_moment_y;
     float induced_moment_x;
     float induced_moment_y;
 
-    /* Local body-frame sensor geometry (set once at spawn). */
+    // Fish sensors (initialized once in local frame)
     float morm_local_x[NUM_MORMYROMASTS];
     float morm_local_y[NUM_MORMYROMASTS];
     float morm_nx[NUM_MORMYROMASTS];
@@ -159,7 +159,7 @@ float vec_length_squared(float x, float y) {
 }
 
 float vec_length(float x, float y) {
-    return sqrtf(vec_length_squared(x, y));
+    return sqrtf(x * x + y * y);
 }
 
 float clamp(float value, float minimum, float maximum) {
@@ -203,6 +203,12 @@ void world_sensor(
         local_x, local_y, origin_x, origin_y, angle, out_x, out_y
     );
     rotate(local_nx, local_ny, angle, out_nx, out_ny);
+}
+
+float project_field(
+    float field_x, float field_y, float normal_x, float normal_y
+) {
+    return field_x * normal_x + field_y * normal_y;
 }
 
 FishMotionProposal propose_motion(
@@ -571,14 +577,9 @@ void measure_electric_field_with_reflections(
 }
 
 // Receptor geometry and transduction
-float project_field(
-    float field_x, float field_y, float normal_x, float normal_y
+float uniform_sensor_angle(
+    size_t sensor_index, size_t num_sensors
 ) {
-    return field_x * normal_x + field_y * normal_y;
-}
-
-float
-uniform_sensor_angle(size_t sensor_index, size_t num_sensors) {
     return 2.0f * PI_F * (float)sensor_index / (float)num_sensors;
 }
 
@@ -865,17 +866,31 @@ void c_allocate(FishEnv* env) {
 }
 
 void compute_observations(FishEnv* env) {
-    float dip_x[MAX_AGENTS + MAX_FOOD];
-    float dip_y[MAX_AGENTS + MAX_FOOD];
-    float dip_mx[MAX_AGENTS + MAX_FOOD];
-    float dip_my[MAX_AGENTS + MAX_FOOD];
+    /* Pack dipole sources once; all agents share the same electric scene. */
+    float ind_x[MAX_AGENTS + MAX_FOOD];
+    float ind_y[MAX_AGENTS + MAX_FOOD];
+    float ind_mx[MAX_AGENTS + MAX_FOOD];
+    float ind_my[MAX_AGENTS + MAX_FOOD];
+    float int_x[MAX_AGENTS + MAX_FOOD];
+    float int_y[MAX_AGENTS + MAX_FOOD];
+    float int_mx[MAX_AGENTS + MAX_FOOD];
+    float int_my[MAX_AGENTS + MAX_FOOD];
+    int n_induced = pack_induced_sources(env, ind_x, ind_y, ind_mx, ind_my);
+    int n_intrinsic = pack_intrinsic_sources(env, int_x, int_y, int_mx, int_my);
 
     for (int i = 0; i < env->num_agents; i++) {
         FishAgent* agent = &env->agents[i];
         float* obs = env->observations + i * OBS_SIZE;
         int cursor = 0;
 
-        int n_induced = pack_induced_sources(env, dip_x, dip_y, dip_mx, dip_my);
+        bool cons_eod = false;
+        for (int other = 0; other < env->num_agents; other++) {
+            if (other != i && env->agents[other].emits_eod) {
+                cons_eod = true;
+                break;
+            }
+        }
+
         /* Mormyromasts: active/collective image after direct-EOD subtraction. */
         for (int sensor_idx = 0; sensor_idx < NUM_MORMYROMASTS; sensor_idx++) {
             float sx, sy, snx, sny;
@@ -889,7 +904,7 @@ void compute_observations(FishEnv* env) {
             measure_electric_field_with_reflections(
                 sx, sy,
                 NULL, NULL, NULL, 0,
-                dip_x, dip_y, dip_mx, dip_my, (size_t)n_induced,
+                ind_x, ind_y, ind_mx, ind_my, (size_t)n_induced,
                 env->arena_size_x, env->arena_size_y, FIELD_EPS_M,
                 REFLECTION_SCALE, false, &fx, &fy
             );
@@ -904,7 +919,6 @@ void compute_observations(FishEnv* env) {
             );
         }
 
-        int n_intrinsic = pack_intrinsic_sources(env, dip_x, dip_y, dip_mx, dip_my);
         // Ampullary receptors: intrinsic sources with static self-field removed
         for (int sensor_idx = 0; sensor_idx < NUM_AMPULLARY; sensor_idx++) {
             float sx, sy, snx, sny;
@@ -918,20 +932,13 @@ void compute_observations(FishEnv* env) {
             measure_electric_field_with_reflections(
                 sx, sy,
                 NULL, NULL, NULL, 0,
-                dip_x, dip_y, dip_mx, dip_my, (size_t)n_intrinsic,
+                int_x, int_y, int_mx, int_my, (size_t)n_intrinsic,
                 env->arena_size_x, env->arena_size_y, FIELD_EPS_M,
                 REFLECTION_SCALE, false, &fx, &fy
             );
             float reading =
                 project_field(fx, fy, snx, sny) -
                 env->amp_intrinsic_baseline[sensor_idx];
-            bool cons_eod = false;
-            for (int other = 0; other < env->num_agents; other++) {
-                if (other != i && env->agents[other].emits_eod) {
-                    cons_eod = true;
-                    break;
-                }
-            }
             reading *= random_multiplier(env, cons_eod ? 0.5f : 0.05f);
             obs[cursor++] = normalize_sensor_reading(
                 reading, AMPULLARY_MIN_VM,
@@ -1298,30 +1305,22 @@ void add_log(FishEnv* env) {
     env->log.n += 1.0f;
 }
 
+// Eat first active pellet in the forward 45° cone within 2 cm (at most one per step). 
 bool try_eat(FishEnv* env, int agent_idx) {
     FishAgent* agent = &env->agents[agent_idx];
-    int nearest = -1;
-    float nearest_distance = INFINITY;
     for (int i = 0; i < env->num_food; i++) {
         if (!env->food[i].active) continue;
         if (!point_in_forward_cone(
                 agent->pos_x, agent->pos_y, agent->orientation,
                 env->food[i].pos_x, env->food[i].pos_y,
                 EATING_RADIUS_CM, EATING_ANGLE)) continue;
-        float dx = env->food[i].pos_x - agent->pos_x;
-        float dy = env->food[i].pos_y - agent->pos_y;
-        float distance = vec_length_squared(dx, dy);
-        if (distance < nearest_distance) {
-            nearest = i;
-            nearest_distance = distance;
-        }
+        env->food[i].active = false;
+        env->food_eaten++;
+        agent->ate_food = true;
+        agent->eat_cooldown = EAT_COOLDOWN_STEPS;
+        return true;
     }
-    if (nearest < 0) return false;
-    env->food[nearest].active = false;
-    env->food_eaten++;
-    agent->ate_food = true;
-    agent->eat_cooldown = EAT_COOLDOWN_STEPS;
-    return true;
+    return false;
 }
 
 void c_step(FishEnv* env) {
