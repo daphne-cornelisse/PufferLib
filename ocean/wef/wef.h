@@ -673,8 +673,6 @@ typedef struct FishAgentState {
 typedef struct FishFood {
     float pos_x;
     float pos_y;
-    float vel_x;
-    float vel_y;
     float orientation;
     bool active;
 } FishFood;
@@ -1252,18 +1250,6 @@ void c_step(FishEnv* env) {
         env->rewards[i] = 0.0f;
         env->terminals[i] = 0.0f;
     }
-    // Integrate food velocity (currently zero unless set elsewhere)
-    for (int food_idx = 0; food_idx < env->num_food; food_idx++) {
-        if (!env->food[food_idx].active) continue;
-        FishFood* food = &env->food[food_idx];
-        food->pos_x = clamp(
-            food->pos_x + food->vel_x, 0.0f, env->arena_size_cm.x
-        );
-        food->pos_y = clamp(
-            food->pos_y + food->vel_y, 0.0f, env->arena_size_cm.y
-        );
-    }
-
     for (int i = 0; i < env->num_agents; i++) {
         FishAgentState* agent = &env->agents[i];
         float* raw_action = env->actions + i * ACTION_SIZE;
