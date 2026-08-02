@@ -1,0 +1,288 @@
+{
+  "metric": "agent-steps/sec",
+  "description": "single_thread_sps: SPS with --threads 1; sum_of_threads_sps: sum of per-thread SPS with OpenMP (threads=8), ideal parallel scale-out",
+  "ranges_cm": [
+    10,
+    20,
+    30,
+    40,
+    50,
+    60,
+    70,
+    100
+  ],
+  "results": [
+    {
+      "reflection_wall_range_cm": 10,
+      "single_thread_sps": 27239.5,
+      "sum_of_threads_sps": 218251.0,
+      "multi_wall_sps": 213674.5,
+      "multi_per_thread_mean": 27281.4,
+      "config": {
+        "threads": 8,
+        "envs_per_thread": 4,
+        "steps": 10000,
+        "resets": 2,
+        "num_fish": 4
+      },
+      "raw": {
+        "single": {
+          "threads": 1,
+          "per_thread_mean": 27239.5,
+          "per_thread_min": 27239.5,
+          "per_thread_max": 27239.5,
+          "sum_of_threads": 27239.5,
+          "wall_SPS": 27235.7,
+          "wall_elapsed": 11.7493
+        },
+        "multi": {
+          "threads": 8,
+          "per_thread_mean": 27281.4,
+          "per_thread_min": 26717.5,
+          "per_thread_max": 28205.6,
+          "sum_of_threads": 218251.0,
+          "wall_SPS": 213674.5,
+          "wall_elapsed": 11.9808
+        }
+      }
+    },
+    {
+      "reflection_wall_range_cm": 20,
+      "single_thread_sps": 26126.8,
+      "sum_of_threads_sps": 208257.8,
+      "multi_wall_sps": 204341.6,
+      "multi_per_thread_mean": 26032.2,
+      "config": {
+        "threads": 8,
+        "envs_per_thread": 4,
+        "steps": 10000,
+        "resets": 2,
+        "num_fish": 4
+      },
+      "raw": {
+        "single": {
+          "threads": 1,
+          "per_thread_mean": 26126.8,
+          "per_thread_min": 26126.8,
+          "per_thread_max": 26126.8,
+          "sum_of_threads": 26126.8,
+          "wall_SPS": 26122.1,
+          "wall_elapsed": 12.2502
+        },
+        "multi": {
+          "threads": 8,
+          "per_thread_mean": 26032.2,
+          "per_thread_min": 25547.8,
+          "per_thread_max": 26948.7,
+          "sum_of_threads": 208257.8,
+          "wall_SPS": 204341.6,
+          "wall_elapsed": 12.528
+        }
+      }
+    },
+    {
+      "reflection_wall_range_cm": 30,
+      "single_thread_sps": 25079.2,
+      "sum_of_threads_sps": 199215.2,
+      "multi_wall_sps": 196092.2,
+      "multi_per_thread_mean": 24901.9,
+      "config": {
+        "threads": 8,
+        "envs_per_thread": 4,
+        "steps": 10000,
+        "resets": 2,
+        "num_fish": 4
+      },
+      "raw": {
+        "single": {
+          "threads": 1,
+          "per_thread_mean": 25079.2,
+          "per_thread_min": 25079.2,
+          "per_thread_max": 25079.2,
+          "sum_of_threads": 25079.2,
+          "wall_SPS": 25073.7,
+          "wall_elapsed": 12.7624
+        },
+        "multi": {
+          "threads": 8,
+          "per_thread_mean": 24901.9,
+          "per_thread_min": 24517.6,
+          "per_thread_max": 25504.5,
+          "sum_of_threads": 199215.2,
+          "wall_SPS": 196092.2,
+          "wall_elapsed": 13.0551
+        }
+      }
+    },
+    {
+      "reflection_wall_range_cm": 40,
+      "single_thread_sps": 24027.7,
+      "sum_of_threads_sps": 188019.6,
+      "multi_wall_sps": 179597.5,
+      "multi_per_thread_mean": 23502.4,
+      "config": {
+        "threads": 8,
+        "envs_per_thread": 4,
+        "steps": 10000,
+        "resets": 2,
+        "num_fish": 4
+      },
+      "raw": {
+        "single": {
+          "threads": 1,
+          "per_thread_mean": 24027.7,
+          "per_thread_min": 24027.7,
+          "per_thread_max": 24027.7,
+          "sum_of_threads": 24027.7,
+          "wall_SPS": 24020.5,
+          "wall_elapsed": 13.322
+        },
+        "multi": {
+          "threads": 8,
+          "per_thread_mean": 23502.4,
+          "per_thread_min": 22455.7,
+          "per_thread_max": 24087.9,
+          "sum_of_threads": 188019.6,
+          "wall_SPS": 179597.5,
+          "wall_elapsed": 14.2541
+        }
+      }
+    },
+    {
+      "reflection_wall_range_cm": 50,
+      "single_thread_sps": 23156.4,
+      "sum_of_threads_sps": 181042.8,
+      "multi_wall_sps": 175911.1,
+      "multi_per_thread_mean": 22630.4,
+      "config": {
+        "threads": 8,
+        "envs_per_thread": 4,
+        "steps": 10000,
+        "resets": 2,
+        "num_fish": 4
+      },
+      "raw": {
+        "single": {
+          "threads": 1,
+          "per_thread_mean": 23156.4,
+          "per_thread_min": 23156.4,
+          "per_thread_max": 23156.4,
+          "sum_of_threads": 23156.4,
+          "wall_SPS": 23149.2,
+          "wall_elapsed": 13.8234
+        },
+        "multi": {
+          "threads": 8,
+          "per_thread_mean": 22630.4,
+          "per_thread_min": 21995.8,
+          "per_thread_max": 22985.7,
+          "sum_of_threads": 181042.8,
+          "wall_SPS": 175911.1,
+          "wall_elapsed": 14.5528
+        }
+      }
+    },
+    {
+      "reflection_wall_range_cm": 60,
+      "single_thread_sps": 22289.9,
+      "sum_of_threads_sps": 173629.7,
+      "multi_wall_sps": 170033.3,
+      "multi_per_thread_mean": 21703.7,
+      "config": {
+        "threads": 8,
+        "envs_per_thread": 4,
+        "steps": 10000,
+        "resets": 2,
+        "num_fish": 4
+      },
+      "raw": {
+        "single": {
+          "threads": 1,
+          "per_thread_mean": 22289.9,
+          "per_thread_min": 22289.9,
+          "per_thread_max": 22289.9,
+          "sum_of_threads": 22289.9,
+          "wall_SPS": 22282.3,
+          "wall_elapsed": 14.3612
+        },
+        "multi": {
+          "threads": 8,
+          "per_thread_mean": 21703.7,
+          "per_thread_min": 21261.9,
+          "per_thread_max": 22268.0,
+          "sum_of_threads": 173629.7,
+          "wall_SPS": 170033.3,
+          "wall_elapsed": 15.0559
+        }
+      }
+    },
+    {
+      "reflection_wall_range_cm": 70,
+      "single_thread_sps": 15052.2,
+      "sum_of_threads_sps": 118888.1,
+      "multi_wall_sps": 116519.8,
+      "multi_per_thread_mean": 14861.0,
+      "config": {
+        "threads": 8,
+        "envs_per_thread": 4,
+        "steps": 10000,
+        "resets": 2,
+        "num_fish": 4
+      },
+      "raw": {
+        "single": {
+          "threads": 1,
+          "per_thread_mean": 15052.2,
+          "per_thread_min": 15052.2,
+          "per_thread_max": 15052.2,
+          "sum_of_threads": 15052.2,
+          "wall_SPS": 15048.5,
+          "wall_elapsed": 21.2645
+        },
+        "multi": {
+          "threads": 8,
+          "per_thread_mean": 14861.0,
+          "per_thread_min": 14568.7,
+          "per_thread_max": 15163.8,
+          "sum_of_threads": 118888.1,
+          "wall_SPS": 116519.8,
+          "wall_elapsed": 21.9705
+        }
+      }
+    },
+    {
+      "reflection_wall_range_cm": 100,
+      "single_thread_sps": 15043.2,
+      "sum_of_threads_sps": 118772.8,
+      "multi_wall_sps": 116291.8,
+      "multi_per_thread_mean": 14846.6,
+      "config": {
+        "threads": 8,
+        "envs_per_thread": 4,
+        "steps": 10000,
+        "resets": 2,
+        "num_fish": 4
+      },
+      "raw": {
+        "single": {
+          "threads": 1,
+          "per_thread_mean": 15043.2,
+          "per_thread_min": 15043.2,
+          "per_thread_max": 15043.2,
+          "sum_of_threads": 15043.2,
+          "wall_SPS": 15039.5,
+          "wall_elapsed": 21.2774
+        },
+        "multi": {
+          "threads": 8,
+          "per_thread_mean": 14846.6,
+          "per_thread_min": 14540.0,
+          "per_thread_max": 15131.3,
+          "sum_of_threads": 118772.8,
+          "wall_SPS": 116291.8,
+          "wall_elapsed": 22.0136
+        }
+      }
+    }
+  ]
+}

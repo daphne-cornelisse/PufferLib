@@ -279,10 +279,6 @@ bool motion_collides(
     return false;
 }
 
-/*
- * Resolve collisions/walls after propose_motion. Orientation from propose is
- * always kept (turn in place). prev_* is pose before propose.
- */
 bool commit_motion(
     FishAgent* fish,
     float prev_x,
@@ -348,10 +344,56 @@ bool point_in_forward_cone(
 }
 
 // Electrostatic field model
+
+/*
+ * Accumulate field from one monopole (Coulomb). measurement_* in meters;
+ * source positions in cm. eps_m added to distance (matches upstream).
+ */
+static inline void accumulate_monopole_field(
+    float measurement_mx,
+    float measurement_my,
+    float source_x_cm,
+    float source_y_cm,
+    float charge_c,
+    float eps_m,
+    float* field_x,
+    float* field_y
+) {
+    float ox = measurement_mx - source_x_cm * CM_TO_M;
+    float oy = measurement_my - source_y_cm * CM_TO_M;
+    float distance = vec_length(ox, oy) + eps_m;
+    float weight = K_COULOMB * charge_c / (distance * distance * distance);
+    *field_x += ox * weight;
+    *field_y += oy * weight;
+}
+
+/* Accumulate field from one dipole (Coulomb). */
+static inline void accumulate_dipole_field(
+    float measurement_mx,
+    float measurement_my,
+    float source_x_cm,
+    float source_y_cm,
+    float moment_x,
+    float moment_y,
+    float eps_m,
+    float* field_x,
+    float* field_y
+) {
+    float ox = measurement_mx - source_x_cm * CM_TO_M;
+    float oy = measurement_my - source_y_cm * CM_TO_M;
+    float distance = vec_length(ox, oy) + eps_m;
+    float r2 = distance * distance;
+    float r3 = r2 * distance;
+    float r5 = r3 * r2;
+    float moment_dot_offset = moment_x * ox + moment_y * oy;
+    float axial = 3.0f * moment_dot_offset / r5;
+    *field_x += K_COULOMB * (ox * axial - moment_x / r3);
+    *field_y += K_COULOMB * (oy * axial - moment_y / r3);
+}
+
 /*
  * Field from monopole and dipole sources (SoA). Matches
- * electric.measure_electric_field_original, including adding eps_m to
- * distance rather than squared distance. Writes V/m into out_x/out_y.
+ * electric.measure_electric_field_original. Writes V/m into out_x/out_y.
  */
 void measure_electric_field(
     float measurement_x,
@@ -373,31 +415,17 @@ void measure_electric_field(
     float measurement_my = measurement_y * CM_TO_M;
     float field_x = 0.0f;
     float field_y = 0.0f;
-
     for (size_t i = 0; i < num_monopoles; i++) {
-        float source_mx = mono_x[i] * CM_TO_M;
-        float source_my = mono_y[i] * CM_TO_M;
-        float ox = measurement_mx - source_mx;
-        float oy = measurement_my - source_my;
-        float distance = vec_length(ox, oy) + eps_m;
-        float weight = K_COULOMB * mono_q[i] / (distance * distance * distance);
-        field_x += ox * weight;
-        field_y += oy * weight;
+        accumulate_monopole_field(
+            measurement_mx, measurement_my,
+            mono_x[i], mono_y[i], mono_q[i], eps_m, &field_x, &field_y
+        );
     }
-
     for (size_t i = 0; i < num_dipoles; i++) {
-        float source_mx = dip_x[i] * CM_TO_M;
-        float source_my = dip_y[i] * CM_TO_M;
-        float ox = measurement_mx - source_mx;
-        float oy = measurement_my - source_my;
-        float distance = vec_length(ox, oy) + eps_m;
-        float r2 = distance * distance;
-        float r3 = r2 * distance;
-        float r5 = r3 * r2;
-        float moment_dot_offset = dip_mx[i] * ox + dip_my[i] * oy;
-        float axial = 3.0f * moment_dot_offset / r5;
-        field_x += K_COULOMB * (ox * axial - dip_mx[i] / r3);
-        field_y += K_COULOMB * (oy * axial - dip_my[i] / r3);
+        accumulate_dipole_field(
+            measurement_mx, measurement_my,
+            dip_x[i], dip_y[i], dip_mx[i], dip_my[i], eps_m, &field_x, &field_y
+        );
     }
     *out_x = field_x;
     *out_y = field_y;
@@ -472,7 +500,11 @@ static inline void reflect_source_across_wall(
     }
 }
 
-// Field from the original sources plus first-order wall images (near walls only).
+/*
+ * Field from sources plus first-order wall images, in one pass:
+ * find nearby walls, then for each real source add its contribution and
+ * the contribution of each image charge/dipole.
+ */
 void measure_electric_field_with_reflections(
     float measurement_x,
     float measurement_y,
@@ -493,13 +525,6 @@ void measure_electric_field_with_reflections(
     float* out_x,
     float* out_y
 ) {
-    measure_electric_field(
-        measurement_x, measurement_y,
-        mono_x, mono_y, mono_q, num_monopoles,
-        dip_x, dip_y, dip_mx, dip_my, num_dipoles,
-        eps_m, out_x, out_y
-    );
-
     int near_walls[NUM_WALLS];
     int num_near_walls = 0;
     for (int wall = 0; wall < NUM_WALLS; wall++) {
@@ -510,10 +535,29 @@ void measure_electric_field_with_reflections(
             near_walls[num_near_walls++] = wall;
         }
     }
-    if (num_near_walls == 0) {
-        return;
+
+    float measurement_mx = measurement_x * CM_TO_M;
+    float measurement_my = measurement_y * CM_TO_M;
+    float field_x = 0.0f;
+    float field_y = 0.0f;
+
+    // Real sources first.
+    for (size_t i = 0; i < num_monopoles; i++) {
+        accumulate_monopole_field(
+            measurement_mx, measurement_my,
+            mono_x[i], mono_y[i], mono_q[i], eps_m,
+            &field_x, &field_y
+        );
+    }
+    for (size_t i = 0; i < num_dipoles; i++) {
+        accumulate_dipole_field(
+            measurement_mx, measurement_my,
+            dip_x[i], dip_y[i], dip_mx[i], dip_my[i], eps_m,
+            &field_x, &field_y
+        );
     }
 
+    // First-order images for each nearby wall. 
     for (int w = 0; w < num_near_walls; w++) {
         int wall = near_walls[w];
         for (size_t i = 0; i < num_monopoles; i++) {
@@ -525,15 +569,10 @@ void measure_electric_field_with_reflections(
                 arena_size_x, arena_size_y,
                 wall, reflection_scale, flip_on_reflection
             );
-            float cx, cy;
-            measure_electric_field(
-                measurement_x, measurement_y,
-                &ix, &iy, &iq, 1,
-                NULL, NULL, NULL, NULL, 0,
-                eps_m, &cx, &cy
+            accumulate_monopole_field(
+                measurement_mx, measurement_my,
+                ix, iy, iq, eps_m, &field_x, &field_y
             );
-            *out_x += cx;
-            *out_y += cy;
         }
         for (size_t i = 0; i < num_dipoles; i++) {
             float ix = dip_x[i];
@@ -545,17 +584,15 @@ void measure_electric_field_with_reflections(
                 arena_size_x, arena_size_y,
                 wall, reflection_scale, flip_on_reflection
             );
-            float cx, cy;
-            measure_electric_field(
-                measurement_x, measurement_y,
-                NULL, NULL, NULL, 0,
-                &ix, &iy, &imx, &imy, 1,
-                eps_m, &cx, &cy
+            accumulate_dipole_field(
+                measurement_mx, measurement_my,
+                ix, iy, imx, imy, eps_m, &field_x, &field_y
             );
-            *out_x += cx;
-            *out_y += cy;
         }
     }
+
+    *out_x = field_x;
+    *out_y = field_y;
 }
 
 // Receptor geometry and transduction
@@ -749,7 +786,7 @@ static int pack_intrinsic_sources(
     return n;
 }
 
-/* Pack induced dipoles: all agents, then active food. */
+// Pack induced dipoles: all agents, then active food. 
 static int pack_induced_sources(
     const FishEnv* env, float* x, float* y, float* mx, float* my
 ) {
@@ -809,32 +846,19 @@ void init(FishEnv* env) {
     if (env->num_agents > MAX_AGENTS) env->num_agents = MAX_AGENTS;
     if (env->arena_size_x <= 0.0f) env->arena_size_x = 70.0f;
     if (env->arena_size_y <= 0.0f) env->arena_size_y = 70.0f;
-    if (env->min_arena_size_x <= 0.0f) {
-        env->min_arena_size_x = env->arena_size_x;
-    }
-    if (env->min_arena_size_y <= 0.0f) {
-        env->min_arena_size_y = env->arena_size_y;
-    }
-    if (env->max_arena_size_x <= 0.0f) {
-        env->max_arena_size_x = env->min_arena_size_x;
-    }
-    if (env->max_arena_size_y <= 0.0f) {
-        env->max_arena_size_y = env->min_arena_size_y;
-    }
+    if (env->min_arena_size_x <= 0.0f) {env->min_arena_size_x = env->arena_size_x;}
+    if (env->min_arena_size_y <= 0.0f) {env->min_arena_size_y = env->arena_size_y;}
+    if (env->max_arena_size_x <= 0.0f) {env->max_arena_size_x = env->min_arena_size_x;}
+    if (env->max_arena_size_y <= 0.0f) {env->max_arena_size_y = env->min_arena_size_y;}
     if (env->configured_num_food <= 0) env->configured_num_food = MAX_FOOD;
-    if (env->configured_num_food > MAX_FOOD) {
-        env->configured_num_food = MAX_FOOD;
-    }
+    if (env->configured_num_food > MAX_FOOD) {env->configured_num_food = MAX_FOOD;}
     if (env->patch_radius_cm <= 0.0f) env->patch_radius_cm = 6.0f;
     if (env->patch_radius_std_cm < 0.0f) env->patch_radius_std_cm = 1.5f;
     if (env->patch_density <= 0.0f) env->patch_density = 0.001f;
-    if (env->food_distribution < FOOD_UNIFORM ||
-            env->food_distribution > FOOD_RANDOM) {
+    if (env->food_distribution < FOOD_UNIFORM || env->food_distribution > FOOD_RANDOM) {
         env->food_distribution = FOOD_UNIFORM;
     }
-    if (env->electric_field_radius_cm <= 0.0f) {
-        env->electric_field_radius_cm = 15.0f;
-    }
+    if (env->electric_field_radius_cm <= 0.0f) {env->electric_field_radius_cm = 15.0f;}
     if (env->episode_length <= 0) env->episode_length = 4096;
     if (env->rng == 0) env->rng = 1;
 }
@@ -917,20 +941,14 @@ void compute_observations(FishEnv* env) {
                 env->arena_size_x, env->arena_size_y, FIELD_EPS_M,
                 REFLECTION_SCALE, false, &fx, &fy
             );
-            float reading =
-                project_field(fx, fy, snx, sny) -
-                env->amp_intrinsic_baseline[sensor_idx];
+            float reading = project_field(fx, fy, snx, sny) - env->amp_intrinsic_baseline[sensor_idx];
             reading *= random_multiplier(env, cons_eod ? 0.5f : 0.05f);
-            obs[obs_idx++] = normalize_sensor_reading(
-                reading, AMPULLARY_MIN_VM,
-                AMPULLARY_MAX_VM, SENSOR_EPS
+            obs[obs_idx++] = normalize_sensor_reading(reading, AMPULLARY_MIN_VM, AMPULLARY_MAX_VM, SENSOR_EPS
             );
         }
 
         // Knollenorgans: one directional 12-receptor block per conspecific.
-        int metadata_start =
-            NUM_MORMYROMASTS + NUM_AMPULLARY +
-            NUM_KNOLLEN * (MAX_AGENTS - 1);
+        int metadata_start = NUM_MORMYROMASTS + NUM_AMPULLARY + NUM_KNOLLEN * (MAX_AGENTS - 1);
         int cons_slot = 0;
         for (int other = 0; other < MAX_AGENTS; other++) {
             if (other == i) continue;
@@ -991,17 +1009,13 @@ void compute_observations(FishEnv* env) {
         for (int action_idx = 0; action_idx < ACTION_SIZE; action_idx++) {
             obs[obs_idx++] = agent->last_action[action_idx];
         }
-        obs[obs_idx++] = 0.0f; /* fatigue, retained for upstream layout */
+        obs[obs_idx++] = 0.0f;
         obs[obs_idx++] = agent->was_bitten ? 1.0f : 0.0f;
         obs[obs_idx++] = agent->size;
-        obs[obs_idx++] =
-            (float)agent->bite_cooldown / (float)BITE_COOLDOWN_STEPS;
-        obs[obs_idx++] = clamp(
-            agent->disp_ego_x / agent->max_linear_velocity, -1.0f, 1.0f);
-        obs[obs_idx++] = clamp(
-            agent->disp_ego_y / agent->max_linear_velocity, -1.0f, 1.0f);
-        obs[obs_idx++] =
-            (float)agent->eat_cooldown / (float)EAT_COOLDOWN_STEPS;
+        obs[obs_idx++] = (float)agent->bite_cooldown / (float)BITE_COOLDOWN_STEPS;
+        obs[obs_idx++] = clamp(agent->disp_ego_x / agent->max_linear_velocity, -1.0f, 1.0f);
+        obs[obs_idx++] = clamp(agent->disp_ego_y / agent->max_linear_velocity, -1.0f, 1.0f);
+        obs[obs_idx++] = (float)agent->eat_cooldown / (float)EAT_COOLDOWN_STEPS;
     }
 }
 
