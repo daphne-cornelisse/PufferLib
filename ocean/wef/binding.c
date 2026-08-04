@@ -21,6 +21,9 @@ void my_init(Env* env, Dict* kwargs) {
     env->patch_radius_std_cm = dict_get(kwargs, "patch_radius_std")->value;
     env->patch_density = dict_get(kwargs, "patch_density")->value;
     env->electric_field_radius_cm = dict_get(kwargs, "electric_field_radius")->value;
+    env->reflection_wall_range_cm = dict_get(kwargs, "reflection_wall_range")->value;
+    env->field_fish_range_cm = dict_get(kwargs, "field_fish_range")->value;
+    env->field_food_range_cm = dict_get(kwargs, "field_food_range")->value;
     env->episode_length = (int)dict_get(kwargs, "episode_length")->value;
     init(env);
 }

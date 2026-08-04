@@ -67,13 +67,6 @@
 #define MORMYROMAST_MAX_VM 5e-2f
 #define KNOLLEN_MIN_VM 2e-7f
 
-// Approximate influence range for first-order wall images (cm) for electric field 
-// calculations. Reducing this will speed up the simulation but may reduce accuracy
-// near walls. Override at compile time: -DREFLECTION_WALL_RANGE_CM=30.0f
-#ifndef REFLECTION_WALL_RANGE_CM
-#define REFLECTION_WALL_RANGE_CM 100.0f
-#endif
-
 #define MOTION_FIRST_ORDER 1
 #define MOTION_SECOND_ORDER 2
 
@@ -346,19 +339,27 @@ bool point_in_forward_cone(
 // Electrostatic field model
 
 /*
- * Accumulate field from one monopole (Coulomb). measurement_* in meters;
- * source positions in cm. eps_m added to distance (matches upstream).
+ * Accumulate field from one monopole (Coulomb). measurement_m* in meters;
+ * positions in cm for range check. Skips if beyond range_cm.
  */
 static inline void accumulate_monopole_field(
     float measurement_mx,
     float measurement_my,
+    float measurement_x_cm,
+    float measurement_y_cm,
     float source_x_cm,
     float source_y_cm,
     float charge_c,
+    float range_cm,
     float eps_m,
     float* field_x,
     float* field_y
 ) {
+    float dx = measurement_x_cm - source_x_cm;
+    float dy = measurement_y_cm - source_y_cm;
+    if (dx * dx + dy * dy > range_cm * range_cm) {
+        return;
+    }
     float ox = measurement_mx - source_x_cm * CM_TO_M;
     float oy = measurement_my - source_y_cm * CM_TO_M;
     float distance = vec_length(ox, oy) + eps_m;
@@ -367,18 +368,26 @@ static inline void accumulate_monopole_field(
     *field_y += oy * weight;
 }
 
-/* Accumulate field from one dipole (Coulomb). */
+/* Accumulate field from one dipole (Coulomb). Skips if beyond range_cm. */
 static inline void accumulate_dipole_field(
     float measurement_mx,
     float measurement_my,
+    float measurement_x_cm,
+    float measurement_y_cm,
     float source_x_cm,
     float source_y_cm,
     float moment_x,
     float moment_y,
+    float range_cm,
     float eps_m,
     float* field_x,
     float* field_y
 ) {
+    float dx = measurement_x_cm - source_x_cm;
+    float dy = measurement_y_cm - source_y_cm;
+    if (dx * dx + dy * dy > range_cm * range_cm) {
+        return;
+    }
     float ox = measurement_mx - source_x_cm * CM_TO_M;
     float oy = measurement_my - source_y_cm * CM_TO_M;
     float distance = vec_length(ox, oy) + eps_m;
@@ -394,6 +403,10 @@ static inline void accumulate_dipole_field(
 /*
  * Field from monopole and dipole sources (SoA). Matches
  * electric.measure_electric_field_original. Writes V/m into out_x/out_y.
+ *
+ * Dipole arrays are packed agents-first then food: the first num_agent_dipoles
+ * entries use fish_range_cm; the rest use food_range_cm.
+ * Monopoles (EODs) always use fish_range_cm.
  */
 void measure_electric_field(
     float measurement_x,
@@ -407,6 +420,9 @@ void measure_electric_field(
     const float* dip_mx,
     const float* dip_my,
     size_t num_dipoles,
+    size_t num_agent_dipoles,
+    float fish_range_cm,
+    float food_range_cm,
     float eps_m,
     float* out_x,
     float* out_y
@@ -418,13 +434,19 @@ void measure_electric_field(
     for (size_t i = 0; i < num_monopoles; i++) {
         accumulate_monopole_field(
             measurement_mx, measurement_my,
-            mono_x[i], mono_y[i], mono_q[i], eps_m, &field_x, &field_y
+            measurement_x, measurement_y,
+            mono_x[i], mono_y[i], mono_q[i],
+            fish_range_cm, eps_m, &field_x, &field_y
         );
     }
     for (size_t i = 0; i < num_dipoles; i++) {
+        float range_cm =
+            (i < num_agent_dipoles) ? fish_range_cm : food_range_cm;
         accumulate_dipole_field(
             measurement_mx, measurement_my,
-            dip_x[i], dip_y[i], dip_mx[i], dip_my[i], eps_m, &field_x, &field_y
+            measurement_x, measurement_y,
+            dip_x[i], dip_y[i], dip_mx[i], dip_my[i],
+            range_cm, eps_m, &field_x, &field_y
         );
     }
     *out_x = field_x;
@@ -502,8 +524,10 @@ static inline void reflect_source_across_wall(
 
 /*
  * Field from sources plus first-order wall images, in one pass:
- * find nearby walls, then for each real source add its contribution and
- * the contribution of each image charge/dipole.
+ * find nearby walls, then for each real source (within fish/food range)
+ * add its contribution and image charges/dipoles.
+ *
+ * Dipole arrays are agents-first then food (see measure_electric_field).
  */
 void measure_electric_field_with_reflections(
     float measurement_x,
@@ -517,8 +541,12 @@ void measure_electric_field_with_reflections(
     const float* dip_mx,
     const float* dip_my,
     size_t num_dipoles,
+    size_t num_agent_dipoles,
     float arena_size_x,
     float arena_size_y,
+    float wall_range_cm,
+    float fish_range_cm,
+    float food_range_cm,
     float eps_m,
     float reflection_scale,
     bool flip_on_reflection,
@@ -531,7 +559,7 @@ void measure_electric_field_with_reflections(
         float dist = distance_to_wall_cm(
             measurement_x, measurement_y, arena_size_x, arena_size_y, wall
         );
-        if (dist <= REFLECTION_WALL_RANGE_CM) {
+        if (dist <= wall_range_cm) {
             near_walls[num_near_walls++] = wall;
         }
     }
@@ -541,26 +569,35 @@ void measure_electric_field_with_reflections(
     float field_x = 0.0f;
     float field_y = 0.0f;
 
-    // Real sources first.
+    // Real sources first (range-gated).
     for (size_t i = 0; i < num_monopoles; i++) {
         accumulate_monopole_field(
             measurement_mx, measurement_my,
-            mono_x[i], mono_y[i], mono_q[i], eps_m,
-            &field_x, &field_y
+            measurement_x, measurement_y,
+            mono_x[i], mono_y[i], mono_q[i],
+            fish_range_cm, eps_m, &field_x, &field_y
         );
     }
     for (size_t i = 0; i < num_dipoles; i++) {
+        float range_cm =
+            (i < num_agent_dipoles) ? fish_range_cm : food_range_cm;
         accumulate_dipole_field(
             measurement_mx, measurement_my,
-            dip_x[i], dip_y[i], dip_mx[i], dip_my[i], eps_m,
-            &field_x, &field_y
+            measurement_x, measurement_y,
+            dip_x[i], dip_y[i], dip_mx[i], dip_my[i],
+            range_cm, eps_m, &field_x, &field_y
         );
     }
 
-    // First-order images for each nearby wall. 
+    // First-order images for each nearby wall (same range gate on real pos).
     for (int w = 0; w < num_near_walls; w++) {
         int wall = near_walls[w];
         for (size_t i = 0; i < num_monopoles; i++) {
+            float dx = measurement_x - mono_x[i];
+            float dy = measurement_y - mono_y[i];
+            if (dx * dx + dy * dy > fish_range_cm * fish_range_cm) {
+                continue;
+            }
             float ix = mono_x[i];
             float iy = mono_y[i];
             float iq = mono_q[i];
@@ -569,12 +606,21 @@ void measure_electric_field_with_reflections(
                 arena_size_x, arena_size_y,
                 wall, reflection_scale, flip_on_reflection
             );
+            /* Image uses infinite range: real source already range-gated. */
             accumulate_monopole_field(
                 measurement_mx, measurement_my,
-                ix, iy, iq, eps_m, &field_x, &field_y
+                measurement_x, measurement_y,
+                ix, iy, iq,
+                1.0e20f, eps_m, &field_x, &field_y
             );
         }
         for (size_t i = 0; i < num_dipoles; i++) {
+            float range_cm = (i < num_agent_dipoles) ? fish_range_cm : food_range_cm;
+            float dx = measurement_x - dip_x[i];
+            float dy = measurement_y - dip_y[i];
+            if (dx * dx + dy * dy > range_cm * range_cm) {
+                continue;
+            }
             float ix = dip_x[i];
             float iy = dip_y[i];
             float imx = dip_mx[i];
@@ -586,7 +632,9 @@ void measure_electric_field_with_reflections(
             );
             accumulate_dipole_field(
                 measurement_mx, measurement_my,
-                ix, iy, imx, imy, eps_m, &field_x, &field_y
+                measurement_x, measurement_y,
+                ix, iy, imx, imy,
+                1.0e20f, eps_m, &field_x, &field_y
             );
         }
     }
@@ -720,6 +768,9 @@ typedef struct FishEnv {
     float max_arena_size_x;
     float max_arena_size_y;
     float electric_field_radius_cm;
+    float reflection_wall_range_cm;
+    float field_fish_range_cm;
+    float field_food_range_cm;
     FoodDistribution food_distribution;
     int configured_num_food;
     float patch_radius_cm;
@@ -859,6 +910,14 @@ void init(FishEnv* env) {
         env->food_distribution = FOOD_UNIFORM;
     }
     if (env->electric_field_radius_cm <= 0.0f) {env->electric_field_radius_cm = 15.0f;}
+    // Unset ranges default to the largest arena side so the full tank is covered.
+    float arena_range_cm = fmaxf(
+        fmaxf(env->arena_size_x, env->arena_size_y),
+        fmaxf(env->max_arena_size_x, env->max_arena_size_y)
+    );
+    if (env->reflection_wall_range_cm <= 0.0f) env->reflection_wall_range_cm = arena_range_cm;
+    if (env->field_fish_range_cm <= 0.0f) env->field_fish_range_cm = arena_range_cm;
+    if (env->field_food_range_cm <= 0.0f) env->field_food_range_cm = arena_range_cm;
     if (env->episode_length <= 0) env->episode_length = 4096;
     if (env->rng == 0) env->rng = 1;
 }
@@ -910,8 +969,12 @@ void compute_observations(FishEnv* env) {
                 sx, sy,
                 NULL, NULL, NULL, 0,
                 ind_x, ind_y, ind_mx, ind_my, (size_t)n_induced,
-                env->arena_size_x, env->arena_size_y, FIELD_EPS_M,
-                REFLECTION_SCALE, false, &fx, &fy
+                (size_t)env->num_agents,
+                env->arena_size_x, env->arena_size_y,
+                env->reflection_wall_range_cm,
+                env->field_fish_range_cm,
+                env->field_food_range_cm,
+                FIELD_EPS_M, REFLECTION_SCALE, false, &fx, &fy
             );
             float reading = project_field(fx, fy, snx, sny);
             if (!agent->emits_eod) {
@@ -938,8 +1001,12 @@ void compute_observations(FishEnv* env) {
                 sx, sy,
                 NULL, NULL, NULL, 0,
                 int_x, int_y, int_mx, int_my, (size_t)n_intrinsic,
-                env->arena_size_x, env->arena_size_y, FIELD_EPS_M,
-                REFLECTION_SCALE, false, &fx, &fy
+                (size_t)env->num_agents,
+                env->arena_size_x, env->arena_size_y,
+                env->reflection_wall_range_cm,
+                env->field_fish_range_cm,
+                env->field_food_range_cm,
+                FIELD_EPS_M, REFLECTION_SCALE, false, &fx, &fy
             );
             float reading = project_field(fx, fy, snx, sny) - env->amp_intrinsic_baseline[sensor_idx];
             reading *= random_multiplier(env, cons_eod ? 0.5f : 0.05f);
@@ -972,7 +1039,9 @@ void compute_observations(FishEnv* env) {
                         env->agents[other].eod_pos_y,
                         env->agents[other].eod_charge,
                         2,
-                        NULL, NULL, NULL, NULL, 0,
+                        NULL, NULL, NULL, NULL, 0, 0,
+                        env->field_fish_range_cm,
+                        env->field_food_range_cm,
                         FIELD_EPS_M, &fx, &fy
                     );
                     float raw_knollen = project_field(fx, fy, snx, sny);
@@ -1059,9 +1128,12 @@ void calibrate_electroreceptors(FishEnv* env) {
         measure_electric_field_with_reflections(
             sx, sy,
             eod_x, eod_y, eod_q, 2,
-            NULL, NULL, NULL, NULL, 0,
-            env->arena_size_x, env->arena_size_y, FIELD_EPS_M,
-            REFLECTION_SCALE, false, &fx, &fy
+            NULL, NULL, NULL, NULL, 0, 0,
+            env->arena_size_x, env->arena_size_y,
+            env->reflection_wall_range_cm,
+            env->field_fish_range_cm,
+            env->field_food_range_cm,
+            FIELD_EPS_M, REFLECTION_SCALE, false, &fx, &fy
         );
         env->mormyromast_cd[i] = project_field(fx, fy, nx, ny);
     }
@@ -1076,9 +1148,12 @@ void calibrate_electroreceptors(FishEnv* env) {
         measure_electric_field_with_reflections(
             sx, sy,
             NULL, NULL, NULL, 0,
-            dip_x, dip_y, dip_mx, dip_my, 1,
-            env->arena_size_x, env->arena_size_y, FIELD_EPS_M,
-            REFLECTION_SCALE, false, &fx, &fy
+            dip_x, dip_y, dip_mx, dip_my, 1, 1,
+            env->arena_size_x, env->arena_size_y,
+            env->reflection_wall_range_cm,
+            env->field_fish_range_cm,
+            env->field_food_range_cm,
+            FIELD_EPS_M, REFLECTION_SCALE, false, &fx, &fy
         );
         env->amp_intrinsic_baseline[i] = project_field(fx, fy, nx, ny);
     }
@@ -1135,7 +1210,9 @@ void build_electric_scene(FishEnv* env) {
             measure_electric_field(
                 agent->pos_x, agent->pos_y,
                 eod_x, eod_y, eod_q, (size_t)n_eod,
-                NULL, NULL, NULL, NULL, 0,
+                NULL, NULL, NULL, NULL, 0, 0,
+                env->field_fish_range_cm,
+                env->field_food_range_cm,
                 FIELD_EPS_M, &fx, &fy
             );
             induce_dipole_moment(
@@ -1163,7 +1240,9 @@ void build_electric_scene(FishEnv* env) {
         measure_electric_field(
             env->food[i].pos_x, env->food[i].pos_y,
             eod_x, eod_y, eod_q, (size_t)n_eod,
-            NULL, NULL, NULL, NULL, 0,
+            NULL, NULL, NULL, NULL, 0, 0,
+            env->field_fish_range_cm,
+            env->field_food_range_cm,
             FIELD_EPS_M, &fx, &fy
         );
         induce_dipole_moment(
@@ -1454,16 +1533,17 @@ void render_field(FishEnv* env) {
     float mono_x[2 * MAX_AGENTS];
     float mono_y[2 * MAX_AGENTS];
     float mono_q[2 * MAX_AGENTS];
-    float dip_x[MAX_DIPOLE_SOURCES];
-    float dip_y[MAX_DIPOLE_SOURCES];
-    float dip_mx[MAX_DIPOLE_SOURCES];
-    float dip_my[MAX_DIPOLE_SOURCES];
+    float ind_x[MAX_AGENTS + MAX_FOOD];
+    float ind_y[MAX_AGENTS + MAX_FOOD];
+    float ind_mx[MAX_AGENTS + MAX_FOOD];
+    float ind_my[MAX_AGENTS + MAX_FOOD];
+    float int_x[MAX_AGENTS + MAX_FOOD];
+    float int_y[MAX_AGENTS + MAX_FOOD];
+    float int_mx[MAX_AGENTS + MAX_FOOD];
+    float int_my[MAX_AGENTS + MAX_FOOD];
     int n_mono = pack_eod_sources(env, mono_x, mono_y, mono_q);
-    int n_intr = pack_intrinsic_sources(env, dip_x, dip_y, dip_mx, dip_my);
-    int n_ind = pack_induced_sources(
-        env, dip_x + n_intr, dip_y + n_intr, dip_mx + n_intr, dip_my + n_intr
-    );
-    int n_dip = n_intr + n_ind;
+    int n_ind = pack_induced_sources(env, ind_x, ind_y, ind_mx, ind_my);
+    int n_intr = pack_intrinsic_sources(env, int_x, int_y, int_mx, int_my);
 
     const int columns = 25;
     const int rows = 25;
@@ -1484,17 +1564,31 @@ void render_field(FishEnv* env) {
             }
             if (!near_fish) continue;
 
-            float fx, fy;
+            float fx1, fy1, fx2, fy2;
             measure_electric_field_with_reflections(
                 pos_x, pos_y,
                 mono_x, mono_y, mono_q, (size_t)n_mono,
-                dip_x, dip_y, dip_mx, dip_my, (size_t)n_dip,
+                ind_x, ind_y, ind_mx, ind_my, (size_t)n_ind,
+                (size_t)env->num_agents,
                 env->arena_size_x, env->arena_size_y,
-                FIELD_EPS_M,
-                REFLECTION_SCALE,
-                false,
-                &fx, &fy
+                env->reflection_wall_range_cm,
+                env->field_fish_range_cm,
+                env->field_food_range_cm,
+                FIELD_EPS_M, REFLECTION_SCALE, false, &fx1, &fy1
             );
+            measure_electric_field_with_reflections(
+                pos_x, pos_y,
+                NULL, NULL, NULL, 0,
+                int_x, int_y, int_mx, int_my, (size_t)n_intr,
+                (size_t)env->num_agents,
+                env->arena_size_x, env->arena_size_y,
+                env->reflection_wall_range_cm,
+                env->field_fish_range_cm,
+                env->field_food_range_cm,
+                FIELD_EPS_M, REFLECTION_SCALE, false, &fx2, &fy2
+            );
+            float fx = fx1 + fx2;
+            float fy = fy1 + fy2;
             float strength = vec_length(fx, fy);
             if (strength <= 0.0f) continue;
             float log_strength = log10f(strength);
