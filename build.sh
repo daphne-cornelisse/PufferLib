@@ -5,6 +5,7 @@ set -e
 #   ./build.sh breakout              # Full native train/eval binary (CPU envs)
 #   ./build.sh breakout --gpu        # GPU env (ENV_HEADER=ocean/ENV/ENV.cu; exclusive vs .h)
 #   ./build.sh breakout --float      # float32 precision (required for --slowly)
+#   ./build.sh breakout --headless   # raylib PLATFORM_MEMORY software renderer (no display)
 #   ./build.sh breakout --cpu        # Tiny standalone CPU eval executable
 #   ./build.sh breakout --debug      # Debug build
 #   ./build.sh breakout --local      # Standalone executable (debug, sanitizers)
@@ -14,7 +15,7 @@ set -e
 #   ./build.sh all                   # Build all envs native and native float32
 
 if [ -z "$1" ]; then
-    echo "Usage: ./build.sh ENV_NAME [--gpu] [--float] [--debug] [--local|--fast|--web|--profile|--cpu]"
+    echo "Usage: ./build.sh ENV_NAME [--gpu] [--float] [--headless] [--debug] [--local|--fast|--web|--profile|--cpu]"
     exit 1
 fi
 ENV=$1
@@ -25,6 +26,7 @@ for arg in "$@"; do
     case $arg in
         --gpu) USE_GPU_ENV=1 ;;
         --float) PRECISION="-DPRECISION_FLOAT" ;;
+        --headless) HEADLESS=1 ;;
         --debug) DEBUG=1 ;;
         --local) MODE=local ;;
         --fast)  MODE=fast ;;
@@ -53,18 +55,52 @@ if [ "$ENV" = "all" ]; then
     exit 0
 fi
 
+RAYLIB_VERSION="6.0"
+RAYLIB_RELEASE_PATH="6.0"
+
+has_lib() {
+    printf 'int main(void) { return 0; }\n' | ${CC:-cc} -x c - -o /tmp/pufferlib_libcheck "$1" >/dev/null 2>&1
+}
+
+append_if_lib_exists() {
+    local lib=$1
+    if has_lib "$lib"; then
+        RAYLIB_DESKTOP_LINUX_LIBS+=("$lib")
+    fi
+}
+
 # Linux/mac
 PLATFORM="$(uname -s)"
 if [ "$PLATFORM" = "Linux" ]; then
-    RAYLIB_NAME='raylib-5.5_linux_amd64'
+    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_linux_amd64"
     OMP_LIB=-lomp5
     SANITIZE_FLAGS=(-fsanitize=address,undefined,bounds,pointer-overflow,leak -fno-omit-frame-pointer)
-    STANDALONE_LDFLAGS=(-lGL)
+    RAYLIB_DESKTOP_LINUX_LIBS=(-ldl)
+    append_if_lib_exists -lGL
+    append_if_lib_exists -lX11
+    append_if_lib_exists -lXrandr
+    append_if_lib_exists -lXinerama
+    append_if_lib_exists -lXi
+    append_if_lib_exists -lXcursor
+    STANDALONE_LDFLAGS=("${RAYLIB_DESKTOP_LINUX_LIBS[@]}")
 else
-    RAYLIB_NAME='raylib-5.5_macos'
+    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_macos"
     OMP_LIB=-lomp
     SANITIZE_FLAGS=()
     STANDALONE_LDFLAGS=(-framework Cocoa -framework IOKit -framework CoreVideo -framework OpenGL)
+fi
+
+RAYLIB_PLATFORM="-DPLATFORM_DESKTOP"
+RAYLIB_LINK_LDFLAGS=("${STANDALONE_LDFLAGS[@]}")
+if [ -n "$HEADLESS" ]; then
+    if [ "$MODE" = "web" ]; then
+        echo "Error: --headless is not compatible with --web"
+        exit 1
+    fi
+    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_memory"
+    RAYLIB_PLATFORM="-DPLATFORM_MEMORY"
+    RAYLIB_LINK_LDFLAGS=()
+    STANDALONE_LDFLAGS=()
 fi
 
 CLANG_WARN=(
@@ -80,40 +116,93 @@ CLANG_WARN=(
 
 download() {
     local name=$1 url=$2
-    [ -d "$name" ] && return
+    [ -d "$name" ] && return 0
     echo "Downloading $name..."
     case "$url" in
-        *.zip) curl -sL "$url" -o "$name.zip" && unzip -q "$name.zip" && rm "$name.zip" ;;
-        *)     curl -sL "$url" -o "$name.tar.gz" && tar xf "$name.tar.gz" && rm "$name.tar.gz" ;;
+        *.zip) curl -fsL "$url" -o "$name.zip" && unzip -q "$name.zip" && rm "$name.zip" ;;
+        *)     curl -fsL "$url" -o "$name.tar.gz" && tar xf "$name.tar.gz" && rm "$name.tar.gz" ;;
     esac
 }
 
-RAYLIB_URL="https://github.com/raysan5/raylib/releases/download/5.5"
-if [ "$MODE" = "web" ]; then
-    RAYLIB_NAME='raylib-5.5_webassembly'
-    download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.zip"
+build_raylib_from_source() {
+    local name=$1 platform=$2
+    if [ ! -d "$name" ]; then
+        echo "Downloading raylib ${RAYLIB_VERSION} source for $platform..."
+        curl -fsL "$RAYLIB_SOURCE_URL" -o "$name.tar.gz"
+        tar xf "$name.tar.gz"
+        rm "$name.tar.gz"
+        mv "raylib-${RAYLIB_RELEASE_PATH}" "$name"
+    fi
+    if [ ! -f "$name/src/libraylib.a" ] || [ ! -f "$name/src/.pufferlib_pic" ]; then
+        echo "Building raylib ${RAYLIB_VERSION} $platform..."
+        make -C "$name/src" clean >/dev/null 2>&1 || true
+        local custom_cflags="-fPIC"
+        if [ "$platform" = "PLATFORM_MEMORY" ]; then
+            custom_cflags="$custom_cflags -Wno-unused-label -Wno-unused-variable"
+        fi
+        make -C "$name/src" PLATFORM="$platform" RAYLIB_BUILD_MODE=RELEASE CUSTOM_CFLAGS="$custom_cflags"
+        touch "$name/src/.pufferlib_pic"
+    fi
+}
+
+RAYLIB_URL="https://github.com/raysan5/raylib/releases/download/${RAYLIB_RELEASE_PATH}"
+RAYLIB_SOURCE_URL="https://github.com/raysan5/raylib/archive/refs/tags/${RAYLIB_RELEASE_PATH}.tar.gz"
+if [ -n "$HEADLESS" ]; then
+    build_raylib_from_source "$RAYLIB_NAME" PLATFORM_MEMORY
+    RAYLIB_A="$RAYLIB_NAME/src/libraylib.a"
+    # Only -I src (not src/external): raylib uses "external/..." relative includes,
+    # and putting external/ on the path shadows system <dirent.h> with the Win32 shim.
+    INCLUDES=(-I./$RAYLIB_NAME/src -I./src -I./vendor)
+elif [ "$MODE" = "web" ]; then
+    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_webassembly"
+    if download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.zip"; then
+        RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
+        INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
+    else
+        echo "Error: prebuilt web raylib ${RAYLIB_VERSION} archive not found"
+        exit 1
+    fi
 else
-    download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.tar.gz"
+    if download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.tar.gz"; then
+        RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
+        INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
+    else
+        echo "Prebuilt raylib ${RAYLIB_VERSION} archive not found; building from source..."
+        RAYLIB_NAME="raylib-${RAYLIB_VERSION}_desktop_source"
+        build_raylib_from_source "$RAYLIB_NAME" PLATFORM_DESKTOP
+        RAYLIB_A="$RAYLIB_NAME/src/libraylib.a"
+        INCLUDES=(-I./$RAYLIB_NAME/src -I./src -I./vendor)
+    fi
 fi
 
-RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
-INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
 LINK_ARCHIVES=("$RAYLIB_A")
 EXTRA_SRC=""
 EXTRA_LDFLAGS=()
 EXTRA_CFLAGS=()
-SRC_FILE=""
+# Preserve SRC_FILE/OUTPUT_NAME if the caller exported them
+# (e.g. SRC_FILE=ocean/wef/init.c OUTPUT_NAME=wef_init ./build.sh wef --fast).
+SRC_FILE="${SRC_FILE:-}"
+OUTPUT_NAME="${OUTPUT_NAME:-}"
 
 if [ "$ENV" = "constellation" ]; then
     SRC_DIR="src"
-    OUTPUT_NAME="seethestars"
+    OUTPUT_NAME="${OUTPUT_NAME:-seethestars}"
     MODE=${MODE:-fast}
     CLANG_WARN+=(-Wno-unused-function)
 elif [ "$ENV" = "cache_data" ]; then
     SRC_DIR="src"
-    OUTPUT_NAME="cache_data"
-    SRC_FILE="src/constellation.c"
+    OUTPUT_NAME="${OUTPUT_NAME:-cache_data}"
+    SRC_FILE="${SRC_FILE:-src/constellation.c}"
     EXTRA_CFLAGS+=(-DPUFFER_CACHE_DATA)
+    MODE=${MODE:-fast}
+    CLANG_WARN+=(-Wno-unused-function)
+elif [ "$ENV" = "eval" ]; then
+    # Sweep plot dashboard (+ optional best-checkpoint gif via ./puffer render).
+    #   ./build.sh eval --fast [--headless]
+    #   ./eval wef [--render]
+    SRC_DIR="src"
+    OUTPUT_NAME="${OUTPUT_NAME:-eval}"
+    SRC_FILE="${SRC_FILE:-src/eval.c}"
     MODE=${MODE:-fast}
     CLANG_WARN+=(-Wno-unused-function)
 elif [ "$ENV" = "trailer" ]; then
@@ -186,9 +275,9 @@ if [ "$MODE" = "local" ] || [ "$MODE" = "fast" ]; then
         "$SRC_FILE" $EXTRA_SRC -o "$OUTPUT_NAME"
         "${LINK_ARCHIVES[@]}"
         "${EXTRA_LDFLAGS[@]}"
-        "${STANDALONE_LDFLAGS[@]}"
+        "${RAYLIB_LINK_LDFLAGS[@]}"
         -lm -lpthread -fopenmp
-        -DPLATFORM_DESKTOP
+        "$RAYLIB_PLATFORM"
         "${EXTRA_CFLAGS[@]}"
     )
     echo "Compiling $ENV..."
@@ -225,13 +314,13 @@ elif [ "$MODE" = "cpu" ]; then
     echo "Compiling standalone CPU eval for $ENV..."
     ${CC:-clang} "${CLANG_OPT[@]}" \
         -I. -Isrc -I$SRC_DIR -Ivendor "${INCLUDES[@]}" \
-        -DPLATFORM_DESKTOP \
+        "$RAYLIB_PLATFORM" \
         -DPUFFERCPU_EVAL_MAIN \
         -DENV_HEADER=\"$ENV_HEADER\" \
         -x c src/puffercpu.h -x none $EXTRA_SRC \
         "${LINK_ARCHIVES[@]}" \
         "${EXTRA_LDFLAGS[@]}" \
-        "${STANDALONE_LDFLAGS[@]}" \
+        "${RAYLIB_LINK_LDFLAGS[@]}" \
         -lm -lpthread -fopenmp \
         -o build_cpu
     echo "Built: ./build_cpu"
@@ -288,16 +377,17 @@ MODE=${MODE:-native}
 NVCC_NARROW=(-Xcompiler=-Wno-narrowing --diag-suppress=2361)
 
 if [ "$MODE" = "native" ]; then
-    echo "Compiling native train/eval binary ($ARCH)..."
+    echo "Compiling native train/eval binary ($ARCH)${HEADLESS:+ [headless]}..."
     $NVCC $NVCC_OPT -arch=$ARCH -std=c++17 \
         -I. -Isrc -I$SRC_DIR -Ivendor \
         "${INCLUDES[@]}" \
-        -I$CUDA_HOME/include -I$CUDA_HOME/include/cccl $NCCL_IFLAG -I$RAYLIB_NAME/include \
+        -I$CUDA_HOME/include -I$CUDA_HOME/include/cccl $NCCL_IFLAG \
 	    "${ENV_COMPILE_FLAGS[@]}" \
 	    -DENV_NAME=$ENV \
 	    -DPUFFER_ENV_NAME=\"$ENV\" \
 	    -DPUFFERLIB_BUILD_MAIN \
-	    -Xcompiler=-DPLATFORM_DESKTOP \
+	    "$RAYLIB_PLATFORM" \
+	    -Xcompiler=$RAYLIB_PLATFORM \
 	    -Xcompiler=-fopenmp \
 	    "${NVCC_NARROW[@]}" \
 	    "${EXTRA_CFLAGS[@]}" \
@@ -307,20 +397,21 @@ if [ "$MODE" = "native" ]; then
         -L$CUDA_HOME/lib64 $NCCL_LFLAG \
         "${EXTRA_LDFLAGS[@]}" \
         -lcudart -lnccl -lnvidia-ml -lcublas -lcusolver -lcurand \
-        -lm -lpthread $OMP_LIB "${STANDALONE_LDFLAGS[@]}" \
+        -lm -lpthread $OMP_LIB "${RAYLIB_LINK_LDFLAGS[@]}" \
         -o puffer
     echo "Built: ./puffer"
 
 elif [ "$MODE" = "profile" ]; then
-    echo "Compiling profile binary ($ARCH)..."
+    echo "Compiling profile binary ($ARCH)${HEADLESS:+ [headless]}..."
     $NVCC $NVCC_OPT -arch=$ARCH -std=c++17 \
         -I. -Isrc -I$SRC_DIR -Ivendor \
         "${INCLUDES[@]}" \
-        -I$CUDA_HOME/include -I$CUDA_HOME/include/cccl $NCCL_IFLAG -I$RAYLIB_NAME/include \
+        -I$CUDA_HOME/include -I$CUDA_HOME/include/cccl $NCCL_IFLAG \
         "${ENV_COMPILE_FLAGS[@]}" \
         -DENV_NAME=$ENV \
 	    -DPUFFER_ENV_NAME=\"$ENV\" \
-        -Xcompiler=-DPLATFORM_DESKTOP \
+        "$RAYLIB_PLATFORM" \
+        -Xcompiler=$RAYLIB_PLATFORM \
 	    "${NVCC_NARROW[@]}" \
 	    "${EXTRA_CFLAGS[@]}" \
         $PRECISION \
@@ -329,7 +420,7 @@ elif [ "$MODE" = "profile" ]; then
         "$RAYLIB_A" \
         -L$CUDA_HOME/lib64 \
         -lnccl -lnvidia-ml -lcublas -lcusolver -lcurand \
-        -lGL -lm -lpthread $OMP_LIB \
+        -lm -lpthread $OMP_LIB "${RAYLIB_LINK_LDFLAGS[@]}" \
         -o profile
     echo "Built: ./profile"
 fi

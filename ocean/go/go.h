@@ -977,11 +977,13 @@ void puf_render(CGo* env) {
         int inner = (env->grid_square_size / 2) - 4;
         int outer = (env->grid_square_size / 2) - 2;
         if (position_state == 1) {
-            DrawCircleGradient(circle_x, circle_y, outer, STONE_GRAY, BLACK);
+            DrawCircleGradient((Vector2){(float)circle_x, (float)circle_y},
+                (float)outer, STONE_GRAY, BLACK);
         }
         // if enemy draw circle tile for white
         if (position_state == 2) {
-            DrawCircleGradient(circle_x, circle_y, inner, WHITE, GRAY);
+            DrawCircleGradient((Vector2){(float)circle_x, (float)circle_y},
+                (float)inner, WHITE, GRAY);
         }
     }
     // design a pass button

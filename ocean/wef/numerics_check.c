@@ -74,8 +74,6 @@ static void configure_env(Wef* env, unsigned int seed) {
     dict_set(&kwargs, "patch_density", 0.001);
     dict_set(&kwargs, "electric_field_radius", 15);
     dict_set(&kwargs, "reflection_wall_range", 100);
-    dict_set(&kwargs, "field_fish_range", 100);
-    dict_set(&kwargs, "field_food_range", 5);
     dict_set(&kwargs, "episode_length", 4096);
     memset(env, 0, sizeof(*env));
     env->rng = env_rng_from_seed(seed);

@@ -8,6 +8,8 @@
 #include <string.h>
 #include <math.h>
 #include <assert.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 typedef struct {
     void* data;
@@ -726,15 +728,119 @@ int main(int argc, char** argv) {
     PufferNet* net = make_puffernet(weights, env.num_agents, OBS_SIZE,
         hidden_size, num_layers, act_sizes, num_actions);
 
-    int frame = 0;
+    long num_frames = (long)puf_ini_get(&ini, "base", "num_frames");
+    double gif_fps = puf_ini_get(&ini, "base", "fps");
+    const char* gif_path = puf_ini_get_str(&ini, "base", "gif_path");
+#if defined(PLATFORM_MEMORY)
+    if (num_frames == 0) {
+        num_frames = 300;
+    }
+#endif
+
+    int ffmpeg_fd = -1;
+    pid_t ffmpeg_pid = -1;
+    long frame_count = 0;
+    int tick = 0;
+
     puf_render(&env);
+    puf_render_headless_tune();
     while (!WindowShouldClose()) {
-        if (frame % 4 == 0) {
+        if (tick % 4 == 0) {
             forward_puffernet(net, observations, actions);
         }
-        frame = (frame + 1) % 4;
+        tick = (tick + 1) % 4;
         puf_step(&env);
         puf_render(&env);
+        puf_render_headless_tune();
+
+        if (num_frames != 0) {
+            if (ffmpeg_fd < 0) {
+                int w = puf_screen_width();
+                int h = puf_screen_height();
+                if (w <= 0 || h <= 0) {
+                    fprintf(stderr, "render window not ready\n");
+                    break;
+                }
+                // Parent dir for gif_path
+                {
+                    char dir[4096];
+                    snprintf(dir, sizeof(dir), "%s", gif_path);
+                    char* slash = strrchr(dir, '/');
+                    if (slash && slash != dir) {
+                        *slash = '\0';
+                        // best-effort mkdir -p
+                        char cmd[4200];
+                        snprintf(cmd, sizeof(cmd), "mkdir -p '%s'", dir);
+                        system(cmd);
+                    }
+                }
+                int pipefd[2];
+                if (pipe(pipefd) != 0) {
+                    perror("pipe");
+                    break;
+                }
+                ffmpeg_pid = fork();
+                if (ffmpeg_pid == 0) {
+                    close(pipefd[1]);
+                    dup2(pipefd[0], STDIN_FILENO);
+                    close(pipefd[0]);
+                    char size[32], fps_s[32];
+                    snprintf(size, sizeof(size), "%dx%d", w, h);
+                    snprintf(fps_s, sizeof(fps_s), "%g", gif_fps);
+                    size_t plen = strlen(gif_path);
+                    int is_gif = plen >= 4 && (strcmp(gif_path + plen - 4, ".gif") == 0
+                        || strcmp(gif_path + plen - 4, ".GIF") == 0);
+                    // Default gif encode dithers thin strokes on white to gray.
+                    if (is_gif) {
+                        execlp("ffmpeg", "ffmpeg", "-y", "-loglevel", "warning",
+                            "-f", "rawvideo", "-pix_fmt", "rgba",
+                            "-s", size, "-r", fps_s, "-i", "-",
+                            "-vf",
+                            "split[s0][s1];[s0]palettegen=stats_mode=full:max_colors=256[p];"
+                            "[s1][p]paletteuse=dither=none:diff_mode=rectangle",
+                            "-loop", "0",
+                            gif_path, (char*)NULL);
+                    } else {
+                        execlp("ffmpeg", "ffmpeg", "-y", "-loglevel", "warning",
+                            "-f", "rawvideo", "-pix_fmt", "rgba",
+                            "-s", size, "-r", fps_s, "-i", "-",
+                            "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                            "-crf", "18", "-preset", "veryfast",
+                            gif_path, (char*)NULL);
+                    }
+                    _exit(127);
+                }
+                close(pipefd[0]);
+                ffmpeg_fd = pipefd[1];
+                printf("Recording to %s (%dx%d @ %g fps, num_frames=%ld)\n",
+                    gif_path, w, h, gif_fps, num_frames);
+            }
+            if (!puf_pipe_frame_fd(ffmpeg_fd)) {
+                fprintf(stderr, "Failed to pipe frame to ffmpeg\n");
+                break;
+            }
+            frame_count++;
+            if (frame_count % 100 == 0) {
+                if (num_frames < 0) {
+                    printf("Recorded %ld frames to %s\n", frame_count, gif_path);
+                } else {
+                    printf("Recorded %ld/%ld frames [%.1f%%] to %s\n",
+                        frame_count, num_frames,
+                        100.0 * (double)frame_count / (double)num_frames,
+                        gif_path);
+                }
+            }
+            if (num_frames > 0 && frame_count >= num_frames) {
+                break;
+            }
+        }
+    }
+
+    if (ffmpeg_fd >= 0) {
+        close(ffmpeg_fd);
+        int status = 0;
+        waitpid(ffmpeg_pid, &status, 0);
+        printf("Wrote %ld frames to %s\n", frame_count, gif_path);
     }
 
     puf_close(&env);

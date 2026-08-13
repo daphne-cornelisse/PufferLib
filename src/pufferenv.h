@@ -1,10 +1,12 @@
 #pragma once
 
+#include <errno.h>
 #include <immintrin.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "ini.h"
 #include "raylib.h"
@@ -396,4 +398,78 @@ static inline int pva_frame_at_time(PvaClip* clip, float seconds) {
         return 0;
     }
     return (int)(seconds * clip->fps) % clip->frame_count;
+}
+
+// Headless / gif capture: dump the current raylib framebuffer as RGBA to fd.
+// PLATFORM_MEMORY (raylib software) stores BGRA bottom-up; convert for ffmpeg.
+static inline int puf_write_all(int fd, const void* data, size_t size) {
+    const char* cursor = (const char*)data;
+    while (size > 0) {
+        ssize_t written = write(fd, cursor, size);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return 0;
+        }
+        if (written == 0) {
+            return 0;
+        }
+        cursor += written;
+        size -= (size_t)written;
+    }
+    return 1;
+}
+
+static inline int puf_pipe_frame_fd(int fd) {
+    static int muted_raylib_info_logs = 0;
+    if (!muted_raylib_info_logs) {
+        SetTraceLogLevel(LOG_WARNING);
+        muted_raylib_info_logs = 1;
+    }
+
+    Image frame = LoadImageFromScreen();
+    ImageFormat(&frame, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    int ok = 1;
+
+#if defined(PLATFORM_MEMORY) || defined(GRAPHICS_API_OPENGL_SOFTWARE)
+    // rlsw glReadPixels path emits BGRA rows that LoadImageFromScreen()
+    // flips again as if they were OpenGL bottom-left-origin RGBA pixels.
+    // Convert back to top-left-origin RGBA for ffmpeg's `-pix_fmt rgba`.
+    size_t row_size = (size_t)frame.width * 4;
+    unsigned char* row = (unsigned char*)malloc(row_size);
+    if (row == NULL) {
+        ok = 0;
+    } else {
+        unsigned char* pixels = (unsigned char*)frame.data;
+        for (int y = frame.height - 1; ok && y >= 0; y--) {
+            unsigned char* src = pixels + (size_t)y * row_size;
+            for (int x = 0; x < frame.width; x++) {
+                row[x * 4 + 0] = src[x * 4 + 2];
+                row[x * 4 + 1] = src[x * 4 + 1];
+                row[x * 4 + 2] = src[x * 4 + 0];
+                row[x * 4 + 3] = src[x * 4 + 3];
+            }
+            ok = puf_write_all(fd, row, row_size);
+        }
+        free(row);
+    }
+#else
+    size_t size = (size_t)frame.width * (size_t)frame.height * 4;
+    ok = puf_write_all(fd, frame.data, size);
+#endif
+
+    UnloadImage(frame);
+    return ok;
+}
+
+static inline int puf_screen_width(void) { return GetScreenWidth(); }
+static inline int puf_screen_height(void) { return GetScreenHeight(); }
+
+// Apply headless render defaults after the window is created by puf_render.
+static inline void puf_render_headless_tune(void) {
+#if defined(PLATFORM_MEMORY)
+    SetTraceLogLevel(LOG_WARNING);
+    SetTargetFPS(0);
+#endif
 }
