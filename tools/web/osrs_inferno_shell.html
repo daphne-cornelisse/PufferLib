@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OSRS Inferno Simulator</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --coal: #0d0b09;
+      --bar: #17120e;
+      --line: #3d3027;
+      --ember: #c76a32;
+      --bone: #e3d8cd;
+      --muted: #9b8c80;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--coal);
+      color: var(--bone);
+      font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", "Liberation Mono", monospace;
+    }
+
+    body {
+      display: grid;
+      grid-template-rows: 42px minmax(0, 1fr);
+    }
+
+    .bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      min-width: 0;
+      padding: 0 10px 0 12px;
+      border-bottom: 1px solid var(--line);
+      border-left: 3px solid var(--ember);
+      background: var(--bar);
+    }
+
+    .bar h1 {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    #status {
+      min-width: 0;
+      flex: 1;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .controls {
+      display: flex;
+      gap: 6px;
+    }
+
+    button {
+      min-height: 28px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: var(--coal);
+      color: var(--bone);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: var(--ember);
+      color: #ffffff;
+    }
+
+    button:focus-visible,
+    canvas:focus-visible {
+      outline: 2px solid var(--ember);
+      outline-offset: -2px;
+    }
+
+    main {
+      min-width: 0;
+      min-height: 0;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #000000;
+    }
+  </style>
+</head>
+<body>
+  <header class="bar">
+    <h1>OSRS Inferno</h1>
+    <div id="status" role="status" aria-live="assertive">Loading simulator</div>
+    <div class="controls">
+      <button id="focus" type="button">Focus</button>
+      <button id="reset" type="button">Reset</button>
+    </div>
+  </header>
+  <main>
+    <canvas id="canvas" aria-label="OSRS Inferno simulator" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+  </main>
+  <script>
+    var canvasElement = document.getElementById("canvas");
+    var statusElement = document.getElementById("status");
+    var runtimeError = false;
+    var query = new URLSearchParams(window.location.search);
+    var modelUrl = query.get("model") || "models/osrs_inferno.bin";
+    var modelUrlPath = new URL(modelUrl, window.location.href).pathname;
+    var modelBasename = modelUrlPath.split("/").filter(Boolean).pop();
+
+    function reportError(reason) {
+      var message = reason instanceof Error ? reason.message : String(reason);
+      runtimeError = true;
+      statusElement.hidden = false;
+      statusElement.textContent = "Error: " + message;
+      console.error(reason);
+    }
+
+    if (!modelBasename) {
+      reportError(new Error("Model URL has no filename"));
+      throw new Error("Model URL has no filename");
+    }
+
+    function versionedAssetUrl(url) {
+      var separator = url.includes("?") ? "&" : "?";
+      return url + separator + "v=__OSRS_BUNDLE_VERSION__";
+    }
+
+    function appendArgument(argumentsList, parameterName, flagName) {
+      var value = query.get(parameterName);
+      if (value !== null) {
+        argumentsList.push(flagName, value);
+      }
+    }
+
+    var installedModelPath = "/models/" + modelBasename;
+    var runtimeArguments = [
+      "--model", installedModelPath,
+      "--wave", query.get("wave") || "69",
+      "--policy-mode", query.get("policyMode") || "sample",
+      "--policy-seed", query.get("policySeed") || "1"
+    ];
+    appendArgument(runtimeArguments, "hiddenSize", "--hidden-size");
+    appendArgument(runtimeArguments, "numLayers", "--num-layers");
+    appendArgument(runtimeArguments, "entityEncoder", "--entity-encoder");
+
+    document.getElementById("focus").addEventListener("click", function () {
+      canvasElement.focus();
+    });
+    document.getElementById("reset").addEventListener("click", function () {
+      window.location.reload();
+    });
+    window.addEventListener("error", function (event) {
+      reportError(event.error || event.message);
+    });
+    window.addEventListener("unhandledrejection", function (event) {
+      reportError(event.reason);
+    });
+
+    var Module = {
+      arguments: runtimeArguments,
+      canvas: canvasElement,
+      locateFile: function (path) {
+        return versionedAssetUrl(path);
+      },
+      setStatus: function (text) {
+        if (runtimeError) {
+          return;
+        }
+        statusElement.hidden = false;
+        statusElement.textContent = text;
+      },
+      onAbort: function (reason) {
+        reportError(reason);
+      },
+      onRuntimeInitialized: function () {
+        statusElement.hidden = true;
+        canvasElement.focus();
+      },
+      preRun: [function () {
+        var dependencyName = "inferno-policy";
+        addRunDependency(dependencyName);
+        Module.setStatus("Loading policy");
+        fetch(versionedAssetUrl(modelUrl)).then(function (response) {
+          if (!response.ok) {
+            throw new Error("Policy request failed: HTTP " + response.status + " " + response.statusText);
+          }
+          return response.arrayBuffer();
+        }).then(function (policyData) {
+          FS.mkdirTree("/models");
+          FS.writeFile(installedModelPath, new Uint8Array(policyData));
+          removeRunDependency(dependencyName);
+        }).catch(function (error) {
+          reportError(error);
+          abort(error);
+        });
+      }]
+    };
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

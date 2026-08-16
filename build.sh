@@ -292,6 +292,43 @@ if [ "$MODE" = "cpu" ]; then
     echo "Built: ./$OUTPUT_NAME"
     exit 0
 elif [ "$MODE" = "web" ]; then
+    if [ "$ENV" = "osrs_inferno" ]; then
+        mkdir -p "build/web/$ENV"
+        OSRS_PRELOAD_LINES=$(python3 ocean/osrs/scripts/osrs_asset_manifest.py \
+            emcc-preload-args ocean/osrs/asset_manifest.json \
+            --group core \
+            --group inferno \
+            --group combat_visuals \
+            --group gui \
+            --group items)
+        OSRS_PRELOAD=()
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            if [[ "$line" != "--preload-file "* ]]; then
+                echo "Error: invalid OSRS preload argument: $line"
+                exit 1
+            fi
+            OSRS_PRELOAD+=(--preload-file "${line#--preload-file }")
+        done <<< "$OSRS_PRELOAD_LINES"
+        echo "Compiling $ENV for web..."
+        emcc \
+            -o "build/web/$ENV/game.html" \
+            ocean/osrs_inferno/osrs_inferno.c \
+            -O3 -Wall -Wno-narrowing \
+            "${LINK_ARCHIVES[@]}" \
+            -I. -Isrc -I$SRC_DIR -Ivendor "${INCLUDES[@]}" \
+            -L. -L./$RAYLIB_NAME/lib \
+            -sASSERTIONS=2 -gsource-map \
+            -sUSE_GLFW=3 -sUSE_WEBGL2=1 -sASYNCIFY -sFILESYSTEM -sFORCE_FILESYSTEM=1 \
+            -sLZ4=1 \
+            --shell-file tools/web/osrs_inferno_shell.html \
+            -sINITIAL_MEMORY=512MB -sALLOW_MEMORY_GROWTH -sSTACK_SIZE=512KB \
+            -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
+            "${OSRS_PRELOAD[@]}" \
+            "${EXTRA_CFLAGS[@]}"
+        echo "Built: build/web/$ENV/game.html"
+        exit 0
+    fi
     ENV_HEADER="$SRC_DIR/$ENV.h"
     if ! grep -q 'typedef[[:space:]].*obs_t' "$ENV_HEADER" 2>/dev/null; then
         echo "Error: $ENV_HEADER must typedef obs_t for web eval"
