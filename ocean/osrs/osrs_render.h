@@ -29,6 +29,9 @@ typedef float obs_t;
 #include <stdio.h>
 #include <string.h>
 
+#ifndef OSRS_VISUAL_WINDOW_TITLE
+#define OSRS_VISUAL_WINDOW_TITLE "OSRS Debug Viewer"
+#endif
 #define RENDER_TILE_SIZE       20
 #define RENDER_WINDOW_W        1240
 #define RENDER_WINDOW_H        840
