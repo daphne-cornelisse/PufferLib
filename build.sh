@@ -114,16 +114,27 @@ download() {
     esac
 }
 
-RAYLIB_URL="https://github.com/raysan5/raylib/releases/download/5.5"
+RAYLIB_RELEASE_URL="https://github.com/raysan5/raylib/releases/download/5.5"
 if [ "$MODE" = "web" ]; then
-    RAYLIB_NAME='raylib-5.5_webassembly'
-    download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.zip"
+    RAYLIB_NAME='raylib-5.5'
+    download "$RAYLIB_NAME" "https://github.com/raysan5/raylib/archive/refs/tags/5.5.zip"
+    RAYLIB_A="$RAYLIB_NAME/src/libraylib.a"
+    RAYLIB_WEB_MARKER="$RAYLIB_NAME/src/.puffer-web-es3"
+    if [ ! -f "$RAYLIB_A" ] || [ ! -f "$RAYLIB_WEB_MARKER" ]; then
+        emmake make -C "$RAYLIB_NAME/src" clean
+        emmake make -C "$RAYLIB_NAME/src" \
+            PLATFORM=PLATFORM_WEB \
+            GRAPHICS=GRAPHICS_API_OPENGL_ES3 \
+            RAYLIB_LIBTYPE=STATIC
+        touch "$RAYLIB_WEB_MARKER"
+    fi
+    INCLUDES=(-I./$RAYLIB_NAME/src -I./src -I./vendor)
 else
-    download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.tar.gz"
+    download "$RAYLIB_NAME" "$RAYLIB_RELEASE_URL/$RAYLIB_NAME.tar.gz"
+    RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
+    INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
 fi
 
-RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
-INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
 LINK_ARCHIVES=("$RAYLIB_A")
 EXTRA_SRC=""
 EXTRA_LDFLAGS=()

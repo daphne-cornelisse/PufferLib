@@ -29,7 +29,10 @@ OUTPUT_FILES = {
 }
 
 
-def write_build(build_dir: Path, html: bytes = b"before __OSRS_BUNDLE_VERSION__ after\n") -> None:
+def write_build(
+    build_dir: Path,
+    html: bytes = b"before __OSRS_BUNDLE_VERSION__ <script src=game.js></script> after\n",
+) -> None:
     build_dir.mkdir()
     contents = {
         "game.html": html,
@@ -174,6 +177,28 @@ def test_html_requires_exactly_one_version_token(tmp_path: Path, html: bytes) ->
     assert "exactly one" in result.stderr.lower()
     assert not output_dir.exists()
 
+@pytest.mark.parametrize(
+    "html",
+    [
+        b"__OSRS_BUNDLE_VERSION__ without script\n",
+        b"__OSRS_BUNDLE_VERSION__ <script src=game.js></script> <script src=game.js></script>\n",
+    ],
+)
+def test_html_requires_exactly_one_game_script_reference(
+    tmp_path: Path, html: bytes
+) -> None:
+    build_dir = tmp_path / "build"
+    write_build(build_dir, html)
+    model = tmp_path / "policy.bin"
+    model.write_bytes(b"model")
+    output_dir = tmp_path / "site"
+
+    result = run_package(build_dir, model, output_dir)
+
+    assert result.returncode != 0
+    assert "game.js" in result.stderr
+    assert not output_dir.exists()
+
 
 def test_output_cannot_replace_build_input(tmp_path: Path) -> None:
     build_dir = tmp_path / "build"
@@ -229,6 +254,7 @@ def test_success_replaces_output_and_writes_complete_verified_bundle(tmp_path: P
     assert manifest["format"] == "puffer-osrs-inferno-web-v1"
     assert re.fullmatch(r"[0-9a-f]{16}", manifest["version"])
     assert manifest["version"] in final_html
+    assert f"src=game.js?v={manifest['version']}" in final_html
     assert manifest["source_commit"] == SOURCE_COMMIT
     assert manifest["model"] == {
         "path": "models/osrs_inferno.bin",

@@ -11,6 +11,7 @@ from typing import Callable, Sequence
 
 BUNDLE_FORMAT = "puffer-osrs-inferno-web-v1"
 VERSION_TOKEN = b"__OSRS_BUNDLE_VERSION__"
+GAME_SCRIPT_REFERENCE = b"src=game.js"
 GAME_FILE_NAMES = (
     "game.html",
     "game.js",
@@ -99,6 +100,8 @@ def package_bundle(
     source_html = source_contents["game.html"]
     if source_html.count(VERSION_TOKEN) != 1:
         raise ValueError("game.html must contain exactly one __OSRS_BUNDLE_VERSION__ token")
+    if source_html.count(GAME_SCRIPT_REFERENCE) != 1:
+        raise ValueError("game.html must contain exactly one game.js script reference")
 
     source_records = {
         name: file_record(source_contents[name]) for name in GAME_FILE_NAMES
@@ -110,7 +113,13 @@ def package_bundle(
     version = derive_bundle_version(ordered_hashes, metadata)
 
     packaged_contents = dict(source_contents)
-    packaged_contents["game.html"] = source_html.replace(VERSION_TOKEN, version.encode())
+    version_bytes = version.encode()
+    packaged_contents["game.html"] = source_html.replace(
+        VERSION_TOKEN, version_bytes
+    ).replace(
+        GAME_SCRIPT_REFERENCE,
+        GAME_SCRIPT_REFERENCE + b"?v=" + version_bytes,
+    )
     packaged_contents[MODEL_OUTPUT_PATH] = model_content
     final_records = dict(source_records)
     final_records["game.html"] = file_record(packaged_contents["game.html"])

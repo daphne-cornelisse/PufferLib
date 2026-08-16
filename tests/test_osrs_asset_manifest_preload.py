@@ -64,7 +64,7 @@ def test_empty_group_selection_emits_every_asset_once() -> None:
     ]
 
 
-def test_inferno_web_groups_emit_43_unique_matching_vfs_paths() -> None:
+def test_inferno_web_groups_emit_1568_unique_matching_vfs_paths() -> None:
     root = Path(__file__).resolve().parents[1]
     manifest = osrs_asset_manifest.load_manifest(root / "ocean/osrs/asset_manifest.json")
     lines = osrs_asset_manifest.emcc_preload_args(
@@ -72,9 +72,37 @@ def test_inferno_web_groups_emit_43_unique_matching_vfs_paths() -> None:
         ["core", "inferno", "combat_visuals", "gui", "items"],
     )
 
-    assert len(lines) == 43
-    assert len(set(lines)) == 43
+    assert len(lines) == 1568
+    assert len(set(lines)) == 1568
     for line in lines:
         source, destination = line.removeprefix("--preload-file ").split("@", 1)
         assert source == destination
         assert source.startswith("ocean/osrs/data/")
+
+
+
+def test_gui_group_contains_every_exported_gui_sprite() -> None:
+    root = Path(__file__).resolve().parents[1]
+    manifest = osrs_asset_manifest.load_manifest(root / "ocean/osrs/asset_manifest.json")
+    gui_group = next(group for group in manifest.required_groups if group.name == "gui")
+    data_dir = root / "ocean/osrs/data"
+    expected = {
+        path.relative_to(data_dir).as_posix()
+        for path in (data_dir / "sprites/gui").glob("*.png")
+    }
+
+    assert set(gui_group.files) == expected
+
+
+def test_items_group_contains_every_exported_item_sprite() -> None:
+    root = Path(__file__).resolve().parents[1]
+    manifest = osrs_asset_manifest.load_manifest(root / "ocean/osrs/asset_manifest.json")
+    items_group = next(group for group in manifest.required_groups if group.name == "items")
+    data_dir = root / "ocean/osrs/data"
+    expected = {
+        path.relative_to(data_dir).as_posix()
+        for path in (data_dir / "sprites/items").glob("*.png")
+    }
+    expected.add("sprites/items/item_stack_variants.tsv")
+
+    assert set(items_group.files) == expected
