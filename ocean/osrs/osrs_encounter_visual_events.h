@@ -227,8 +227,11 @@ static inline int osrs_emit_projectile_with_spec(
         fprintf(stderr, "invalid projectile event input\n");
         abort();
     }
-    if (spec->model_id == 0) {
-        fprintf(stderr, "missing combat projectile model for style %d\n",
+    if (spec->model_id == 0 &&
+            spec->travel_gfx_id <= 0 &&
+            spec->launch_gfx_id <= 0 &&
+            spec->impact_gfx_id <= 0) {
+        fprintf(stderr, "missing combat projectile visual for style %d\n",
             spec->style);
         abort();
     }
