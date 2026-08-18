@@ -4891,6 +4891,9 @@ static void render_draw_3d_world(RenderClient* rc, OsrsEnv* env) {
             } else if (fp->model_id > 0) {
                 proj_model = render_get_proj_model(rc, fp->model_id);
             }
+            if (!proj_model && (fp->launch_gfx_id > 0 || fp->impact_gfx_id > 0)) {
+                continue;
+            }
             if (!proj_model) {
                 fprintf(stderr, "render: missing projectile model %u\n",
                     fp->model_id);
