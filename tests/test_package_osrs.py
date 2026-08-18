@@ -9,8 +9,9 @@ import pytest
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_SCRIPT = REPOSITORY_ROOT / "tools/web/package_osrs_inferno.py"
+PACKAGE_SCRIPT = REPOSITORY_ROOT / "tools/web/package_osrs.py"
 SOURCE_COMMIT = "a" * 40
+ENVIRONMENT = "inferno"
 GAME_FILES = (
     "game.html",
     "game.js",
@@ -25,7 +26,7 @@ OUTPUT_FILES = {
     "game.wasm.map",
     "game.data",
     "bundle.json",
-    "models/osrs_inferno.bin",
+    "models/policy.bin",
 }
 
 
@@ -51,6 +52,7 @@ def run_package(
     output_dir: Path,
     *,
     source_commit: str = SOURCE_COMMIT,
+    environment: str = ENVIRONMENT,
     hidden_size: str = "512",
     num_layers: str = "2",
     entity_encoder: str = "0",
@@ -65,6 +67,8 @@ def run_package(
             str(model),
             "--out",
             str(output_dir),
+            "--environment",
+            environment,
             "--source-commit",
             source_commit,
             "--hidden-size",
@@ -242,7 +246,7 @@ def test_success_replaces_output_and_writes_complete_verified_bundle(tmp_path: P
 
     assert result.returncode == 0, result.stderr
     assert output_file_paths(output_dir) == OUTPUT_FILES
-    assert (output_dir / "models/osrs_inferno.bin").read_bytes() == original_model
+    assert (output_dir / "models/policy.bin").read_bytes() == original_model
     final_html = (output_dir / "game.html").read_text()
     assert "__OSRS_BUNDLE_VERSION__" not in final_html
     manifest_bytes = (output_dir / "bundle.json").read_bytes()
@@ -251,13 +255,14 @@ def test_success_replaces_output_and_writes_complete_verified_bundle(tmp_path: P
         json.loads(manifest_bytes), indent=2, sort_keys=True
     ).encode() + b"\n"
     manifest = json.loads(manifest_bytes)
-    assert manifest["format"] == "puffer-osrs-inferno-web-v1"
+    assert manifest["format"] == "puffer-osrs-web-v2"
     assert re.fullmatch(r"[0-9a-f]{16}", manifest["version"])
     assert manifest["version"] in final_html
     assert f"src=game.js?v={manifest['version']}" in final_html
     assert manifest["source_commit"] == SOURCE_COMMIT
+    assert manifest["environment"] == ENVIRONMENT
     assert manifest["model"] == {
-        "path": "models/osrs_inferno.bin",
+        "path": "models/policy.bin",
         "hidden_size": 512,
         "num_layers": 2,
         "entity_encoder": 0,
@@ -308,3 +313,28 @@ def test_model_bytes_contribute_to_bundle_version(tmp_path: Path) -> None:
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
     assert second_version != first_version
+
+
+
+def test_environment_contributes_to_bundle_version_and_manifest(tmp_path: Path) -> None:
+    build_dir = tmp_path / "build"
+    write_build(build_dir)
+    model = tmp_path / "policy.bin"
+    model.write_bytes(b"model")
+    output_dir = tmp_path / "site"
+
+    inferno = run_package(build_dir, model, output_dir, environment="inferno")
+    inferno_manifest = json.loads((output_dir / "bundle.json").read_bytes())
+    colosseum = run_package(
+        build_dir,
+        model,
+        output_dir,
+        environment="colosseum",
+    )
+    colosseum_manifest = json.loads((output_dir / "bundle.json").read_bytes())
+
+    assert inferno.returncode == 0, inferno.stderr
+    assert colosseum.returncode == 0, colosseum.stderr
+    assert inferno_manifest["environment"] == "inferno"
+    assert colosseum_manifest["environment"] == "colosseum"
+    assert inferno_manifest["version"] != colosseum_manifest["version"]

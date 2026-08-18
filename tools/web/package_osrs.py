@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 
-BUNDLE_FORMAT = "puffer-osrs-inferno-web-v1"
+BUNDLE_FORMAT = "puffer-osrs-web-v2"
 VERSION_TOKEN = b"__OSRS_BUNDLE_VERSION__"
 GAME_SCRIPT_REFERENCE = b"src=game.js"
 GAME_FILE_NAMES = (
@@ -19,12 +19,14 @@ GAME_FILE_NAMES = (
     "game.wasm.map",
     "game.data",
 )
-MODEL_OUTPUT_PATH = "models/osrs_inferno.bin"
+MODEL_OUTPUT_PATH = "models/policy.bin"
+OSRS_ENVIRONMENTS = ("inferno", "colosseum", "zulrah", "nh_pvp")
 SOURCE_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 
 
 @dataclass(frozen=True)
 class PackageMetadata:
+    environment: str
     source_commit: str
     hidden_size: int
     num_layers: int
@@ -44,6 +46,7 @@ def derive_bundle_version(
 ) -> str:
     version_input = {
         "files": ordered_hashes,
+        "environment": metadata.environment,
         "source_commit": metadata.source_commit,
         "hidden_size": metadata.hidden_size,
         "num_layers": metadata.num_layers,
@@ -61,6 +64,7 @@ def build_manifest(
     return {
         "format": BUNDLE_FORMAT,
         "version": version,
+        "environment": metadata.environment,
         "source_commit": metadata.source_commit,
         "files": files,
         "model": {
@@ -193,6 +197,11 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--environment",
+        choices=OSRS_ENVIRONMENTS,
+        required=True,
+    )
     parser.add_argument("--source-commit", type=source_commit, required=True)
     parser.add_argument(
         "--hidden-size", type=positive_integer("hidden size"), required=True
@@ -207,6 +216,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> None:
     arguments = parse_arguments(argv)
     metadata = PackageMetadata(
+        environment=arguments.environment,
         source_commit=arguments.source_commit,
         hidden_size=arguments.hidden_size,
         num_layers=arguments.num_layers,

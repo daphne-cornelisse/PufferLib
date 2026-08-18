@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OSRS Inferno Simulator</title>
+  <title>OSRS reinforcement learning simulator</title>
   <style>
     :root {
       color-scheme: dark;
@@ -109,7 +109,7 @@
 </head>
 <body>
   <header class="bar">
-    <h1>OSRS Inferno</h1>
+    <h1 id="title">OSRS</h1>
     <div id="status" role="status" aria-live="assertive">Loading simulator</div>
     <div class="controls">
       <button id="focus" type="button">Focus</button>
@@ -117,17 +117,27 @@
     </div>
   </header>
   <main>
-    <canvas id="canvas" aria-label="OSRS Inferno simulator" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+    <canvas id="canvas" aria-label="OSRS reinforcement learning simulator" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
   </main>
   <script>
     var canvasElement = document.getElementById("canvas");
     var statusElement = document.getElementById("status");
     var runtimeError = false;
     var query = new URLSearchParams(window.location.search);
-    var modelUrl = query.get("model") || "models/osrs_inferno.bin";
+    var encounter = query.get("encounter");
+    var encounterLabels = {
+      inferno: "Inferno",
+      colosseum: "Colosseum",
+      zulrah: "Zulrah",
+      nh_pvp: "NH PvP"
+    };
+    var encounterLabel = encounterLabels[encounter] || "Reinforcement Learning";
+    var modelUrl = query.get("model") || "models/policy.bin";
     var modelUrlPath = new URL(modelUrl, window.location.href).pathname;
     var modelBasename = modelUrlPath.split("/").filter(Boolean).pop();
-
+    document.title = "OSRS " + encounterLabel + " Simulator";
+    document.getElementById("title").textContent = "OSRS " + encounterLabel;
+    canvasElement.setAttribute("aria-label", "OSRS " + encounterLabel + " simulator");
     function reportError(reason) {
       var message = reason instanceof Error ? reason.message : String(reason);
       runtimeError = true;
@@ -156,14 +166,18 @@
     var installedModelPath = "/models/" + modelBasename;
     var runtimeArguments = [
       "--model", installedModelPath,
-      "--wave", query.get("wave") || "69",
       "--policy-mode", query.get("policyMode") || "sample",
       "--policy-seed", query.get("policySeed") || "1"
     ];
+    appendArgument(runtimeArguments, "encounter", "--encounter");
+    appendArgument(runtimeArguments, "wave", "--wave");
+    appendArgument(runtimeArguments, "gearTier", "--tier");
+    appendArgument(runtimeArguments, "loadoutMode", "--loadout-mode");
+    appendArgument(runtimeArguments, "tps", "--tps");
+    appendArgument(runtimeArguments, "tab", "--tab");
     appendArgument(runtimeArguments, "hiddenSize", "--hidden-size");
     appendArgument(runtimeArguments, "numLayers", "--num-layers");
     appendArgument(runtimeArguments, "entityEncoder", "--entity-encoder");
-
     document.getElementById("focus").addEventListener("click", function () {
       canvasElement.focus();
     });
@@ -198,7 +212,7 @@
         canvasElement.focus();
       },
       preRun: [function () {
-        var dependencyName = "inferno-policy";
+        var dependencyName = "osrs-policy";
         addRunDependency(dependencyName);
         Module.setStatus("Loading policy");
         fetch(versionedAssetUrl(modelUrl)).then(function (response) {
