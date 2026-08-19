@@ -392,6 +392,10 @@ static inline void puf_ini_put(Ini* ini, const char* full_key, const char* raw) 
 
 static inline void puf_ini_apply_arg(Ini* ini, const char* default_section,
         const char* arg, int idx) {
+    if (arg[0] != '-' || arg[1] != '-') {
+        fprintf(stderr, "unexpected argument '%s'\n", arg);
+        exit(1);
+    }
     char tmp[2048];
     if (strlen(arg) >= sizeof(tmp)) {
         fprintf(stderr, "argv:%d: argument too long\n", idx);
@@ -488,6 +492,17 @@ static inline void puf_ini_load_env(Ini* ini, const char* env_name,
     }
 
     puf_ini_put(ini, "base.env_name", env_name);
+#ifdef PLATFORM_WEB
+    {
+        char web_path[1024];
+        snprintf(web_path, sizeof(web_path), "config/%s_web.ini", env_name);
+        FILE* web_fp = fopen(web_path, "r");
+        if (web_fp) {
+            fclose(web_fp);
+            puf_ini_load_file(ini, web_path);
+        }
+    }
+#endif
     for (int i = 0; i < argc; i++) {
         puf_ini_apply_arg(ini, "base", argv[i], i);
     }

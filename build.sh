@@ -2,40 +2,65 @@
 set -e
 
 # Usage:
-#   ./build.sh breakout              # Full native train/eval binary (CPU envs)
-#   ./build.sh breakout --gpu        # GPU env (ENV_HEADER=ocean/ENV/ENV.cu; exclusive vs .h)
+#   ./build.sh breakout              # Native train/eval -> ./puffer
+#   ./build.sh breakout mybin        # Native -> ./mybin (does not clobber ./puffer)
+#   ./build.sh breakout --cu         # CUDA env (ENV_HEADER=ocean/ENV/ENV.cu; exclusive vs .h)
+#   ./build.sh robot_arm             # CUDA-only; implies --cu
 #   ./build.sh breakout --float      # float32 precision (required for --slowly)
+#   ./build.sh breakout --cpu        # Play/eval binary (optimized) -> ./ENV
+#   ./build.sh breakout myplay --cpu # Play -> ./myplay
+#   ./build.sh breakout --debug      # Debug (-O0 -g; sanitizers on --cpu)
 #   ./build.sh breakout --headless   # raylib PLATFORM_MEMORY software renderer (no display)
-#   ./build.sh breakout --cpu        # Tiny standalone CPU eval executable
-#   ./build.sh breakout --debug      # Debug build
-#   ./build.sh breakout --local      # Standalone executable (debug, sanitizers)
-#   ./build.sh breakout --fast       # Standalone executable (optimized)
+#   ./build.sh eval --fast           # Sweep plot dashboard -> ./eval
+#   ./build.sh breakout --fast       # Standalone env source binary (optimized)
+#   ./build.sh breakout --local      # Standalone env source binary (debug)
 #   ./build.sh breakout --web        # Emscripten web build
+#                                    # copy build/web/ENV/* to ../docker/puffer.ai/docs/assets/ENV/
 #   ./build.sh breakout --profile    # Kernel profiling binary
 #   ./build.sh all                   # Build all envs native and native float32
+#
+# Env is compiled in. Run: ./puffer train|eval|match|sweep [--section.key=value ...]
 
 if [ -z "$1" ]; then
-    echo "Usage: ./build.sh ENV_NAME [--gpu] [--float] [--headless] [--debug] [--local|--fast|--web|--profile|--cpu]"
+    echo "Usage: ./build.sh ENV [OUT] [--cu] [--float] [--debug] [--cpu] [--fast] [--local] [--headless] [--web] [--profile]"
     exit 1
 fi
 ENV=$1
 shift
+OUT=""
+if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+    OUT=$1
+    shift
+fi
 
 USE_GPU_ENV=0
-for arg in "$@"; do
-    case $arg in
-        --gpu) USE_GPU_ENV=1 ;;
+SNAKE_RAW=0
+while [ $# -gt 0 ]; do
+    case $1 in
+        --cu) USE_GPU_ENV=1 ;;
         --float) PRECISION="-DPRECISION_FLOAT" ;;
-        --headless) HEADLESS=1 ;;
+        --no-onehot) SNAKE_RAW=1 ;;
         --debug) DEBUG=1 ;;
-        --local) MODE=local ;;
+        --headless) HEADLESS=1 ;;
         --fast)  MODE=fast ;;
+        --local) MODE=local ;;
         --web)   MODE=web ;;
         --profile) MODE=profile ;;
         --cpu)   MODE=cpu ;;
-        *) echo "Error: unknown argument '$arg'" && exit 1 ;;
+        *) echo "Error: unknown argument '$1'" && exit 1 ;;
     esac
+    shift
 done
+
+if [ "$ENV" = "robot_arm" ]; then
+    USE_GPU_ENV=1
+    case "${MODE:-native}" in
+        cpu|web)
+            echo "Error: robot_arm physics is CUDA-only; use the native trainer build" >&2
+            exit 1
+            ;;
+    esac
+fi
 
 if [ "$ENV" = "all" ]; then
     FAILED=""
@@ -55,51 +80,28 @@ if [ "$ENV" = "all" ]; then
     exit 0
 fi
 
-RAYLIB_VERSION="6.0"
-RAYLIB_RELEASE_PATH="6.0"
-
-has_lib() {
-    printf 'int main(void) { return 0; }\n' | ${CC:-cc} -x c - -o /tmp/pufferlib_libcheck "$1" >/dev/null 2>&1
-}
-
-append_if_lib_exists() {
-    local lib=$1
-    if has_lib "$lib"; then
-        RAYLIB_DESKTOP_LINUX_LIBS+=("$lib")
-    fi
-}
-
 # Linux/mac
 PLATFORM="$(uname -s)"
 if [ "$PLATFORM" = "Linux" ]; then
-    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_linux_amd64"
+    RAYLIB_NAME='raylib-5.5_linux_amd64'
     OMP_LIB=-lomp5
     SANITIZE_FLAGS=(-fsanitize=address,undefined,bounds,pointer-overflow,leak -fno-omit-frame-pointer)
-    RAYLIB_DESKTOP_LINUX_LIBS=(-ldl)
-    append_if_lib_exists -lGL
-    append_if_lib_exists -lX11
-    append_if_lib_exists -lXrandr
-    append_if_lib_exists -lXinerama
-    append_if_lib_exists -lXi
-    append_if_lib_exists -lXcursor
-    STANDALONE_LDFLAGS=("${RAYLIB_DESKTOP_LINUX_LIBS[@]}")
+    STANDALONE_LDFLAGS=(-lGL)
 else
-    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_macos"
+    RAYLIB_NAME='raylib-5.5_macos'
     OMP_LIB=-lomp
     SANITIZE_FLAGS=()
     STANDALONE_LDFLAGS=(-framework Cocoa -framework IOKit -framework CoreVideo -framework OpenGL)
 fi
 
 RAYLIB_PLATFORM="-DPLATFORM_DESKTOP"
-RAYLIB_LINK_LDFLAGS=("${STANDALONE_LDFLAGS[@]}")
 if [ -n "$HEADLESS" ]; then
     if [ "$MODE" = "web" ]; then
         echo "Error: --headless is not compatible with --web"
         exit 1
     fi
-    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_memory"
+    RAYLIB_NAME="raylib-5.5_memory"
     RAYLIB_PLATFORM="-DPLATFORM_MEMORY"
-    RAYLIB_LINK_LDFLAGS=()
     STANDALONE_LDFLAGS=()
 fi
 
@@ -116,25 +118,25 @@ CLANG_WARN=(
 
 download() {
     local name=$1 url=$2
-    [ -d "$name" ] && return 0
+    [ -d "$name" ] && return
     echo "Downloading $name..."
     case "$url" in
-        *.zip) curl -fsL "$url" -o "$name.zip" && unzip -q "$name.zip" && rm "$name.zip" ;;
-        *)     curl -fsL "$url" -o "$name.tar.gz" && tar xf "$name.tar.gz" && rm "$name.tar.gz" ;;
+        *.zip) curl -sL "$url" -o "$name.zip" && unzip -q "$name.zip" && rm "$name.zip" ;;
+        *)     curl -sL "$url" -o "$name.tar.gz" && tar xf "$name.tar.gz" && rm "$name.tar.gz" ;;
     esac
 }
 
 build_raylib_from_source() {
     local name=$1 platform=$2
     if [ ! -d "$name" ]; then
-        echo "Downloading raylib ${RAYLIB_VERSION} source for $platform..."
-        curl -fsL "$RAYLIB_SOURCE_URL" -o "$name.tar.gz"
+        echo "Downloading raylib 5.5 source for $platform..."
+        curl -sL "https://github.com/raysan5/raylib/archive/refs/tags/5.5.tar.gz" -o "$name.tar.gz"
         tar xf "$name.tar.gz"
         rm "$name.tar.gz"
-        mv "raylib-${RAYLIB_RELEASE_PATH}" "$name"
+        mv "raylib-5.5" "$name"
     fi
     if [ ! -f "$name/src/libraylib.a" ] || [ ! -f "$name/src/.pufferlib_pic" ]; then
-        echo "Building raylib ${RAYLIB_VERSION} $platform..."
+        echo "Building raylib 5.5 $platform..."
         make -C "$name/src" clean >/dev/null 2>&1 || true
         local custom_cflags="-fPIC"
         if [ "$platform" = "PLATFORM_MEMORY" ]; then
@@ -145,59 +147,54 @@ build_raylib_from_source() {
     fi
 }
 
-RAYLIB_URL="https://github.com/raysan5/raylib/releases/download/${RAYLIB_RELEASE_PATH}"
-RAYLIB_SOURCE_URL="https://github.com/raysan5/raylib/archive/refs/tags/${RAYLIB_RELEASE_PATH}.tar.gz"
+RAYLIB_URL="https://github.com/raysan5/raylib/releases/download/5.5"
 if [ -n "$HEADLESS" ]; then
     build_raylib_from_source "$RAYLIB_NAME" PLATFORM_MEMORY
     RAYLIB_A="$RAYLIB_NAME/src/libraylib.a"
     # Only -I src (not src/external): raylib uses "external/..." relative includes,
     # and putting external/ on the path shadows system <dirent.h> with the Win32 shim.
     INCLUDES=(-I./$RAYLIB_NAME/src -I./src -I./vendor)
+    RAYLIB_INC="$RAYLIB_NAME/src"
 elif [ "$MODE" = "web" ]; then
-    RAYLIB_NAME="raylib-${RAYLIB_VERSION}_webassembly"
-    if download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.zip"; then
-        RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
-        INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
-    else
-        echo "Error: prebuilt web raylib ${RAYLIB_VERSION} archive not found"
-        exit 1
-    fi
+    RAYLIB_NAME='raylib-5.5_webassembly'
+    download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.zip"
+    RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
+    INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
+    RAYLIB_INC="$RAYLIB_NAME/include"
 else
-    if download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.tar.gz"; then
-        RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
-        INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
-    else
-        echo "Prebuilt raylib ${RAYLIB_VERSION} archive not found; building from source..."
-        RAYLIB_NAME="raylib-${RAYLIB_VERSION}_desktop_source"
-        build_raylib_from_source "$RAYLIB_NAME" PLATFORM_DESKTOP
-        RAYLIB_A="$RAYLIB_NAME/src/libraylib.a"
-        INCLUDES=(-I./$RAYLIB_NAME/src -I./src -I./vendor)
-    fi
+    download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.tar.gz"
+    RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
+    INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
+    RAYLIB_INC="$RAYLIB_NAME/include"
 fi
-
 LINK_ARCHIVES=("$RAYLIB_A")
 EXTRA_SRC=""
 EXTRA_LDFLAGS=()
 EXTRA_CFLAGS=()
-# Preserve SRC_FILE/OUTPUT_NAME if the caller exported them
-# (e.g. SRC_FILE=ocean/wef/init.c OUTPUT_NAME=wef_init ./build.sh wef --fast).
-SRC_FILE="${SRC_FILE:-}"
-OUTPUT_NAME="${OUTPUT_NAME:-}"
+SRC_FILE=""
+
+if [ "$ENV" = "clifford" ]; then
+    EXTRA_CFLAGS+=(-DCLIFFORD_USE_SHORTCUT_GATES="${CLIFFORD_USE_SHORTCUT_GATES:-0}")
+    EXTRA_CFLAGS+=(-DCLIFFORD_PAIR_ONEHOT="${CLIFFORD_PAIR_ONEHOT:-0}")
+    if [ -n "${CLIFFORD_N_QUBITS:-}" ]; then
+        EXTRA_CFLAGS+=(-DCLIFFORD_N_QUBITS="$CLIFFORD_N_QUBITS")
+    fi
+fi
 
 if [ "$ENV" = "constellation" ]; then
     SRC_DIR="src"
-    OUTPUT_NAME="${OUTPUT_NAME:-seethestars}"
-    MODE=${MODE:-fast}
+    OUTPUT_NAME="seethestars"
+    MODE=${MODE:-cpu}
     CLANG_WARN+=(-Wno-unused-function)
 elif [ "$ENV" = "cache_data" ]; then
     SRC_DIR="src"
-    OUTPUT_NAME="${OUTPUT_NAME:-cache_data}"
-    SRC_FILE="${SRC_FILE:-src/constellation.c}"
+    OUTPUT_NAME="cache_data"
+    SRC_FILE="src/constellation.c"
     EXTRA_CFLAGS+=(-DPUFFER_CACHE_DATA)
-    MODE=${MODE:-fast}
+    MODE=${MODE:-cpu}
     CLANG_WARN+=(-Wno-unused-function)
 elif [ "$ENV" = "eval" ]; then
-    # Sweep plot dashboard (+ optional best-checkpoint gif via ./puffer render).
+    # Sweep plot dashboard (+ optional best-checkpoint gif via ./puffer eval).
     #   ./build.sh eval --fast [--headless]
     #   ./eval wef [--render]
     SRC_DIR="src"
@@ -216,8 +213,12 @@ elif [ "$ENV" = "impulse_wars" ]; then
     fi
     BOX2D_URL="https://github.com/capnspacehook/box2d/releases/latest/download"
     download "$BOX2D_NAME" "$BOX2D_URL/$BOX2D_NAME.tar.gz"
-    INCLUDES+=(-I./$BOX2D_NAME/include -I./$BOX2D_NAME/src)
+    INCLUDES+=(-I./$BOX2D_NAME/include -I./$BOX2D_NAME/src -I./ocean/impulse_wars -I./vendor/collections-c)
     LINK_ARCHIVES+=("./$BOX2D_NAME/libbox2d.a")
+    # C++ trainer only: game is C (void*/compound literals), not C++17.
+    if [ -z "${MODE:-}" ] || [ "$MODE" = "native" ] || [ "$MODE" = "profile" ]; then
+        EXTRA_SRC="ocean/impulse_wars/impulse_wars_api.c"
+    fi
 elif [ "$ENV" = "nethack" ]; then
     SRC_DIR="ocean/$ENV"
     EXTRA_CFLAGS+=(-DPUFFER_NETHACK)
@@ -252,7 +253,11 @@ case "$ENV" in
         ;;
 esac
 
+USER_OUTPUT_NAME=${OUTPUT_NAME-}
 OUTPUT_NAME=${OUTPUT_NAME:-$ENV}
+if [ -n "$OUT" ]; then
+    OUTPUT_NAME=$OUT
+fi
 SRC_FILE=${SRC_FILE:-$SRC_DIR/$ENV.c}
 
 # Standalone environment build
@@ -271,11 +276,11 @@ else
 fi
 if [ "$MODE" = "local" ] || [ "$MODE" = "fast" ]; then
     FLAGS=(
-        "${INCLUDES[@]}"
+        -I. -Isrc -I$SRC_DIR -Ivendor "${INCLUDES[@]}"
         "$SRC_FILE" $EXTRA_SRC -o "$OUTPUT_NAME"
         "${LINK_ARCHIVES[@]}"
         "${EXTRA_LDFLAGS[@]}"
-        "${RAYLIB_LINK_LDFLAGS[@]}"
+        "${STANDALONE_LDFLAGS[@]}"
         -lm -lpthread -fopenmp
         "$RAYLIB_PLATFORM"
         "${EXTRA_CFLAGS[@]}"
@@ -284,46 +289,93 @@ if [ "$MODE" = "local" ] || [ "$MODE" = "fast" ]; then
     ${CC:-clang} "${CLANG_OPT[@]}" "${FLAGS[@]}"
     echo "Built: ./$OUTPUT_NAME"
     exit 0
-elif [ "$MODE" = "web" ]; then
-    mkdir -p "build/web/$ENV"
-    echo "Compiling $ENV for web..."
-    emcc \
-        -o "build/web/$ENV/game.html" \
-        "$SRC_FILE" $EXTRA_SRC \
-        -O3 -Wall -Wno-narrowing \
-        "${LINK_ARCHIVES[@]}" \
-        "${INCLUDES[@]}" \
-        -L. -L./$RAYLIB_NAME/lib \
-        -sASSERTIONS=2 -gsource-map \
-        -sUSE_GLFW=3 -sUSE_WEBGL2=1 -sASYNCIFY -sFILESYSTEM -sFORCE_FILESYSTEM=1 \
-        --shell-file vendor/minshell.html \
-        -sINITIAL_MEMORY=512MB -sALLOW_MEMORY_GROWTH -sSTACK_SIZE=512KB \
-        -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
-        --preload-file resources/$ENV@resources/$ENV \
-        --preload-file resources/shared@resources/shared \
-        "${EXTRA_CFLAGS[@]}"
-    echo "Built: build/web/$ENV/game.html"
-    exit 0
 elif [ "$MODE" = "cpu" ]; then
     ENV_HEADER="$SRC_DIR/$ENV.h"
     if ! grep -q 'typedef[[:space:]].*obs_t' "$ENV_HEADER" 2>/dev/null; then
         echo "Error: $ENV_HEADER must typedef obs_t for standalone eval"
         exit 1
     fi
-
-    echo "Compiling standalone CPU eval for $ENV..."
-    ${CC:-clang} "${CLANG_OPT[@]}" \
+    FLAGS=(
+        -I. -Isrc -I$SRC_DIR -Ivendor "${INCLUDES[@]}"
+        src/puffercpu.c $EXTRA_SRC -o "$OUTPUT_NAME"
+        "${LINK_ARCHIVES[@]}"
+        "${EXTRA_LDFLAGS[@]}"
+        "${STANDALONE_LDFLAGS[@]}"
+        -lm -lpthread -fopenmp
+        "$RAYLIB_PLATFORM"
+        -DPUFFERCPU_EVAL_MAIN
+        -DENV_HEADER=\"$ENV_HEADER\"
+        -DPUFFER_ENV_NAME=\"$ENV\"
+        "${EXTRA_CFLAGS[@]}"
+    )
+    echo "Compiling $ENV..."
+    ${CC:-clang} "${CLANG_OPT[@]}" "${FLAGS[@]}"
+    echo "Built: ./$OUTPUT_NAME"
+    exit 0
+elif [ "$MODE" = "web" ]; then
+    ENV_HEADER="$SRC_DIR/$ENV.h"
+    if ! grep -q 'typedef[[:space:]].*obs_t' "$ENV_HEADER" 2>/dev/null; then
+        echo "Error: $ENV_HEADER must typedef obs_t for web eval"
+        exit 1
+    fi
+    mkdir -p "build/web/$ENV"
+    PRELOAD_ENV=()
+    if [ "$ENV" = "boxoban" ]; then
+        # Do not pack generated boxoban_maps_*.bin or levels/ (hundreds of MB).
+        PRELOAD_ENV=(
+            --preload-file resources/boxoban/web_maps.bin@resources/boxoban/web_maps.bin
+            --preload-file resources/boxoban/boxoban_weights.bin@resources/boxoban/boxoban_weights.bin
+            --preload-file resources/boxoban/Wall_Black.jpg@resources/boxoban/Wall_Black.jpg
+            --preload-file resources/boxoban/Crate_Black.jpg@resources/boxoban/Crate_Black.jpg
+            --preload-file resources/boxoban/EndPoint_Black.jpg@resources/boxoban/EndPoint_Black.jpg
+            --preload-file resources/boxoban/EndPoint_Blue.jpg@resources/boxoban/EndPoint_Blue.jpg
+            --preload-file resources/boxoban/GroundGravel_Concrete.jpg@resources/boxoban/GroundGravel_Concrete.jpg
+        )
+    elif [ -d "resources/$ENV" ]; then
+        PRELOAD_ENV=(--preload-file "resources/$ENV@resources/$ENV")
+    fi
+    echo "Compiling $ENV for web..."
+    PRELOAD=(
+        --preload-file resources/shared@resources/shared
+        --preload-file config/default.ini@config/default.ini
+    )
+    if [ -d "ocean/$ENV/generated" ]; then
+        PRELOAD+=(--preload-file "ocean/$ENV/generated@ocean/$ENV/generated")
+    fi
+    if [ -f "config/$ENV.ini" ]; then
+        PRELOAD+=(--preload-file "config/$ENV.ini@config/$ENV.ini")
+    fi
+    if [ -f "config/${ENV}_web.ini" ]; then
+        PRELOAD+=(--preload-file "config/${ENV}_web.ini@config/${ENV}_web.ini")
+    fi
+    emcc \
+        -o "build/web/$ENV/game.html" \
+        src/puffercpu.c $EXTRA_SRC \
+        -O3 -Wall -Wno-narrowing \
+        "${LINK_ARCHIVES[@]}" \
         -I. -Isrc -I$SRC_DIR -Ivendor "${INCLUDES[@]}" \
-        "$RAYLIB_PLATFORM" \
+        -L. -L./$RAYLIB_NAME/lib \
+        -sASSERTIONS=2 -gsource-map \
+        -sUSE_GLFW=3 -sUSE_WEBGL2=1 -sASYNCIFY -sFILESYSTEM -sFORCE_FILESYSTEM=1 \
+        --js-library vendor/puf_web_vsync.js \
+        --shell-file vendor/minshell.html \
+        -sINITIAL_MEMORY=512MB -sALLOW_MEMORY_GROWTH -sSTACK_SIZE=512KB \
+        -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
         -DPUFFERCPU_EVAL_MAIN \
         -DENV_HEADER=\"$ENV_HEADER\" \
-        -x c src/puffercpu.h -x none $EXTRA_SRC \
-        "${LINK_ARCHIVES[@]}" \
-        "${EXTRA_LDFLAGS[@]}" \
-        "${RAYLIB_LINK_LDFLAGS[@]}" \
-        -lm -lpthread -fopenmp \
-        -o build_cpu
-    echo "Built: ./build_cpu"
+        -DPUFFER_ENV_NAME=\"$ENV\" \
+        --preload-file resources/shared@resources/shared \
+        "${PRELOAD_ENV[@]}" \
+        "${PRELOAD[@]}" \
+        "${EXTRA_CFLAGS[@]}"
+    echo "Built: build/web/$ENV/game.html"
+    WEBSITE_DIR="${PUFFER_WEBSITE_DIR:-../docker/puffer.ai}"
+    WEBSITE_ASSETS="$WEBSITE_DIR/docs/assets"
+    if [ -d "$WEBSITE_ASSETS" ]; then
+        mkdir -p "$WEBSITE_ASSETS/$ENV"
+        cp -a "build/web/$ENV/." "$WEBSITE_ASSETS/$ENV/"
+        echo "Published: $WEBSITE_ASSETS/$ENV/"
+    fi
     exit 0
 fi
 
@@ -352,12 +404,12 @@ NVCC="ccache $CUDA_HOME/bin/nvcc"
 CC="${CC:-$(command -v ccache >/dev/null && echo 'ccache clang' || echo 'clang')}"
 ARCH=${NVCC_ARCH:-native}
 
-# CPU and GPU envs are separate sources. --gpu selects the .cu; default is .h.
+# CPU and CUDA envs are separate sources. --cu selects the .cu; default is .h.
 # Only one is compiled in (never both).
 if [ "$USE_GPU_ENV" = "1" ]; then
     ENV_HEADER="$SRC_DIR/$ENV.cu"
     if [ ! -f "$ENV_HEADER" ]; then
-        echo "Error: --gpu requires $ENV_HEADER"
+        echo "Error: --cu requires $ENV_HEADER"
         exit 1
     fi
 else
@@ -377,40 +429,50 @@ MODE=${MODE:-native}
 NVCC_NARROW=(-Xcompiler=-Wno-narrowing --diag-suppress=2361)
 
 if [ "$MODE" = "native" ]; then
-    echo "Compiling native train/eval binary ($ARCH)${HEADLESS:+ [headless]}..."
+    if [ -n "$OUT" ]; then
+        TRAIN_BIN="$OUT"
+    elif [ -n "$USER_OUTPUT_NAME" ]; then
+        TRAIN_BIN="$USER_OUTPUT_NAME"
+    else
+        TRAIN_BIN="puffer"
+    fi
+    if [ "$SNAKE_RAW" = "1" ]; then
+        EXTRA_CFLAGS+=(-DSNAKE_ONEHOT=0)
+    fi
+    echo "Compiling native train/eval binary ($ARCH) -> $TRAIN_BIN..."
     $NVCC $NVCC_OPT -arch=$ARCH -std=c++17 \
         -I. -Isrc -I$SRC_DIR -Ivendor \
         "${INCLUDES[@]}" \
-        -I$CUDA_HOME/include -I$CUDA_HOME/include/cccl $NCCL_IFLAG \
+        -I$CUDA_HOME/include -I$CUDA_HOME/include/cccl $NCCL_IFLAG -I$RAYLIB_INC \
 	    "${ENV_COMPILE_FLAGS[@]}" \
 	    -DENV_NAME=$ENV \
 	    -DPUFFER_ENV_NAME=\"$ENV\" \
 	    -DPUFFERLIB_BUILD_MAIN \
-	    "$RAYLIB_PLATFORM" \
 	    -Xcompiler=$RAYLIB_PLATFORM \
 	    -Xcompiler=-fopenmp \
 	    "${NVCC_NARROW[@]}" \
 	    "${EXTRA_CFLAGS[@]}" \
 	    $PRECISION \
 	    src/pufferl.cu \
-        "$RAYLIB_A" \
+        $EXTRA_SRC \
+        "${LINK_ARCHIVES[@]}" \
         -L$CUDA_HOME/lib64 $NCCL_LFLAG \
         "${EXTRA_LDFLAGS[@]}" \
         -lcudart -lnccl -lnvidia-ml -lcublas -lcusolver -lcurand \
-        -lm -lpthread $OMP_LIB "${RAYLIB_LINK_LDFLAGS[@]}" \
-        -o puffer
-    echo "Built: ./puffer"
+        -lm -lpthread $OMP_LIB "${STANDALONE_LDFLAGS[@]}" \
+        -o "$TRAIN_BIN"
+    echo "Built: ./$TRAIN_BIN"
 
 elif [ "$MODE" = "profile" ]; then
-    echo "Compiling profile binary ($ARCH)${HEADLESS:+ [headless]}..."
+    PROFILE_BIN="build/profile_${ENV}"
+    echo "Compiling profile binary ($ARCH) -> $PROFILE_BIN..."
     $NVCC $NVCC_OPT -arch=$ARCH -std=c++17 \
         -I. -Isrc -I$SRC_DIR -Ivendor \
         "${INCLUDES[@]}" \
-        -I$CUDA_HOME/include -I$CUDA_HOME/include/cccl $NCCL_IFLAG \
+        -I$CUDA_HOME/include -I$CUDA_HOME/include/cccl $NCCL_IFLAG -I$RAYLIB_INC \
         "${ENV_COMPILE_FLAGS[@]}" \
         -DENV_NAME=$ENV \
 	    -DPUFFER_ENV_NAME=\"$ENV\" \
-        "$RAYLIB_PLATFORM" \
         -Xcompiler=$RAYLIB_PLATFORM \
 	    "${NVCC_NARROW[@]}" \
 	    "${EXTRA_CFLAGS[@]}" \
@@ -420,7 +482,7 @@ elif [ "$MODE" = "profile" ]; then
         "$RAYLIB_A" \
         -L$CUDA_HOME/lib64 \
         -lnccl -lnvidia-ml -lcublas -lcusolver -lcurand \
-        -lm -lpthread $OMP_LIB "${RAYLIB_LINK_LDFLAGS[@]}" \
-        -o profile
-    echo "Built: ./profile"
+        -lm -lpthread $OMP_LIB "${STANDALONE_LDFLAGS[@]}" \
+        -o "$PROFILE_BIN"
+    echo "Built: ./$PROFILE_BIN"
 fi

@@ -3,15 +3,26 @@
 #include <stdbool.h>
 #include <math.h>
 #include "raylib.h"
+typedef unsigned char obs_t;
 #include "pufferenv.h"
 
 #define ACT_SIZES {4}
-#define OBS_SIZE 121
+#define DEFAULT_VISION 5
+#define TILE_TYPES 8
+#ifndef SNAKE_ONEHOT
+#define SNAKE_ONEHOT 1
+#endif
+#if SNAKE_ONEHOT
+#define OBS_SIZE ((2*DEFAULT_VISION+1)*(2*DEFAULT_VISION+1)*TILE_TYPES)
+#else
+#define OBS_SIZE ((2*DEFAULT_VISION+1)*(2*DEFAULT_VISION+1))
+#endif
 #define NUM_ATNS 1
+#define SNAKE_FRAMES 6
+#define PUF_STEPS_PER_SEC 10
 #define MAX_AGENTS 512
 
 typedef Env CSnake;
-typedef unsigned char obs_t;
 
 #define EMPTY 0
 #define FOOD 1
@@ -105,16 +116,30 @@ void free_csnake(CSnake* env) {
 
 void compute_observations(CSnake* env) {
     for (int i = 0; i < env->num_agents; i++) {
-        obs_t* obs = (obs_t*)env->agents[i].observations;
+        obs_t* obs = env->agents[i].observations;
         int head_ptr = i*2*env->max_snake_length + 2*env->snake_ptr[i];
         int r_offset = env->snake[head_ptr] - env->vision;
         int c_offset = env->snake[head_ptr+1] - env->vision;
-        for (int r = 0; r < 2 * env->vision + 1; r++) {
-            for (int c = 0; c < 2 * env->vision + 1; c++) {
-                obs[r*env->window + c] = (obs_t)env->grid[
+#if SNAKE_ONEHOT
+        memset(obs, 0, OBS_SIZE * sizeof(unsigned char));
+        for (int r = 0; r < env->window; r++) {
+            for (int c = 0; c < env->window; c++) {
+                int tile = (unsigned char)env->grid[
+                    (r_offset + r)*env->width + c_offset + c];
+                if (tile >= TILE_TYPES) {
+                    tile = TILE_TYPES - 1;
+                }
+                obs[(r*env->window + c)*TILE_TYPES + tile] = 1;
+            }
+        }
+#else
+        for (int r = 0; r < env->window; r++) {
+            for (int c = 0; c < env->window; c++) {
+                obs[r*env->window + c] = (unsigned char)env->grid[
                     (r_offset + r)*env->width + c_offset + c];
             }
         }
+#endif
     }
 }
 
@@ -171,7 +196,16 @@ void spawn_food(CSnake* env) {
 
 void puf_reset(CSnake* env) {
     env->window = 2*env->vision+1;
+#if SNAKE_ONEHOT
+    env->obs_size = env->window*env->window*TILE_TYPES;
+#else
     env->obs_size = env->window*env->window;
+#endif
+    if (env->obs_size != OBS_SIZE) {
+        fprintf(stderr, "snake: vision=%d implies obs %d, but OBS_SIZE=%d\n",
+            env->vision, env->obs_size, OBS_SIZE);
+        exit(1);
+    }
     env->tick = 0;
     env->log = (Log){0};
     
@@ -283,6 +317,25 @@ void step_snake(CSnake* env, int i) {
     env->grid[next_r*env->width + next_c] = env->snake_colors[i];
 }
 
+// Hold Left Shift + WASD/arrows for agent 0.
+static void snake_human_controls(CSnake *env) {
+    if (!IsWindowReady() || !IsKeyDown(KEY_LEFT_SHIFT)) {
+        return;
+    }
+    if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W)) {
+        env->agents[0].actions[0] = 0;
+    }
+    if (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S)) {
+        env->agents[0].actions[0] = 1;
+    }
+    if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A)) {
+        env->agents[0].actions[0] = 2;
+    }
+    if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) {
+        env->agents[0].actions[0] = 3;
+    }
+}
+
 void puf_step(CSnake* env){
     env->tick++;
     for (int i = 0; i < env->num_agents; i++)
@@ -318,7 +371,7 @@ Client* make_client(int cell_size, int width, int height) {
     client->width = width;
     client->height = height;
     InitWindow(width*cell_size, height*cell_size, "PufferLib Snake");
-    SetTargetFPS(10);
+    SetTargetFPS(60);
     return client;
 }
 
@@ -328,27 +381,27 @@ void close_client(Client* client) {
 }
 
 void puf_render(CSnake* env) {
-    if (IsKeyDown(KEY_ESCAPE)) {
-        exit(0);
-    }
-    
     if (env->client == NULL) {
         env->client = make_client(env->cell_size, env->width, env->height);
     }
-    
     Client* client = env->client;
-    
+    int sz = client->cell_size;
+    if (IsKeyDown(KEY_ESCAPE)) {
+        exit(0);
+    }
+    snake_human_controls(env);
     BeginDrawing();
     ClearBackground(COLORS[0]);
-    int sz = client->cell_size;
     for (int y = 0; y < env->height; y++) {
-        for (int x = 0; x < env->width; x++){
-            int tile = env->grid[y*env->width + x];
-            if (tile != EMPTY)
-                DrawRectangle(x*sz, y*sz, sz, sz, COLORS[tile]);
+        for (int x = 0; x < env->width; x++) {
+            int tile = env->grid[y * env->width + x];
+            if (tile != EMPTY) {
+                DrawRectangle(x * sz, y * sz, sz, sz, COLORS[tile]);
+            }
         }
     }
     EndDrawing();
+    puf_web_vsync();
 }
 
 void puf_init(Env* env, Dict* kwargs) {
@@ -385,7 +438,6 @@ void puf_log(Log* log, Dict* out) {
 void puf_close(Env* env) {
     if (env->client != NULL) {
         close_client(env->client);
-        env->client = NULL;
     }
     free_snake_resources(env);
 }

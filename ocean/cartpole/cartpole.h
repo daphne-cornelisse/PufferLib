@@ -5,16 +5,12 @@
 #include <math.h>
 #include <time.h>
 #include "raylib.h"
+typedef float obs_t;
 #include "pufferenv.h"
 
 #define ACT_SIZES {2}
 #define OBS_SIZE 4
 #define NUM_ATNS 1
-#if defined(from_float) && !defined(PRECISION_FLOAT)
-typedef precision_t obs_t;
-#else
-typedef float obs_t;
-#endif
 
 #define X_THRESHOLD 2.4f
 #define THETA_THRESHOLD_RADIANS (12 * 2 * M_PI / 360)
@@ -63,11 +59,7 @@ struct Env {
 typedef Env Cartpole;
 
 void add_log(Cartpole* env) {
-    if (env->episode_return > 0) {
-        env->log.perf = env->episode_return / MAX_STEPS;
-    } else {
-        env->log.perf = 0.0f;
-    }
+    env->log.perf += env->episode_return / MAX_STEPS;
     env->log.episode_length += env->tick;
     env->log.score += env->tick;
     env->log.x_threshold_termination += (env->x < -X_THRESHOLD || env->x > X_THRESHOLD);
@@ -79,25 +71,6 @@ void add_log(Cartpole* env) {
 void init(Cartpole* env) {
     env->tick = 0;
     memset(&env->log, 0, sizeof(Log));
-}
-
-void allocate(Cartpole* env) {
-    init(env);
-    env->agents[0].observations = (obs_t*)calloc(4, sizeof(obs_t));
-    env->agents[0].actions = (float*)calloc(1, sizeof(float));
-    env->agents[0].rewards = (float*)calloc(1, sizeof(float));
-    env->agents[0].terminals = (float*)calloc(1, sizeof(float));
-    env->agents[0].action_mask = NULL;
-    env->agents[0].policy = 0;
-    env->num_agents = 1;
-
-}
-
-void free_allocated(Cartpole* env) {
-    free(env->agents[0].observations);
-    free(env->agents[0].actions);
-    free(env->agents[0].rewards);
-    free(env->agents[0].terminals);
 }
 
 void puf_close(Cartpole* env) {
@@ -120,15 +93,31 @@ void close_client(Client* client) {
     free(client);
 }
 
+// Hold Left Shift + A/D or arrows. CPU eval is forward→step→render.
+static void cartpole_human_controls(Cartpole *env) {
+    if (!IsWindowReady() || !IsKeyDown(KEY_LEFT_SHIFT)) {
+        return;
+    }
+    if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) {
+        env->agents[0].actions[0] = 1.0f;
+    } else {
+        env->agents[0].actions[0] = -1.0f;
+    }
+}
+
 void puf_render(Cartpole* env) {
-    if (IsKeyDown(KEY_ESCAPE))
+    if (IsKeyDown(KEY_ESCAPE)) {
         exit(0);
-    if (IsKeyPressed(KEY_TAB))
+    }
+    if (IsKeyPressed(KEY_TAB)) {
         ToggleFullscreen();
+    }
 
     if (env->client == NULL) {
         env->client = make_client(env);
     }
+
+    cartpole_human_controls(env);
 
     BeginDrawing();
     ClearBackground(PUFF_BACKGROUND);
@@ -143,14 +132,17 @@ void puf_render(Cartpole* env) {
     DrawText(TextFormat("Steps: %i", env->tick), 10, 10, 20, PUFF_WHITE);
     DrawText(TextFormat("Cart Position: %.2f", env->x), 10, 40, 20, PUFF_WHITE);
     DrawText(TextFormat("Pole Angle: %.2f", env->theta * 180.0f / M_PI), 10, 70, 20, PUFF_WHITE);
+    DrawText("[Shift] A/D or arrows", 10, 100, 16, PUFF_WHITE);
     EndDrawing();
+    puf_web_vsync();
 }
 
 void compute_observations(Cartpole* env) {
-    ((obs_t*)env->agents[0].observations)[0] = env->x;
-    ((obs_t*)env->agents[0].observations)[1] = env->x_dot;
-    ((obs_t*)env->agents[0].observations)[2] = env->theta;
-    ((obs_t*)env->agents[0].observations)[3] = env->theta_dot;
+    float* obs = env->agents[0].observations;
+    obs[0] = env->x;
+    obs[1] = env->x_dot;
+    obs[2] = env->theta;
+    obs[3] = env->theta_dot;
 }
 
 void puf_reset(Cartpole* env) {
@@ -164,11 +156,9 @@ void puf_reset(Cartpole* env) {
     compute_observations(env);
 }
 
-void puf_step(Cartpole* env) {  
+void puf_step(Cartpole* env) {
+    cartpole_human_controls(env);
     float a = env->agents[0].actions[0];
-    if (!isfinite(a)) {
-        a = 0.0f;
-    }
     a = fminf(fmaxf(a, -1.0f), 1.0f);
     env->agents[0].actions[0] = a;
 

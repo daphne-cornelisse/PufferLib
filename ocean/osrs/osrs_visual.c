@@ -23,7 +23,7 @@
 
 #ifdef OSRS_VISUAL
 #include "osrs_render.h"
-#include "puffercpu.h"
+#include "puffercpu.c"
 #include "osrs_visual_net.h"
 
 static void visual_require_gui_item_sprite(int raw_osrs_id, void* ctx) {
@@ -1079,7 +1079,6 @@ static void async_policy_join(AsyncPolicy* ap) {
     ap->in_flight = 0;
     ap->has_actions = 1;
 #else
-    (void)ap;
 #endif
 }
 
@@ -1105,7 +1104,6 @@ static void async_policy_spawn(
     }
     ap->in_flight = 1;
 #else
-    (void)ap; (void)policy; (void)edef; (void)env;
 #endif
 }
 
