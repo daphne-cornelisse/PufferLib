@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Roll out Puffer best + random in Kempner 70×70; plot returns and behavior stats.
+"""Roll out Puffer + original MAPPO + random in original 70×70; plot stats.
 
 Panels:
-  - episode return (strip + mean ± 95% CI) for Puffer best vs random
+  - episode return (strip + mean ± 95% CI) as % of max obtainable
   - mean ± 95% CI for food eaten, bites, collisions, EOD rate, was-bitten
 
+Original MAPPO checkpoint (default):
+  checkpoints/wef/original/actor.pt
+  (Dyn_F00_Kb_For_S1/models from the WEF release Drive)
+
 Example:
-  /path/to/wef/.venv/bin/python ocean/wef/plot_kempner_returns.py \\
+  /path/to/wef/.venv/bin/python ocean/wef/plot_original_returns.py \\
       --ini logs/wef/best_policy.ini --episodes 20
 """
 
@@ -15,6 +19,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import types
 from pathlib import Path
 
 import matplotlib
@@ -26,9 +31,10 @@ from scipy import stats as sp_stats
 
 PUFFER_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_WEF_ROOT = Path(os.environ.get("WEF_ROOT", Path.home() / "code" / "wef"))
+DEFAULT_ORIGINAL_MODEL_DIR = PUFFER_ROOT / "checkpoints" / "wef" / "original"
 
 sys.path.insert(0, str(PUFFER_ROOT / "ocean" / "wef"))
-from eval_kempner import (  # noqa: E402
+from eval_original import (  # noqa: E402
     _food_this_step,
     make_fish_args,
     parse_ini,
@@ -242,6 +248,153 @@ def mean_ci95(vals) -> tuple[float, float, float]:
     return mean, tcrit * se, n
 
 
+def try_load_original_policy(model_dir: Path, env, device: str = "cpu"):
+    """Load shared MAPPO R_Actor from original WEF models/ dir (actor.pt).
+
+    Dyn_F00 4-fish actor: obs=110, hidden=512, GRU, continuous act=4.
+    """
+    model_dir = Path(model_dir)
+    candidates = [model_dir / "actor.pt", model_dir / "actor_agent0.pt"]
+    actor_path = next((p for p in candidates if p.is_file()), None)
+    if actor_path is None:
+        print(f"no actor.pt under {model_dir}", file=sys.stderr)
+        return None
+
+    wef_root = Path(os.environ.get("WEF_ROOT", DEFAULT_WEF_ROOT))
+    if str(wef_root) not in sys.path:
+        sys.path.insert(0, str(wef_root))
+    # Package __init__ imports missing onpolicy.scripts — stub it.
+    sys.modules.setdefault("onpolicy.scripts", types.ModuleType("onpolicy.scripts"))
+
+    try:
+        import torch
+        from onpolicy.algorithms.r_mappo.algorithm.r_actor_critic import R_Actor
+        from onpolicy.config import get_config
+    except Exception as e:
+        print(f"cannot import original policy stack: {e}", file=sys.stderr)
+        return None
+
+    try:
+        parser = get_config()
+        all_args, _ = parser.parse_known_args([])
+    except Exception:
+        all_args = argparse.Namespace()
+
+    for k, v in dict(
+        hidden_size=512,
+        use_orthogonal=True,
+        gain=0.01,
+        use_policy_active_masks=False,
+        use_naive_recurrent_policy=False,
+        use_recurrent_policy=True,
+        recurrent_N=1,
+        data_chunk_length=10,
+        use_feature_normalization=True,
+        use_ReLU=True,
+        stacked_frames=1,
+        layer_N=1,
+        use_centralized_V=True,
+        algorithm_name="rmappo",
+        attn_mode=None,
+        rnn_type="gru",
+    ).items():
+        setattr(all_args, k, v)
+
+    try:
+        import torch
+
+        actor = R_Actor(
+            all_args,
+            env.observation_space[0],
+            env.action_space[0],
+            device=torch.device(device),
+        )
+        state = torch.load(actor_path, map_location=device, weights_only=False)
+        actor.load_state_dict(state, strict=True)
+        actor.eval()
+    except Exception as e:
+        print(f"failed to construct/load original actor: {e}", file=sys.stderr)
+        return None
+
+    rnn_states = None
+    masks = None
+
+    def act(obs_list, deterministic=True):
+        nonlocal rnn_states, masks
+        import torch
+
+        obs = np.stack([np.asarray(o, dtype=np.float32) for o in obs_list], axis=0)
+        n = obs.shape[0]
+        if rnn_states is None:
+            h = int(getattr(all_args, "hidden_size", 512))
+            rn = int(getattr(all_args, "recurrent_N", 1))
+            rnn_states = torch.zeros(n, rn, h)
+            masks = torch.ones(n, 1)
+        with torch.no_grad():
+            actions, _logp, rnn_states = actor(
+                torch.as_tensor(obs),
+                rnn_states,
+                masks,
+                deterministic=deterministic,
+            )
+        a = actions.cpu().numpy()
+        return [a[i].astype(np.float32) for i in range(n)]
+
+    def reset_state():
+        nonlocal rnn_states, masks
+        rnn_states = None
+        masks = None
+
+    act.reset_state = reset_state
+    print(f"loaded original MAPPO actor from {actor_path}")
+    return act
+
+
+def eval_callable_rich(
+    env, act_fn, episodes: int, episode_length: int, seed: int
+) -> dict:
+    """Roll out act(obs_list)->actions with the same rich episode stats."""
+    series = {k: [] for k, _, _ in STAT_SPECS}
+    series["return_per_agent"] = []
+    series["max_return_per_agent"] = []
+    series["return_pct_max"] = []
+    for ep in range(episodes):
+        if hasattr(act_fn, "reset_state"):
+            act_fn.reset_state()
+        obs_list = env.reset()
+        if hasattr(env, "seed"):
+            try:
+                env.seed(seed + ep * 17)
+            except Exception:
+                pass
+            obs_list = env.reset()
+        max_pa = max_return_per_agent(env)
+        ep_ret = 0.0
+        tallies = _empty_tally()
+        for _t in range(episode_length):
+            acts = act_fn(obs_list, deterministic=True)
+            obs_list, rew, done, info = env.step(acts)
+            ep_ret += float(np.sum(rew))
+            _accumulate_step(env, info, tallies)
+            finished = (
+                bool(np.all(done))
+                if isinstance(done, (list, tuple, np.ndarray))
+                else bool(done)
+            )
+            if finished:
+                if hasattr(act_fn, "reset_state"):
+                    act_fn.reset_state()
+                break
+        ep_stats = _finalize_episode(ep_ret, env.num_agents, tallies, max_pa)
+        series["returns"].append(ep_stats["return"])
+        series["return_per_agent"].append(ep_stats["return_per_agent"])
+        series["max_return_per_agent"].append(ep_stats["max_return_per_agent"])
+        series["return_pct_max"].append(ep_stats["return_pct_max"])
+        for k in ("food", "bites", "collisions", "eod_rate", "was_bitten"):
+            series[k].append(ep_stats[k])
+    return _pack_series(series)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--wef-root", type=str, default=str(DEFAULT_WEF_ROOT))
@@ -255,26 +408,32 @@ def main():
     ap.add_argument("--num-agents", type=int, default=4)
     ap.add_argument("--reward-scale", choices=("python", "c"), default="python")
     ap.add_argument(
+        "--original-model-dir",
+        type=str,
+        default=os.environ.get(
+            "ORIGINAL_MODEL_DIR",
+            str(DEFAULT_ORIGINAL_MODEL_DIR),
+        ),
+        help="dir with original MAPPO actor.pt (default checkpoints/wef/original)",
+    )
+    ap.add_argument(
         "--out",
         type=str,
-        default=str(PUFFER_ROOT / "logs" / "wef" / "kempner_return_compare.pdf"),
+        default=str(PUFFER_ROOT / "logs" / "wef" / "original_return_compare.pdf"),
     )
     ap.add_argument(
-        "--paper-return-lo",
-        type=float,
-        default=160.0,
-        help="paper MAPPO per-agent episode return lower (absolute)",
-    )
-    ap.add_argument(
-        "--paper-return-hi",
-        type=float,
-        default=170.0,
-        help="paper MAPPO per-agent episode return upper (absolute)",
+        "--puffer-label",
+        type=str,
+        default="Puffer",
+        help='legend/x-tick label for the Puffer policy (e.g. "π*" for best solve)',
     )
     args = ap.parse_args()
 
-    wef_fish = Path(args.wef_root) / "onpolicy" / "custom" / "fish"
+    wef_root = Path(args.wef_root)
+    wef_fish = wef_root / "onpolicy" / "custom" / "fish"
+    sys.path.insert(0, str(wef_root))
     sys.path.insert(0, str(wef_fish))
+    sys.modules.setdefault("onpolicy.scripts", types.ModuleType("onpolicy.scripts"))
     patch_action_feedback_to_match_c()
     from MAEFish import MultiAgentFishEnv  # noqa: E402
 
@@ -299,7 +458,8 @@ def main():
         num_actions=4,
         device="cpu",
     )
-    print(f"Puffer policy: {pt_path}  H={hidden} L={layers}")
+    puffer_label = args.puffer_label
+    print(f"Puffer policy ({puffer_label}): {pt_path}  H={hidden} L={layers}")
 
     def mk(seed: int):
         return MultiAgentFishEnv(
@@ -320,13 +480,28 @@ def main():
     results = {}
 
     print(
-        f"=== Puffer best ({args.episodes} eps, {args.arena}cm, T={args.episode_length}) ==="
+        f"=== {puffer_label} ({args.episodes} eps, {args.arena}cm, T={args.episode_length}) ==="
     )
     env_p = mk(args.seed)
     pstats = eval_policy_rich(
         env_p, policy, args.episodes, args.seed, args.episode_length
     )
-    results["Puffer best"] = pstats
+    results[puffer_label] = pstats
+
+    print("=== original MAPPO ===")
+    env_o = mk(args.seed + 2000)
+    oact = try_load_original_policy(Path(args.original_model_dir), env_o)
+    if oact is not None:
+        ostats = eval_callable_rich(
+            env_o, oact, args.episodes, args.episode_length, args.seed + 2000
+        )
+        results["Original MAPPO"] = ostats
+    else:
+        print(
+            f"Could not load original actor from {args.original_model_dir}; "
+            "plotting without it.",
+            file=sys.stderr,
+        )
 
     print("=== random baseline ===")
     env_r = mk(args.seed + 1000)
@@ -351,8 +526,12 @@ def main():
         )
 
     # ---- plot ----
+    # Keep Puffer / π* distinctly green (same as sweep_eval best-run green).
     palette = {
-        "Puffer best": "#0a7a32",
+        puffer_label: "#0a7a32",
+        "Puffer": "#0a7a32",
+        "π*": "#0a7a32",
+        "Original MAPPO": "#1f77b4",
         "Random": "#888888",
     }
     rng = np.random.default_rng(0)
@@ -370,15 +549,10 @@ def main():
             for n in order
         ]
     )
-    mean_max_pa = float(np.mean(all_max_pa))  # for converting paper absolute → %
-    paper_lo = float(args.paper_return_lo)
-    paper_hi = float(args.paper_return_hi)
-    paper_lo_pct = 100.0 * paper_lo / mean_max_pa if mean_max_pa > 0 else 0.0
-    paper_hi_pct = 100.0 * paper_hi / mean_max_pa if mean_max_pa > 0 else 0.0
+    mean_max_pa = float(np.mean(all_max_pa))
     print(
         f"LHS: return/agent as % of max obtainable "
-        f"(n_food×eat / n_fish); mean max/agent={mean_max_pa:.1f}  "
-        f"paper {paper_lo:.0f}–{paper_hi:.0f} → {paper_lo_pct:.1f}–{paper_hi_pct:.1f}%"
+        f"(n_food×eat / n_fish); mean max/agent={mean_max_pa:.1f}"
     )
 
     # layout: left big strip for return; right 2×3 bars for behavior stats
@@ -386,18 +560,8 @@ def main():
     fig.patch.set_facecolor("white")
     gs = fig.add_gridspec(2, 4, width_ratios=[1.15, 1, 1, 1])
 
-    # --- left column: per-agent return as % of obtainable max + paper band ---
+    # --- left column: per-agent return as % of obtainable max ---
     ax_ret = fig.add_subplot(gs[:, 0])
-    ax_ret.axhspan(
-        paper_lo_pct,
-        paper_hi_pct,
-        color="#1f77b4",
-        alpha=0.28,
-        zorder=1,
-        label=f"paper MAPPO ({paper_lo:.0f}–{paper_hi:.0f})",
-    )
-    ax_ret.axhline(paper_lo_pct, color="#1f77b4", lw=1.0, alpha=0.85, zorder=2)
-    ax_ret.axhline(paper_hi_pct, color="#1f77b4", lw=1.0, alpha=0.85, zorder=2)
 
     for i, name in enumerate(order):
         vals_pct = pct_by_name[name]
@@ -448,7 +612,7 @@ def main():
     ax_ret.set_axisbelow(True)
     ax_ret.spines["top"].set_visible(False)
     ax_ret.spines["right"].set_visible(False)
-    y_hi = max(float(np.max(all_pct)) * 1.08, paper_hi_pct * 1.12, 5.0)
+    y_hi = max(float(np.max(all_pct)) * 1.08, 5.0)
     y_lo = min(0.0, float(np.min(all_pct)) * 1.08)
     ax_ret.set_ylim(y_lo, y_hi)
     ax_ret.legend(loc="best", fontsize=8, framealpha=0.9)
@@ -510,9 +674,14 @@ def main():
         if min(means) < 0 < max(means) or min(m - h for m, h in zip(means, halves)) < 0:
             ax.axhline(0, color="#999", lw=0.8, zorder=1)
 
+    star_note = (
+        "  ·  π* = best solve (time/return)"
+        if "π" in puffer_label or puffer_label in ("pi*", "pi_star")
+        else ""
+    )
     fig.suptitle(
         f"Sim2sim transfer · rollouts in original sim · "
-        f"{args.episodes} rollouts × T={args.episode_length}",
+        f"{args.episodes} rollouts × T={args.episode_length}{star_note}",
         fontsize=12,
     )
 

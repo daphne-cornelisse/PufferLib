@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Eval converted Puffer torch policy on KempnerInstitute/wef MultiAgentFishEnv.
+"""Eval converted Puffer torch policy on original WEF MultiAgentFishEnv (KempnerInstitute/wef).
 
 Run from anywhere (paths are absolute-ish via env vars / defaults):
 
   WEF_ROOT=/home/daphne/code/wef \\
-  /home/daphne/code/wef/.venv/bin/python ocean/wef/eval_kempner.py \\
+  /home/daphne/code/wef/.venv/bin/python ocean/wef/eval_original.py \\
       --ini logs/wef_nice/best_policy.ini --episodes 10
 
 Compares:
@@ -55,7 +55,7 @@ def make_fish_args(
     """Build MultiAgentFishEnv kwargs.
 
     reward_scale:
-      - "python": Kempner cfg defaults (eat=10, …) — matches paper/MAPPO numbers
+      - "python": Kempner cfg defaults (eat=10, …) — matches original paper/MAPPO numbers
       - "c": ocean/wef/wef.h coeffs (eat=1, …) — matches Puffer training logs
     """
     if reward_scale == "c":
@@ -324,7 +324,7 @@ def record_video(
     frames: int | None = None,
     auxs: list[str] | None = None,
 ) -> dict:
-    """Roll out policy in Kempner env and write mp4 via FishRenderer rgb_array."""
+    """Roll out policy in original env and write mp4 via FishRenderer rgb_array."""
     import imageio
 
     if frames is None:
@@ -414,24 +414,24 @@ def main():
     ap.add_argument("--arena-max", type=float, default=70,
                     help="max arena edge cm (default 70 fixed; train used 400)")
     ap.add_argument("--prandom", type=float, default=2.0 / 3.0,
-                    help="patchy weight (Kempner default 2/3; paper full run 5)")
+                    help="patchy weight (original default 2/3; paper full run 5)")
     ap.add_argument("--urandom", type=float, default=1.0 / 3.0,
-                    help="uniform weight (Kempner default 1/3; paper full run 1)")
+                    help="uniform weight (original default 1/3; paper full run 1)")
     ap.add_argument("--num-agents", type=int, default=4)
     ap.add_argument("--episode-length", type=int, default=512,
-                    help="Puffer train uses 512; Kempner full scripts use 1600")
+                    help="Puffer train uses 512; original full scripts use 1600")
     ap.add_argument("--reward-scale", choices=("python", "c"), default="python",
                     help="python=cfg eat=10 (paper); c=wef.h eat=1 (Puffer train logs)")
     ap.add_argument("--no-action-feedback-patch", action="store_true",
                     help="keep Python tanh on last_action (diverges from C)")
     ap.add_argument("--skip-random", action="store_true")
     ap.add_argument("--video", action="store_true",
-                    help="record one episode mp4 in the Kempner renderer")
+                    help="record one episode mp4 in the original renderer")
     ap.add_argument(
         "--video-out",
         type=str,
         default=None,
-        help="mp4 path (default logs/wef/videos/kempner_patchy_70.mp4)",
+        help="mp4 path (default logs/wef/videos/original_patchy_70.mp4)",
     )
     ap.add_argument("--video-frames", type=int, default=None,
                     help="frames to record (default = episode-length)")
@@ -494,11 +494,11 @@ def main():
         video_out = Path(
             args.video_out
             if args.video_out
-            else PUFFER_ROOT / "logs" / "wef" / "videos" / "kempner_patchy_70.mp4"
+            else PUFFER_ROOT / "logs" / "wef" / "videos" / "original_patchy_70.mp4"
         )
         if not video_out.is_absolute():
             video_out = PUFFER_ROOT / video_out
-        print(f"=== recording Kempner video → {video_out} ===")
+        print(f"=== recording original-sim video → {video_out} ===")
         env_v = mk(args.seed, render_mode="rgb_array")
         record_video(
             env_v,
@@ -516,12 +516,12 @@ def main():
     print(f"env obs_dim={obs0[0].shape[0]} act_dim={env.action_space[0].shape[0]}")
 
     if not args.skip_random:
-        _print_stats("random baseline (Kempner)", eval_random(
+        _print_stats("random baseline (original)", eval_random(
             env, args.episodes, args.seed, args.episode_length))
 
     env2 = mk(args.seed + 1)
     pstats = eval_policy(env2, policy, args.episodes, args.seed + 1, args.episode_length)
-    _print_stats("puffer torch policy (Kempner)", pstats)
+    _print_stats("puffer torch policy (original)", pstats)
 
     if "episode_return" in ini:
         print(f"(C training log episode_return={ini['episode_return']} with eat≈1 scale)")

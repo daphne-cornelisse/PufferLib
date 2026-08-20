@@ -2820,89 +2820,7 @@ void run_sweep(Ini* ini, const char* exe_path) {
     }
 }
 
-// True if path ends with .gif / .GIF (palette encode); otherwise treat as video.
-static int puf_path_is_gif(const char* path) {
-    size_t n = strlen(path);
-    return n >= 4 && (strcmp(path + n - 4, ".gif") == 0
-        || strcmp(path + n - 4, ".GIF") == 0);
-}
-
-// Spawn ffmpeg reading raw RGBA frames from a pipe; returns write end of stdin.
-// Caller must close *out_fd and waitpid the returned pid when done.
-//
-// GIF: two-pass palette with dither=none. Default ffmpeg gif encoding dithers
-// thin colored strokes (fish rings, field lines) against white into muddy gray.
-// Non-gif: H.264/mp4-style encode via libx264 when possible.
-static pid_t puf_start_ffmpeg_gif(const char* path, int width, int height,
-        double fps, int* out_fd) {
-    int pipefd[2];
-    assert(pipe(pipefd) == 0 && "pipe failed for ffmpeg");
-    pid_t pid = fork();
-    assert(pid >= 0 && "fork failed for ffmpeg");
-    if (pid == 0) {
-        close(pipefd[1]);
-        if (dup2(pipefd[0], STDIN_FILENO) < 0) {
-            _exit(127);
-        }
-        close(pipefd[0]);
-        char size[32];
-        char fps_s[32];
-        snprintf(size, sizeof(size), "%dx%d", width, height);
-        snprintf(fps_s, sizeof(fps_s), "%g", fps);
-        if (puf_path_is_gif(path)) {
-            // stats_mode=full builds one palette from all frames; dither=none
-            // keeps solid purple/green instead of gray speckles on white.
-            execlp("ffmpeg", "ffmpeg", "-y", "-loglevel", "warning",
-                "-f", "rawvideo",
-                "-pix_fmt", "rgba",
-                "-s", size,
-                "-r", fps_s,
-                "-i", "-",
-                "-vf",
-                "split[s0][s1];[s0]palettegen=stats_mode=full:max_colors=256[p];"
-                "[s1][p]paletteuse=dither=none:diff_mode=rectangle",
-                "-loop", "0",
-                path,
-                (char*)NULL);
-        } else {
-            execlp("ffmpeg", "ffmpeg", "-y", "-loglevel", "warning",
-                "-f", "rawvideo",
-                "-pix_fmt", "rgba",
-                "-s", size,
-                "-r", fps_s,
-                "-i", "-",
-                "-an",
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-crf", "18",
-                "-preset", "veryfast",
-                path,
-                (char*)NULL);
-        }
-        fprintf(stderr, "ffmpeg not found in PATH (needed for frame recording)\n");
-        _exit(127);
-    }
-    close(pipefd[0]);
-    *out_fd = pipefd[1];
-    return pid;
-}
-
-static void puf_mkdir_parent(const char* path) {
-    char buf[4096];
-    snprintf(buf, sizeof(buf), "%s", path);
-    char* slash = strrchr(buf, '/');
-    if (!slash || slash == buf) {
-        return;
-    }
-    *slash = '\0';
-    mkdir_p(buf);
-}
-
 // board!=NULL: merge env/* into train last_log (uptime + util/* stay frozen).
-// EVAL_RENDER: draws env 0; optional gif via base.num_frames / base.gif_path / base.fps.
-//   num_frames > 0  → record that many frames then stop
-//   num_frames == -1 → record until WindowShouldClose / interrupt
-//   num_frames == 0  → interactive window only (no gif; desktop)
 static EvalResult eval_loop(Ini* ini, PuffeRL* p, int mode, int verbose,
         int render, long eval_episodes, Dict* board, int epoch) {
     int match = mode == EVAL_MATCH;
@@ -2912,69 +2830,12 @@ static EvalResult eval_loop(Ini* ini, PuffeRL* p, int mode, int verbose,
         vec_log(p->vec, &wipe, 1);
         dict_clear(&wipe);
     }
-
-    long num_frames = 0;
-    double gif_fps = 15.0;
-    const char* gif_path = "eval.gif";
-    int ffmpeg_fd = -1;
-    pid_t ffmpeg_pid = -1;
-    long frame_count = 0;
-    if (render) {
-        num_frames = (long)puf_ini_get(ini, "base", "num_frames");
-        gif_fps = puf_ini_get(ini, "base", "fps");
-        gif_path = puf_ini_get_str(ini, "base", "gif_path");
-#if defined(PLATFORM_MEMORY)
-        // Headless has no interactive close; default to recording if unset/0.
-        if (num_frames == 0) {
-            num_frames = 300;
-        }
-#endif
-        if (num_frames != 0) {
-            puf_mkdir_parent(gif_path);
-        }
-#if defined(PLATFORM_MEMORY)
-        SetTraceLogLevel(LOG_WARNING);
-#endif
-    }
-
     double last_dash = 0;
     while (true) {
         if (render) {
-            // InitWindow happens inside first puf_render; only then check close.
             puf_render(p->vec->envs);
-            puf_render_headless_tune();
             if (WindowShouldClose()) {
-                break;
-            }
-            if (num_frames != 0) {
-                if (ffmpeg_fd < 0) {
-                    int w = puf_screen_width();
-                    int h = puf_screen_height();
-                    assert(w > 0 && h > 0 && "render window not ready");
-                    ffmpeg_pid = puf_start_ffmpeg_gif(
-                        gif_path, w, h, gif_fps, &ffmpeg_fd);
-                    printf("Recording gif to %s (%dx%d @ %g fps, num_frames=%ld)\n",
-                        gif_path, w, h, gif_fps, num_frames);
-                }
-                if (!puf_pipe_frame_fd(ffmpeg_fd)) {
-                    fprintf(stderr, "Failed to pipe frame to ffmpeg\n");
-                    break;
-                }
-                frame_count++;
-                if (frame_count % 100 == 0 ||
-                        (num_frames > 0 && frame_count >= num_frames)) {
-                    if (num_frames < 0) {
-                        printf("Recorded %ld frames to %s\n", frame_count, gif_path);
-                    } else {
-                        printf("Recorded %ld/%ld frames [%.1f%%] to %s\n",
-                            frame_count, num_frames,
-                            100.0 * (double)frame_count / (double)num_frames,
-                            gif_path);
-                    }
-                }
-                if (num_frames > 0 && frame_count >= num_frames) {
-                    break;
-                }
+                return result;
             }
         }
         rollouts(p);
@@ -2991,8 +2852,7 @@ static EvalResult eval_loop(Ini* ini, PuffeRL* p, int mode, int verbose,
         }
         Dict* show = board ? board : &el;
         double now = wall_clock();
-        // Throttle dashboard during render (full-speed gif capture is noisy).
-        if (verbose && now - last_dash >= 0.6) {
+        if (!render && verbose && now - last_dash >= 0.6) {
             puf_dashboard_print(ini, p, show, board ? epoch : 0);
             last_dash = now;
         }
@@ -3016,15 +2876,8 @@ static EvalResult eval_loop(Ini* ini, PuffeRL* p, int mode, int verbose,
         }
         result.games = (int)n;
         dict_clear(&el);
-        break;
+        return result;
     }
-    if (ffmpeg_fd >= 0) {
-        close(ffmpeg_fd);
-        int status = 0;
-        waitpid(ffmpeg_pid, &status, 0);
-        printf("Wrote %ld frames to %s\n", frame_count, gif_path);
-    }
-    return result;
 }
 
 static PuffeRL* eval_make(Ini* ini, TrainContext* ctx, int mode, int render) {
@@ -3050,16 +2903,7 @@ static PuffeRL* eval_make(Ini* ini, TrainContext* ctx, int mode, int render) {
     }
     puf_ini_put(ini, "base.reset_every_horizon", "0");
     if (render) {
-        // One step per draw for smooth playback.
         puf_ini_put(ini, "train.horizon", "1");
-        // Prefer a single buffer so small total_agents layouts stay valid.
-        puf_ini_put(ini, "vec.num_buffers", "1");
-        // Positive eval_agents lightens render; -1 keeps vec.total_agents.
-        if (eval_agents > 0) {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "%ld", eval_agents);
-            puf_ini_put(ini, "vec.total_agents", buf);
-        }
     }
     PuffeRL* p = create_pufferl(ini, ctx);
     if (match) {
@@ -3496,9 +3340,7 @@ int main(int argc, char** argv) {
     setbuf(stderr, NULL);
     if (argc < 2) {
         fprintf(stderr,
-            "usage: %s train|eval|match|sweep [latest|MODEL.bin] [--headless] [--section.key=value ...]\n"
-            "  eval gif: base.num_frames / base.gif_path / base.fps"
-            " (build with --headless for no display)\n",
+            "usage: %s train|eval|match|sweep [latest|MODEL.bin] [--headless] [--section.key=value ...]\n",
             argv[0]);
         exit(1);
     }

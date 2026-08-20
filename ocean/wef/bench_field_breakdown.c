@@ -63,12 +63,12 @@ static inline uint64_t rdtsc_end(void) {
     return t;
 }
 
-/* Instrumented copy of measure_field (paper food/agent ranges; stats only). */
+/* Instrumented copy of measure_field (same algebra; stats only). */
 static Vec2 measure_field_stats(
     Env* env, Vec2 probe,
     const Mono* mono, int n_mono,
-    const Dipole* dip, int n_dip, int n_agent_dips,
-    float agent_range_cm, float food_range_cm, float wall_range_cm
+    const Dipole* dip, int n_dip, int n_agent_dipoles,
+    float wall_range_cm
 ) {
     FieldStats* st = &g_stats;
     st->calls++;
@@ -78,9 +78,9 @@ static Vec2 measure_field_stats(
     float arena_mx = env->arena_size_x * CM_TO_M;
     float arena_my = env->arena_size_y * CM_TO_M;
     float wall_range_m = wall_range_cm * CM_TO_M;
-    float agent_r = agent_range_cm * CM_TO_M;
-    float food_r = food_range_cm * CM_TO_M;
-    float agent_range2 = agent_r * agent_r;
+    float fr = env->field_fish_range_cm * CM_TO_M;
+    float food_r = env->field_food_range_cm * CM_TO_M;
+    float fish_range2 = fr * fr;
     float food_range2 = food_r * food_r;
     float eps_m = FIELD_EPS_M;
 
@@ -103,6 +103,7 @@ static Vec2 measure_field_stats(
 
     Mono mono_in[WEF_MAX_MONO];
     Dipole dip_in[WEF_MAX_DIP];
+    /* Track how many of dip_in are fish vs food for wall attribution */
     int n_dip_fish_in = 0;
     int n_mono_in = 0;
     int n_dip_in = 0;
@@ -115,7 +116,7 @@ static Vec2 measure_field_stats(
         float sy = mono[i].p.y * CM_TO_M;
         float dx = pmx - sx;
         float dy = pmy - sy;
-        if (dx * dx + dy * dy > agent_range2) {
+        if (dx * dx + dy * dy > fish_range2) {
             st->mono_pruned++;
             continue;
         }
@@ -130,7 +131,7 @@ static Vec2 measure_field_stats(
     }
 
     for (int i = 0; i < n_dip; i++) {
-        int is_fish = i < n_agent_dips;
+        int is_fish = i < n_agent_dipoles;
         if (is_fish) {
             st->dip_fish_checked++;
         } else {
@@ -138,7 +139,7 @@ static Vec2 measure_field_stats(
         }
         float sx = dip[i].p.x * CM_TO_M;
         float sy = dip[i].p.y * CM_TO_M;
-        float range2 = is_fish ? agent_range2 : food_range2;
+        float range2 = is_fish ? fish_range2 : food_range2;
         float dx = pmx - sx;
         float dy = pmy - sy;
         if (dx * dx + dy * dy > range2) {
@@ -258,8 +259,7 @@ static void account_step_fields(Wef* env) {
         float moment_y = 0.0f;
         if (!agent->emits_eod) {
             Vec2 f = measure_field_stats(
-                env, agent->pos, eod, n_eod, NULL, 0, 0,
-                MORM_AGENT_RANGE_CM, MORM_FOOD_RANGE_CM, 0.0f
+                env, agent->pos, eod, n_eod, NULL, 0, 0, 0.0f
             );
             moment_x = f.x * body_scale;
             moment_y = f.y * body_scale;
@@ -285,8 +285,7 @@ static void account_step_fields(Wef* env) {
             fc * FOOD_INTRINSIC_MOMENT_C_M,
         };
         Vec2 f = measure_field_stats(
-            env, env->food[i].pos, eod, n_eod, NULL, 0, 0,
-            MORM_AGENT_RANGE_CM, MORM_FOOD_RANGE_CM, 0.0f
+            env, env->food[i].pos, eod, n_eod, NULL, 0, 0, 0.0f
         );
         env->food[i].induced_moment =
             (Vec2){f.x * food_scale, f.y * food_scale};
@@ -318,7 +317,6 @@ static void account_step_fields(Wef* env) {
             Sensor w = sensor_world(&g_morm[s], agent);
             measure_field_stats(
                 env, w.p, NULL, 0, induced, n_induced, env->num_agents,
-                MORM_AGENT_RANGE_CM, MORM_FOOD_RANGE_CM,
                 env->reflection_wall_range_cm
             );
         }
@@ -326,7 +324,6 @@ static void account_step_fields(Wef* env) {
             Sensor w = sensor_world(&g_amp[s], agent);
             measure_field_stats(
                 env, w.p, NULL, 0, intrinsic, n_intrinsic, env->num_agents,
-                AMP_AGENT_RANGE_CM, AMP_FOOD_RANGE_CM,
                 env->reflection_wall_range_cm
             );
         }
@@ -341,8 +338,7 @@ static void account_step_fields(Wef* env) {
             for (int s = 0; s < NUM_KNOLLEN; s++) {
                 Sensor w = sensor_world(&g_knollen[s], agent);
                 measure_field_stats(
-                    env, w.p, e2, 2, NULL, 0, 0,
-                    KNOLLEN_AGENT_RANGE_CM, 0.0f, 0.0f
+                    env, w.p, e2, 2, NULL, 0, 0, 0.0f
                 );
             }
         }
@@ -486,6 +482,8 @@ static void configure(Wef* env, unsigned seed, int nfish) {
     dict_set(&kwargs, "patch_density", 0.001);
     dict_set(&kwargs, "electric_field_radius", 15);
     dict_set(&kwargs, "reflection_wall_range", 100);
+    dict_set(&kwargs, "field_fish_range", 100);
+    dict_set(&kwargs, "field_food_range", 5);
     dict_set(&kwargs, "episode_length", 4096);
     memset(env, 0, sizeof(*env));
     env->rng = seed ? seed : 1u;
@@ -556,7 +554,7 @@ int main(void) {
     double cyc_miss, cyc_dip, cyc_mono;
     microbench_unit_costs(&cyc_miss, &cyc_dip, &cyc_mono);
 
-    printf("field path breakdown  (morm 5/10 amp 4/8 knollen 100 walls=100)\n");
+    printf("field path breakdown  (fish_range=100 food_range=5 walls=100)\n");
     printf("  pool: %d fish, %d envs, %d accounted steps\n\n",
         TOTAL_FISH, num_envs, STEPS);
 
