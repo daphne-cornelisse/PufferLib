@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "raylib.h"
@@ -970,10 +971,14 @@ static void wef_draw_field_arrow(Vector2 base, float ux, float uy, float len, Co
 
 // Compact V/cm color bar for the WEF log range.
 static void wef_draw_field_colorbar(int win_w, int win_h) {
-    const int bar_h = 120;
-    const int bar_x0 = win_w - 18;
-    const int bar_x1 = win_w - 10;
-    const int bar_y1 = win_h - 14;
+    float ui = (float)win_w / 900.0f;
+    if (ui < 1.0f) {
+        ui = 1.0f;
+    }
+    const int bar_h = (int)(120 * ui);
+    const int bar_x0 = win_w - (int)(18 * ui);
+    const int bar_x1 = win_w - (int)(10 * ui);
+    const int bar_y1 = win_h - (int)(14 * ui);
     const int bar_y0 = bar_y1 - bar_h;
     for (int i = 0; i < bar_h; i++) {
         float t = (float)i / (float)(bar_h - 1);
@@ -983,22 +988,49 @@ static void wef_draw_field_colorbar(int win_w, int win_h) {
         DrawLine(bar_x0, bar_y1 - i, bar_x1, bar_y1 - i, c);
     }
     DrawRectangleLines(bar_x0 - 1, bar_y0, bar_x1 - bar_x0 + 2, bar_h, WEF_COLOR_MIDGRAY);
-    DrawText("V/cm", win_w - 42, bar_y0 - 12, 10, WEF_COLOR_MIDGRAY);
-    DrawText("1e-3", win_w - 48, bar_y0 + 2, 10, WEF_COLOR_MIDGRAY);
-    DrawText("1e-7", win_w - 48, bar_y1 - 10, 10, WEF_COLOR_MIDGRAY);
+    int fs = (int)(10 * ui);
+    DrawText("V/cm", win_w - (int)(42 * ui), bar_y0 - (int)(12 * ui), fs, WEF_COLOR_MIDGRAY);
+    DrawText("1e-3", win_w - (int)(48 * ui), bar_y0 + (int)(2 * ui), fs, WEF_COLOR_MIDGRAY);
+    DrawText("1e-7", win_w - (int)(48 * ui), bar_y1 - (int)(10 * ui), fs, WEF_COLOR_MIDGRAY);
 }
 
 void puf_render(Wef* env) {
     if (env->client == NULL) {
         Client* client = (Client*)calloc(1, sizeof(Client));
-        client->window_width = 900;
-        client->window_height = 900;
-        client->margin = 55;
+        int win_w = 900;
+        int win_h = 900;
+        const char* ew = getenv("WEF_WIN_W");
+        const char* eh = getenv("WEF_WIN_H");
+        if (ew && ew[0]) {
+            win_w = atoi(ew);
+        }
+        if (eh && eh[0]) {
+            win_h = atoi(eh);
+        }
+        if (win_w < 200) {
+            win_w = 200;
+        }
+        if (win_h < 200) {
+            win_h = 200;
+        }
+        client->window_width = win_w;
+        client->window_height = win_h;
+        client->margin = (int)(55.0f * (float)win_w / 900.0f);
+        if (client->margin < 24) {
+            client->margin = 24;
+        }
         client->show_field = true;
         client->show_sensors = true;
         InitWindow(client->window_width, client->window_height, "Weakly Electric fish");
-        SetTargetFPS(60);
+        if (getenv("WEF_REC_DIR") && getenv("WEF_REC_DIR")[0]) {
+            SetTargetFPS(0);
+        } else {
+            SetTargetFPS(60);
+        }
         env->client = client;
+    }
+    if (getenv("WEF_REC_DIR") && getenv("WEF_REC_DIR")[0]) {
+        SetTargetFPS(0);
     }
     if (IsKeyDown(KEY_ESCAPE)) {
         exit(0);
@@ -1094,11 +1126,21 @@ void puf_render(Wef* env) {
         }
 
         // Local vector field around each fish (fixed-length arrows, strength → color).
-        const int columns = 36;
-        const int rows = 36;
+        int columns = 36;
+        const char* grid_env = getenv("WEF_FIELD_GRID");
+        if (grid_env && grid_env[0]) {
+            columns = atoi(grid_env);
+        }
+        if (columns < 8) {
+            columns = 8;
+        }
+        if (columns > 160) {
+            columns = 160;
+        }
+        const int rows = columns;
         float radius_squared =
             env->electric_field_radius_cm * env->electric_field_radius_cm;
-        const float arrow_len = 10.0f;
+        const float arrow_len = 10.0f * ((float)env->client->window_width / 900.0f);
         for (int row = 0; row < rows; row++) {
             for (int column = 0; column < columns; column++) {
                 Vec2 pos = {
@@ -1187,26 +1229,29 @@ void puf_render(Wef* env) {
         float radius = BODY_RADIUS_CM * scale;
 
         if (agent->emits_eod) {
-            float pulse = radius + 5.0f +
-                5.0f * sinf((float)env->tick * 0.18f);
+            float pulse = radius + (5.0f +
+                5.0f * sinf((float)env->tick * 0.18f)) *
+                ((float)env->client->window_width / 900.0f);
             DrawCircleLines((int)center.x, (int)center.y, pulse,
                 WEF_COLOR_FISH_PULSE);
         }
 
         float heading_x = cosf(agent->orientation);
         float heading_y = -sinf(agent->orientation);
-        DrawRing(center, radius - 1.5f, radius + 1.5f,
-            0.0f, 360.0f, 32, WEF_COLOR_FISH);
+        float ring = fmaxf(1.5f, 1.5f * ((float)env->client->window_width / 900.0f));
+        DrawRing(center, radius - ring, radius + ring,
+            0.0f, 360.0f, 48, WEF_COLOR_FISH);
         Vector2 nose = {
             center.x + heading_x * radius * 1.35f,
             center.y + heading_y * radius * 1.35f,
         };
-        DrawLineEx(center, nose, 3.0f, WEF_COLOR_FISH);
+        DrawLineEx(center, nose, fmaxf(3.0f, 3.0f * ((float)env->client->window_width / 900.0f)), WEF_COLOR_FISH);
 
         Vector2 positive = world_to_screen(env, agent->eod_pos[0]);
         Vector2 negative = world_to_screen(env, agent->eod_pos[1]);
-        DrawCircleV(positive, 3.0f, WEF_COLOR_EOD_POS);
-        DrawCircleV(negative, 3.0f, WEF_COLOR_EOD_NEG);
+        float eod_r = fmaxf(3.0f, 3.0f * ((float)env->client->window_width / 900.0f));
+        DrawCircleV(positive, eod_r, WEF_COLOR_EOD_POS);
+        DrawCircleV(negative, eod_r, WEF_COLOR_EOD_NEG);
 
         if (env->client->show_sensors) {
             for (int sensor_idx = 0; sensor_idx < NUM_KNOLLEN;
@@ -1214,12 +1259,14 @@ void puf_render(Wef* env) {
                 Sensor w = sensor_world(&g_knollen[sensor_idx], agent);
                 DrawCircleV(
                     world_to_screen(env, w.p),
-                    1.5f, WEF_COLOR_SENSOR
+                    fmaxf(1.5f, 1.5f * ((float)env->client->window_width / 900.0f)),
+                    WEF_COLOR_SENSOR
                 );
             }
         }
+        int id_fs = (int)(16.0f * ((float)env->client->window_width / 900.0f));
         DrawText(TextFormat("%d", i + 1),
-            (int)(center.x + radius + 4), (int)(center.y - radius), 16,
+            (int)(center.x + radius + 4), (int)(center.y - radius), id_fs,
             WEF_COLOR_TEXT);
     }
 
@@ -1230,18 +1277,21 @@ void puf_render(Wef* env) {
         },
         2.0f, WEF_COLOR_MIDGRAY
     );
-    DrawText("Weakly electric fish", 20, 14, 24, WEF_COLOR_TEXT);
+    float ui = (float)env->client->window_width / 900.0f;
+    int title_fs = (int)(24 * ui);
+    int hud_fs = (int)(18 * ui);
+    DrawText("Weakly electric fish", (int)(20 * ui), (int)(14 * ui), title_fs, WEF_COLOR_TEXT);
     int active_eods = 0;
     for (int i = 0; i < env->num_agents; i++) {
         active_eods += env->fish[i].emits_eod ? 1 : 0;
     }
     DrawText(TextFormat("step %d   active EODs %d/%d",
         env->tick, active_eods, env->num_agents),
-        env->client->window_width - 285, 18, 18, WEF_COLOR_MIDGRAY);
+        env->client->window_width - (int)(285 * ui), (int)(18 * ui), hud_fs, WEF_COLOR_MIDGRAY);
     DrawText(TextFormat("food %d/%d", env->food_eaten, env->num_food),
-        20, env->client->window_height - 32, 18, WEF_COLOR_MIDGRAY);
+        (int)(20 * ui), env->client->window_height - (int)(32 * ui), hud_fs, WEF_COLOR_MIDGRAY);
     DrawText(TextFormat("field radius %.0f cm", env->electric_field_radius_cm),
-        180, env->client->window_height - 32, 18, WEF_COLOR_MIDGRAY);
+        (int)(180 * ui), env->client->window_height - (int)(32 * ui), hud_fs, WEF_COLOR_MIDGRAY);
 
     if (env->client->show_field) {
         wef_draw_field_colorbar(
@@ -1249,6 +1299,60 @@ void puf_render(Wef* env) {
         );
     }
     EndDrawing();
+    const char* shot_dir = getenv("WEF_SHOT_DIR");
+    const char* shot_ticks = getenv("WEF_SHOT_TICKS");
+    if (shot_dir && shot_dir[0] && shot_ticks && shot_ticks[0] && env->tick > 0) {
+        char wrapped[1024];
+        char needle[32];
+        snprintf(wrapped, sizeof(wrapped), ",%s,", shot_ticks);
+        snprintf(needle, sizeof(needle), ",%d,", env->tick);
+        if (strstr(wrapped, needle)) {
+            char png[1024];
+            char csv[1024];
+            snprintf(png, sizeof(png), "%s/wef_shot_%04d.png", shot_dir, env->tick);
+            snprintf(csv, sizeof(csv), "%s/wef_shot_%04d.csv", shot_dir, env->tick);
+            TakeScreenshot(png);
+            FILE* fp = fopen(csv, "w");
+            if (fp) {
+                fprintf(fp, "tick,agent,wx,wy,sx,sy\n");
+                for (int i = 0; i < env->num_agents; i++) {
+                    Vector2 s = world_to_screen(env, env->fish[i].pos);
+                    fprintf(
+                        fp,
+                        "%d,%d,%.4f,%.4f,%.2f,%.2f\n",
+                        env->tick,
+                        i,
+                        env->fish[i].pos.x,
+                        env->fish[i].pos.y,
+                        s.x,
+                        s.y
+                    );
+                }
+                fclose(fp);
+            }
+        }
+    }
+    const char* rec_dir = getenv("WEF_REC_DIR");
+    if (rec_dir && rec_dir[0] && env->tick > 0) {
+        int rec_max = 512;
+        const char* rec_max_s = getenv("WEF_REC_MAX");
+        if (rec_max_s && rec_max_s[0]) {
+            rec_max = atoi(rec_max_s);
+        }
+        if (env->tick <= rec_max) {
+            char png[1024];
+            snprintf(png, sizeof(png), "%s/frame_%04d.png", rec_dir, env->tick);
+            Image img = LoadImageFromScreen();
+            ExportImage(img, png);
+            UnloadImage(img);
+        }
+        if (env->tick >= rec_max) {
+            const char* rec_exit = getenv("WEF_REC_EXIT");
+            if (rec_exit && rec_exit[0] == '1') {
+                exit(0);
+            }
+        }
+    }
     puf_web_vsync();
 }
 

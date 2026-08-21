@@ -425,7 +425,7 @@ def main():
         "--puffer-label",
         type=str,
         default="Puffer",
-        help='legend/x-tick label for the Puffer policy (e.g. "π*" for best solve)',
+        help="legend/x-tick label for the Puffer policy",
     )
     args = ap.parse_args()
 
@@ -488,14 +488,14 @@ def main():
     )
     results[puffer_label] = pstats
 
-    print("=== original MAPPO ===")
+    print("=== reference ===")
     env_o = mk(args.seed + 2000)
     oact = try_load_original_policy(Path(args.original_model_dir), env_o)
     if oact is not None:
         ostats = eval_callable_rich(
             env_o, oact, args.episodes, args.episode_length, args.seed + 2000
         )
-        results["Original MAPPO"] = ostats
+        results["Reference Python"] = ostats
     else:
         print(
             f"Could not load original actor from {args.original_model_dir}; "
@@ -530,8 +530,13 @@ def main():
     palette = {
         puffer_label: "#0a7a32",
         "Puffer": "#0a7a32",
+        "Puffer C\nimplementation": "#0a7a32",
         "π*": "#0a7a32",
+        "reference": "#1f77b4",
+        "Reference Python": "#1f77b4",
+        "Original": "#1f77b4",
         "Original MAPPO": "#1f77b4",
+        "Reference Python\nimplementation": "#1f77b4",
         "Random": "#888888",
     }
     rng = np.random.default_rng(0)
@@ -663,8 +668,11 @@ def main():
                 fontsize=9,
                 color="#222",
             )
+        tick = {
+            "Reference Python": "Reference\nPython",
+        }
         ax.set_xticks(xs)
-        ax.set_xticklabels(order, fontsize=9)
+        ax.set_xticklabels([tick.get(n, n) for n in order], fontsize=8)
         ax.set_ylabel(ylabel, fontsize=10)
         ax.grid(True, axis="y", alpha=0.22, zorder=0)
         ax.set_axisbelow(True)
@@ -680,7 +688,7 @@ def main():
         else ""
     )
     fig.suptitle(
-        f"Sim2sim transfer · rollouts in original sim · "
+        f"Sim-to-sim transfer · rollouts in the reference Python simulator · "
         f"{args.episodes} rollouts × T={args.episode_length}{star_note}",
         fontsize=12,
     )
