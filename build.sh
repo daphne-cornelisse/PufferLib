@@ -348,6 +348,7 @@ elif [ "$MODE" = "web" ]; then
             -sASSERTIONS=2 -gsource-map \
             -sUSE_GLFW=3 -sUSE_WEBGL2=1 -sASYNCIFY -sFILESYSTEM -sFORCE_FILESYSTEM=1 \
             -sLZ4=1 \
+            --js-library vendor/puf_web_vsync.js \
             --shell-file tools/web/osrs_shell.html \
             -sINITIAL_MEMORY=512MB -sALLOW_MEMORY_GROWTH -sSTACK_SIZE=512KB \
             -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
