@@ -215,7 +215,8 @@ else
 fi
 
 # src/ocean.cu compiles only this env's custom net (PUFFER_NETHACK, PUFFER_NMMO3, …).
-EXTRA_CFLAGS+=(-DPUFFER_${ENV^^})
+ENV_UPPER=$(printf '%s' "$ENV" | tr '[:lower:]' '[:upper:]')
+EXTRA_CFLAGS+=(-DPUFFER_${ENV_UPPER})
 
 case "$ENV" in
     osrs_*)
