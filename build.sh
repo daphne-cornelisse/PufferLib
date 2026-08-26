@@ -124,7 +124,6 @@ fi
 
 RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
 INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
-
 LINK_ARCHIVES=("$RAYLIB_A")
 EXTRA_SRC=""
 EXTRA_LDFLAGS=()
@@ -205,8 +204,7 @@ else
 fi
 
 # src/ocean.cu compiles only this env's custom net (PUFFER_NETHACK, PUFFER_NMMO3, …).
-ENV_UPPER=$(printf '%s' "$ENV" | tr '[:lower:]' '[:upper:]')
-EXTRA_CFLAGS+=(-DPUFFER_${ENV_UPPER})
+EXTRA_CFLAGS+=(-DPUFFER_${ENV^^})
 
 case "$ENV" in
     osrs_*)
@@ -294,89 +292,72 @@ if [ "$MODE" = "cpu" ]; then
     echo "Built: ./$OUTPUT_NAME"
     exit 0
 elif [ "$MODE" = "web" ]; then
-    WEB_SRC=(src/puffercpu.c)
-    if [ -n "$EXTRA_SRC" ]; then
-        WEB_SRC+=($EXTRA_SRC)
-    fi
-    WEB_SHELL=vendor/minshell.html
-    WEB_PRELOAD=()
-    WEB_EXTRA=()
-    WEB_DEFINES=(
-        -DPUFFERCPU_EVAL_MAIN
-        -DENV_HEADER=\"$SRC_DIR/$ENV.h\"
-        -DPUFFER_ENV_NAME=\"$ENV\"
-    )
-    WEB_USE_DEFAULT_PRELOAD=1
-    WEB_REQUIRE_OBS=1
-    WEB_PUBLISH=1
     if [ -f "$SRC_DIR/web.sh" ]; then
         source "$SRC_DIR/web.sh"
+        exit 0
     fi
-    if [ "$WEB_REQUIRE_OBS" = 1 ]; then
-        ENV_HEADER="$SRC_DIR/$ENV.h"
-        if ! grep -q 'typedef[[:space:]].*obs_t' "$ENV_HEADER" 2>/dev/null; then
-            echo "Error: $ENV_HEADER must typedef obs_t for web eval"
-            exit 1
-        fi
+    ENV_HEADER="$SRC_DIR/$ENV.h"
+    if ! grep -q 'typedef[[:space:]].*obs_t' "$ENV_HEADER" 2>/dev/null; then
+        echo "Error: $ENV_HEADER must typedef obs_t for web eval"
+        exit 1
     fi
     mkdir -p "build/web/$ENV"
-    if [ "$WEB_USE_DEFAULT_PRELOAD" = 1 ]; then
-        PRELOAD_ENV=()
-        if [ "$ENV" = "boxoban" ]; then
-            PRELOAD_ENV=(
-                --preload-file resources/boxoban/web_maps.bin@resources/boxoban/web_maps.bin
-                --preload-file resources/boxoban/boxoban_weights.bin@resources/boxoban/boxoban_weights.bin
-                --preload-file resources/boxoban/Wall_Black.jpg@resources/boxoban/Wall_Black.jpg
-                --preload-file resources/boxoban/Crate_Black.jpg@resources/boxoban/Crate_Black.jpg
-                --preload-file resources/boxoban/EndPoint_Black.jpg@resources/boxoban/EndPoint_Black.jpg
-                --preload-file resources/boxoban/EndPoint_Blue.jpg@resources/boxoban/EndPoint_Blue.jpg
-                --preload-file resources/boxoban/GroundGravel_Concrete.jpg@resources/boxoban/GroundGravel_Concrete.jpg
-            )
-        elif [ -d "resources/$ENV" ]; then
-            PRELOAD_ENV=(--preload-file "resources/$ENV@resources/$ENV")
-        fi
-        WEB_PRELOAD=(
-            --preload-file resources/shared@resources/shared
-            --preload-file config/default.ini@config/default.ini
-            "${PRELOAD_ENV[@]}"
+    PRELOAD_ENV=()
+    if [ "$ENV" = "boxoban" ]; then
+        # Do not pack generated boxoban_maps_*.bin or levels/ (hundreds of MB).
+        PRELOAD_ENV=(
+            --preload-file resources/boxoban/web_maps.bin@resources/boxoban/web_maps.bin
+            --preload-file resources/boxoban/boxoban_weights.bin@resources/boxoban/boxoban_weights.bin
+            --preload-file resources/boxoban/Wall_Black.jpg@resources/boxoban/Wall_Black.jpg
+            --preload-file resources/boxoban/Crate_Black.jpg@resources/boxoban/Crate_Black.jpg
+            --preload-file resources/boxoban/EndPoint_Black.jpg@resources/boxoban/EndPoint_Black.jpg
+            --preload-file resources/boxoban/EndPoint_Blue.jpg@resources/boxoban/EndPoint_Blue.jpg
+            --preload-file resources/boxoban/GroundGravel_Concrete.jpg@resources/boxoban/GroundGravel_Concrete.jpg
         )
-        if [ -d "ocean/$ENV/generated" ]; then
-            WEB_PRELOAD+=(--preload-file "ocean/$ENV/generated@ocean/$ENV/generated")
-        fi
-        if [ -f "config/$ENV.ini" ]; then
-            WEB_PRELOAD+=(--preload-file "config/$ENV.ini@config/$ENV.ini")
-        fi
-        if [ -f "config/${ENV}_web.ini" ]; then
-            WEB_PRELOAD+=(--preload-file "config/${ENV}_web.ini@config/${ENV}_web.ini")
-        fi
+    elif [ -d "resources/$ENV" ]; then
+        PRELOAD_ENV=(--preload-file "resources/$ENV@resources/$ENV")
     fi
     echo "Compiling $ENV for web..."
+    PRELOAD=(
+        --preload-file resources/shared@resources/shared
+        --preload-file config/default.ini@config/default.ini
+    )
+    if [ -d "ocean/$ENV/generated" ]; then
+        PRELOAD+=(--preload-file "ocean/$ENV/generated@ocean/$ENV/generated")
+    fi
+    if [ -f "config/$ENV.ini" ]; then
+        PRELOAD+=(--preload-file "config/$ENV.ini@config/$ENV.ini")
+    fi
+    if [ -f "config/${ENV}_web.ini" ]; then
+        PRELOAD+=(--preload-file "config/${ENV}_web.ini@config/${ENV}_web.ini")
+    fi
     emcc \
         -o "build/web/$ENV/game.html" \
-        "${WEB_SRC[@]}" \
+        src/puffercpu.c $EXTRA_SRC \
         -O3 -Wall -Wno-narrowing \
         "${LINK_ARCHIVES[@]}" \
-        -I. -Isrc -I"$SRC_DIR" -Ivendor "${INCLUDES[@]}" \
-        -L. -L./"$RAYLIB_NAME"/lib \
+        -I. -Isrc -I$SRC_DIR -Ivendor "${INCLUDES[@]}" \
+        -L. -L./$RAYLIB_NAME/lib \
         -sASSERTIONS=2 -gsource-map \
         -sUSE_GLFW=3 -sUSE_WEBGL2=1 -sASYNCIFY -sFILESYSTEM -sFORCE_FILESYSTEM=1 \
         --js-library vendor/puf_web_vsync.js \
-        --shell-file "$WEB_SHELL" \
+        --shell-file vendor/minshell.html \
         -sINITIAL_MEMORY=512MB -sALLOW_MEMORY_GROWTH -sSTACK_SIZE=512KB \
         -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
-        "${WEB_DEFINES[@]}" \
-        "${WEB_PRELOAD[@]}" \
-        "${WEB_EXTRA[@]}" \
+        -DPUFFERCPU_EVAL_MAIN \
+        -DENV_HEADER=\"$ENV_HEADER\" \
+        -DPUFFER_ENV_NAME=\"$ENV\" \
+        --preload-file resources/shared@resources/shared \
+        "${PRELOAD_ENV[@]}" \
+        "${PRELOAD[@]}" \
         "${EXTRA_CFLAGS[@]}"
     echo "Built: build/web/$ENV/game.html"
-    if [ "$WEB_PUBLISH" = 1 ]; then
-        WEBSITE_DIR="${PUFFER_WEBSITE_DIR:-../docker/puffer.ai}"
-        WEBSITE_ASSETS="$WEBSITE_DIR/docs/assets"
-        if [ -d "$WEBSITE_ASSETS" ]; then
-            mkdir -p "$WEBSITE_ASSETS/$ENV"
-            cp -a "build/web/$ENV/." "$WEBSITE_ASSETS/$ENV/"
-            echo "Published: $WEBSITE_ASSETS/$ENV/"
-        fi
+    WEBSITE_DIR="${PUFFER_WEBSITE_DIR:-../docker/puffer.ai}"
+    WEBSITE_ASSETS="$WEBSITE_DIR/docs/assets"
+    if [ -d "$WEBSITE_ASSETS" ]; then
+        mkdir -p "$WEBSITE_ASSETS/$ENV"
+        cp -a "build/web/$ENV/." "$WEBSITE_ASSETS/$ENV/"
+        echo "Published: $WEBSITE_ASSETS/$ENV/"
     fi
     exit 0
 elif [ "$MODE" = "cpu" ]; then
