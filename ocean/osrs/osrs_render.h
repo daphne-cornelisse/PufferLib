@@ -2752,7 +2752,7 @@ static void render_handle_input(RenderClient* rc, OsrsEnv* env) {
         }
     }
 
-    if (IsKeyPressed(KEY_H)) {
+    if (IsKeyPressed(KEY_LEFT_CONTROL) || IsKeyPressed(KEY_RIGHT_CONTROL)) {
         rc->human_input.enabled = !rc->human_input.enabled;
         if (!rc->human_input.enabled) {
             human_input_clear_pending(&rc->human_input);
@@ -5708,12 +5708,12 @@ static int render_scene_is_inferno(OsrsEnv* env) {
 static const char* render_control_hint_text(RenderClient* rc, OsrsEnv* env) {
     if (render_scene_is_inferno(env)) {
         if (rc->human_input.enabled)
-            return "Mid-drag: orbit  Right-click: interact  Scroll: zoom  D: debug  H: policy  F8: lab";
-        return "Mid-drag: orbit  Right-drag: pan  Scroll: zoom  D: debug  H: human  F8: lab";
+            return "Mid-drag: orbit  Right-click: interact  Scroll: zoom  D: debug  Ctrl: policy  F8: lab";
+        return "Mid-drag: orbit  Right-drag: pan  Scroll: zoom  D: debug  Ctrl: human  F8: lab";
     }
     if (rc->human_input.enabled)
-        return "Mid-drag: orbit  Right-click: interact  Scroll: zoom  SPACE: pause  S: safe spots  D: debug  G: cycle entity  H: policy";
-    return "Mid-drag: orbit  Right-drag: pan  Scroll: zoom  SPACE: pause  S: safe spots  D: debug  G: cycle entity  H: human";
+        return "Mid-drag: orbit  Right-click: interact  Scroll: zoom  SPACE: pause  S: safe spots  D: debug  G: cycle entity  Ctrl: policy";
+    return "Mid-drag: orbit  Right-drag: pan  Scroll: zoom  SPACE: pause  S: safe spots  D: debug  G: cycle entity  Ctrl: human";
 }
 
 static void render_draw_default_top_hud(RenderClient* rc, int display_tick) {

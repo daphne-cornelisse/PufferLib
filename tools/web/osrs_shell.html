@@ -3,16 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OSRS reinforcement learning simulator</title>
+  <title>OSRS</title>
   <style>
     :root {
-      color-scheme: dark;
-      --coal: #0d0b09;
-      --bar: #17120e;
-      --line: #3d3027;
-      --ember: #c76a32;
-      --bone: #e3d8cd;
-      --muted: #9b8c80;
+      --highlight: #00bbbb;
+      --foreground: #061818;
+      --background: #000000;
+      --text: #f1f1f1;
     }
 
     * {
@@ -25,126 +22,135 @@
       height: 100%;
       margin: 0;
       overflow: hidden;
-      background: var(--coal);
-      color: var(--bone);
-      font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", "Liberation Mono", monospace;
+      background: var(--background);
+      color: var(--text);
+      font-family: Helvetica, Arial, sans-serif;
     }
 
     body {
-      display: grid;
-      grid-template-rows: 42px minmax(0, 1fr);
-    }
-
-    .bar {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      min-width: 0;
-      padding: 0 10px 0 12px;
-      border-bottom: 1px solid var(--line);
-      border-left: 3px solid var(--ember);
-      background: var(--bar);
-    }
-
-    .bar h1 {
-      margin: 0;
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      white-space: nowrap;
-    }
-
-    #status {
-      min-width: 0;
-      flex: 1;
-      overflow: hidden;
-      color: var(--muted);
-      font-size: 11px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .controls {
-      display: flex;
-      gap: 6px;
-    }
-
-    button {
-      min-height: 28px;
-      padding: 4px 10px;
-      border: 1px solid var(--line);
-      border-radius: 0;
-      background: var(--coal);
-      color: var(--bone);
-      font: inherit;
-      font-size: 11px;
-      cursor: pointer;
-    }
-
-    button:hover {
-      border-color: var(--ember);
-      color: #ffffff;
-    }
-
-    button:focus-visible,
-    canvas:focus-visible {
-      outline: 2px solid var(--ember);
-      outline-offset: -2px;
-    }
-
-    main {
-      min-width: 0;
-      min-height: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      overflow: hidden;
+    }
+
+    #stage {
+      position: relative;
+      width: 1240px;
+      height: 840px;
+      max-width: 100%;
+      max-height: 100%;
+      aspect-ratio: 1240 / 840;
     }
 
     canvas {
       display: block;
-      width: auto;
-      height: auto;
-      max-width: 100%;
-      max-height: 100%;
-      aspect-ratio: 1240 / 840;
+      width: 100%;
+      height: 100%;
       border: 0;
-      background: #000000;
+      background: var(--background);
+    }
+
+    #wave-bar,
+    #status {
+      position: absolute;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      background: var(--foreground);
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    #wave-bar {
+      top: 8px;
+      left: 8px;
+    }
+
+    #status {
+      top: 8px;
+      right: 8px;
+    }
+
+    #wave-bar[hidden],
+    #status[hidden] {
+      display: none;
+    }
+
+    label {
+      color: var(--highlight);
+    }
+
+    input,
+    button {
+      height: 26px;
+      border: 1px solid var(--highlight);
+      background: var(--background);
+      color: var(--text);
+      font: inherit;
+    }
+
+    input {
+      width: 56px;
+      padding: 0 6px;
+    }
+
+    button {
+      padding: 0 8px;
+      cursor: pointer;
+    }
+
+    button:hover,
+    button:focus-visible,
+    canvas:focus-visible {
+      outline: 2px solid var(--highlight);
+      outline-offset: 1px;
     }
   </style>
 </head>
 <body>
-  <header class="bar">
-    <h1 id="title">OSRS</h1>
+  <div id="stage">
+    <form id="wave-bar" hidden>
+      <label for="wave">Wave</label>
+      <input id="wave" name="wave" type="number" min="1" step="1" required>
+      <button type="submit">Go</button>
+      <button id="wave-boss" type="button"></button>
+    </form>
     <div id="status" role="status" aria-live="assertive">Loading simulator</div>
-    <div class="controls">
-      <button id="focus" type="button">Focus</button>
-      <button id="reset" type="button">Reset</button>
-    </div>
-  </header>
-  <main>
-    <canvas id="canvas" aria-label="OSRS reinforcement learning simulator" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
-  </main>
+    <canvas id="canvas" aria-label="OSRS simulator" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+  </div>
   <script>
     var canvasElement = document.getElementById("canvas");
     var statusElement = document.getElementById("status");
+    var waveBar = document.getElementById("wave-bar");
+    var waveInput = document.getElementById("wave");
+    var waveBoss = document.getElementById("wave-boss");
     var runtimeError = false;
     var query = new URLSearchParams(window.location.search);
-    var encounter = query.get("encounter");
+    var encounterFromPath = function () {
+      if (window.location.pathname.indexOf("colosseum") !== -1) return "colosseum";
+      if (window.location.pathname.indexOf("inferno") !== -1) return "inferno";
+      return "";
+    };
+    var encounter = query.get("encounter") || encounterFromPath();
+    var waveLimits = {
+      inferno: { max: 69, bossLabel: "Zuk", bossWave: 69 },
+      colosseum: { max: 12, bossLabel: "Sol", bossWave: 12 }
+    };
     var encounterLabels = {
       inferno: "Inferno",
       colosseum: "Colosseum",
       zulrah: "Zulrah",
       nh_pvp: "NH PvP"
     };
-    var encounterLabel = encounterLabels[encounter] || "Reinforcement Learning";
+    var encounterLabel = encounterLabels[encounter] || "OSRS";
     var modelUrl = query.get("model") || "models/policy.bin";
     var modelUrlPath = new URL(modelUrl, window.location.href).pathname;
     var modelBasename = modelUrlPath.split("/").filter(Boolean).pop();
-    document.title = "OSRS " + encounterLabel + " Simulator";
-    document.getElementById("title").textContent = "OSRS " + encounterLabel;
+    document.title = "OSRS " + encounterLabel;
     canvasElement.setAttribute("aria-label", "OSRS " + encounterLabel + " simulator");
+
     function reportError(reason) {
       var message = reason instanceof Error ? reason.message : String(reason);
       runtimeError = true;
@@ -174,6 +180,34 @@
       }
     }
 
+    function applyWave(wave) {
+      var next = new URL(window.location.href);
+      next.searchParams.set("wave", String(wave));
+      if (encounter) next.searchParams.set("encounter", encounter);
+      window.location.replace(next.toString());
+    }
+
+    var waveSpec = waveLimits[encounter];
+    if (waveSpec) {
+      var currentWave = parseInt(query.get("wave") || "1", 10);
+      if (!Number.isInteger(currentWave) || currentWave < 1) currentWave = 1;
+      if (currentWave > waveSpec.max) currentWave = waveSpec.max;
+      waveInput.min = "1";
+      waveInput.max = String(waveSpec.max);
+      waveInput.value = String(currentWave);
+      waveBoss.textContent = waveSpec.bossLabel;
+      waveBar.hidden = false;
+      waveBar.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var wave = parseInt(waveInput.value, 10);
+        if (!Number.isInteger(wave) || wave < 1 || wave > waveSpec.max) return;
+        applyWave(wave);
+      });
+      waveBoss.addEventListener("click", function () {
+        applyWave(waveSpec.bossWave);
+      });
+    }
+
     var installedModelPath = "/models/" + modelBasename;
     var runtimeArguments = [
       "--model", installedModelPath,
@@ -189,12 +223,6 @@
     appendArgument(runtimeArguments, "hiddenSize", "--hidden-size");
     appendArgument(runtimeArguments, "numLayers", "--num-layers");
     appendArgument(runtimeArguments, "entityEncoder", "--entity-encoder");
-    document.getElementById("focus").addEventListener("click", function () {
-      canvasElement.focus();
-    });
-    document.getElementById("reset").addEventListener("click", function () {
-      window.location.reload();
-    });
     window.addEventListener("error", function (event) {
       reportError(event.error || event.message);
     });
