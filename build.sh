@@ -114,26 +114,16 @@ download() {
     esac
 }
 
-RAYLIB_RELEASE_URL="https://github.com/raysan5/raylib/releases/download/5.5"
+RAYLIB_URL="https://github.com/raysan5/raylib/releases/download/5.5"
 if [ "$MODE" = "web" ]; then
-    RAYLIB_NAME='raylib-5.5'
-    download "$RAYLIB_NAME" "https://github.com/raysan5/raylib/archive/refs/tags/5.5.zip"
-    RAYLIB_A="$RAYLIB_NAME/src/libraylib.a"
-    RAYLIB_WEB_MARKER="$RAYLIB_NAME/src/.puffer-web-es3"
-    if [ ! -f "$RAYLIB_A" ] || [ ! -f "$RAYLIB_WEB_MARKER" ]; then
-        emmake make -C "$RAYLIB_NAME/src" clean
-        emmake make -C "$RAYLIB_NAME/src" \
-            PLATFORM=PLATFORM_WEB \
-            GRAPHICS=GRAPHICS_API_OPENGL_ES3 \
-            RAYLIB_LIBTYPE=STATIC
-        touch "$RAYLIB_WEB_MARKER"
-    fi
-    INCLUDES=(-I./$RAYLIB_NAME/src -I./src -I./vendor)
+    RAYLIB_NAME='raylib-5.5_webassembly'
+    download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.zip"
 else
-    download "$RAYLIB_NAME" "$RAYLIB_RELEASE_URL/$RAYLIB_NAME.tar.gz"
-    RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
-    INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
+    download "$RAYLIB_NAME" "$RAYLIB_URL/$RAYLIB_NAME.tar.gz"
 fi
+
+RAYLIB_A="$RAYLIB_NAME/lib/libraylib.a"
+INCLUDES=(-I./$RAYLIB_NAME/include -I./src -I./vendor)
 
 LINK_ARCHIVES=("$RAYLIB_A")
 EXTRA_SRC=""
@@ -304,121 +294,89 @@ if [ "$MODE" = "cpu" ]; then
     echo "Built: ./$OUTPUT_NAME"
     exit 0
 elif [ "$MODE" = "web" ]; then
-    OSRS_ASSET_GROUP=""
-    case "$ENV" in
-        osrs_inferno)
-            OSRS_ASSET_GROUP="inferno"
-            ;;
-        osrs_colosseum)
-            OSRS_ASSET_GROUP="colosseum"
-            ;;
-        osrs_zulrah)
-            OSRS_ASSET_GROUP="zulrah"
-            ;;
-        osrs_pvp)
-            OSRS_ASSET_GROUP="pvp"
-            ;;
-    esac
-    if [ -n "$OSRS_ASSET_GROUP" ]; then
-        mkdir -p "build/web/$ENV"
-        OSRS_PRELOAD_LINES=$(python3 ocean/osrs/scripts/osrs_asset_manifest.py \
-            emcc-preload-args ocean/osrs/asset_manifest.json \
-            --group core \
-            --group "$OSRS_ASSET_GROUP" \
-            --group combat_visuals \
-            --group gui \
-            --group items)
-        OSRS_PRELOAD=()
-        while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            if [[ "$line" != "--preload-file "* ]]; then
-                echo "Error: invalid OSRS preload argument: $line"
-                exit 1
-            fi
-            OSRS_PRELOAD+=(--preload-file "${line#--preload-file }")
-        done <<< "$OSRS_PRELOAD_LINES"
-        echo "Compiling $ENV for web..."
-        emcc \
-            -o "build/web/$ENV/game.html" \
-            "$SRC_FILE" \
-            -O3 -Wall -Wno-narrowing \
-            "${LINK_ARCHIVES[@]}" \
-            -I. -Isrc -I"$SRC_DIR" -Ivendor "${INCLUDES[@]}" \
-            -L. -L./"$RAYLIB_NAME"/lib \
-            -sASSERTIONS=2 -gsource-map \
-            -sUSE_GLFW=3 -sUSE_WEBGL2=1 -sASYNCIFY -sFILESYSTEM -sFORCE_FILESYSTEM=1 \
-            -sLZ4=1 \
-            --js-library vendor/puf_web_vsync.js \
-            --shell-file tools/web/osrs_shell.html \
-            -sINITIAL_MEMORY=512MB -sALLOW_MEMORY_GROWTH -sSTACK_SIZE=512KB \
-            -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
-            "${OSRS_PRELOAD[@]}" \
-            "${EXTRA_CFLAGS[@]}"
-        echo "Built: build/web/$ENV/game.html"
-        exit 0
+    WEB_SRC=(src/puffercpu.c)
+    if [ -n "$EXTRA_SRC" ]; then
+        WEB_SRC+=($EXTRA_SRC)
     fi
-    ENV_HEADER="$SRC_DIR/$ENV.h"
-    if ! grep -q 'typedef[[:space:]].*obs_t' "$ENV_HEADER" 2>/dev/null; then
-        echo "Error: $ENV_HEADER must typedef obs_t for web eval"
-        exit 1
+    WEB_SHELL=vendor/minshell.html
+    WEB_PRELOAD=()
+    WEB_EXTRA=()
+    WEB_DEFINES=(
+        -DPUFFERCPU_EVAL_MAIN
+        -DENV_HEADER=\"$SRC_DIR/$ENV.h\"
+        -DPUFFER_ENV_NAME=\"$ENV\"
+    )
+    WEB_USE_DEFAULT_PRELOAD=1
+    WEB_REQUIRE_OBS=1
+    WEB_PUBLISH=1
+    if [ -f "$SRC_DIR/web.sh" ]; then
+        source "$SRC_DIR/web.sh"
+    fi
+    if [ "$WEB_REQUIRE_OBS" = 1 ]; then
+        ENV_HEADER="$SRC_DIR/$ENV.h"
+        if ! grep -q 'typedef[[:space:]].*obs_t' "$ENV_HEADER" 2>/dev/null; then
+            echo "Error: $ENV_HEADER must typedef obs_t for web eval"
+            exit 1
+        fi
     fi
     mkdir -p "build/web/$ENV"
-    PRELOAD_ENV=()
-    if [ "$ENV" = "boxoban" ]; then
-        # Do not pack generated boxoban_maps_*.bin or levels/ (hundreds of MB).
-        PRELOAD_ENV=(
-            --preload-file resources/boxoban/web_maps.bin@resources/boxoban/web_maps.bin
-            --preload-file resources/boxoban/boxoban_weights.bin@resources/boxoban/boxoban_weights.bin
-            --preload-file resources/boxoban/Wall_Black.jpg@resources/boxoban/Wall_Black.jpg
-            --preload-file resources/boxoban/Crate_Black.jpg@resources/boxoban/Crate_Black.jpg
-            --preload-file resources/boxoban/EndPoint_Black.jpg@resources/boxoban/EndPoint_Black.jpg
-            --preload-file resources/boxoban/EndPoint_Blue.jpg@resources/boxoban/EndPoint_Blue.jpg
-            --preload-file resources/boxoban/GroundGravel_Concrete.jpg@resources/boxoban/GroundGravel_Concrete.jpg
+    if [ "$WEB_USE_DEFAULT_PRELOAD" = 1 ]; then
+        PRELOAD_ENV=()
+        if [ "$ENV" = "boxoban" ]; then
+            PRELOAD_ENV=(
+                --preload-file resources/boxoban/web_maps.bin@resources/boxoban/web_maps.bin
+                --preload-file resources/boxoban/boxoban_weights.bin@resources/boxoban/boxoban_weights.bin
+                --preload-file resources/boxoban/Wall_Black.jpg@resources/boxoban/Wall_Black.jpg
+                --preload-file resources/boxoban/Crate_Black.jpg@resources/boxoban/Crate_Black.jpg
+                --preload-file resources/boxoban/EndPoint_Black.jpg@resources/boxoban/EndPoint_Black.jpg
+                --preload-file resources/boxoban/EndPoint_Blue.jpg@resources/boxoban/EndPoint_Blue.jpg
+                --preload-file resources/boxoban/GroundGravel_Concrete.jpg@resources/boxoban/GroundGravel_Concrete.jpg
+            )
+        elif [ -d "resources/$ENV" ]; then
+            PRELOAD_ENV=(--preload-file "resources/$ENV@resources/$ENV")
+        fi
+        WEB_PRELOAD=(
+            --preload-file resources/shared@resources/shared
+            --preload-file config/default.ini@config/default.ini
+            "${PRELOAD_ENV[@]}"
         )
-    elif [ -d "resources/$ENV" ]; then
-        PRELOAD_ENV=(--preload-file "resources/$ENV@resources/$ENV")
+        if [ -d "ocean/$ENV/generated" ]; then
+            WEB_PRELOAD+=(--preload-file "ocean/$ENV/generated@ocean/$ENV/generated")
+        fi
+        if [ -f "config/$ENV.ini" ]; then
+            WEB_PRELOAD+=(--preload-file "config/$ENV.ini@config/$ENV.ini")
+        fi
+        if [ -f "config/${ENV}_web.ini" ]; then
+            WEB_PRELOAD+=(--preload-file "config/${ENV}_web.ini@config/${ENV}_web.ini")
+        fi
     fi
     echo "Compiling $ENV for web..."
-    PRELOAD=(
-        --preload-file resources/shared@resources/shared
-        --preload-file config/default.ini@config/default.ini
-    )
-    if [ -d "ocean/$ENV/generated" ]; then
-        PRELOAD+=(--preload-file "ocean/$ENV/generated@ocean/$ENV/generated")
-    fi
-    if [ -f "config/$ENV.ini" ]; then
-        PRELOAD+=(--preload-file "config/$ENV.ini@config/$ENV.ini")
-    fi
-    if [ -f "config/${ENV}_web.ini" ]; then
-        PRELOAD+=(--preload-file "config/${ENV}_web.ini@config/${ENV}_web.ini")
-    fi
     emcc \
         -o "build/web/$ENV/game.html" \
-        src/puffercpu.c $EXTRA_SRC \
+        "${WEB_SRC[@]}" \
         -O3 -Wall -Wno-narrowing \
         "${LINK_ARCHIVES[@]}" \
-        -I. -Isrc -I$SRC_DIR -Ivendor "${INCLUDES[@]}" \
-        -L. -L./$RAYLIB_NAME/lib \
+        -I. -Isrc -I"$SRC_DIR" -Ivendor "${INCLUDES[@]}" \
+        -L. -L./"$RAYLIB_NAME"/lib \
         -sASSERTIONS=2 -gsource-map \
         -sUSE_GLFW=3 -sUSE_WEBGL2=1 -sASYNCIFY -sFILESYSTEM -sFORCE_FILESYSTEM=1 \
         --js-library vendor/puf_web_vsync.js \
-        --shell-file vendor/minshell.html \
+        --shell-file "$WEB_SHELL" \
         -sINITIAL_MEMORY=512MB -sALLOW_MEMORY_GROWTH -sSTACK_SIZE=512KB \
         -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
-        -DPUFFERCPU_EVAL_MAIN \
-        -DENV_HEADER=\"$ENV_HEADER\" \
-        -DPUFFER_ENV_NAME=\"$ENV\" \
-        --preload-file resources/shared@resources/shared \
-        "${PRELOAD_ENV[@]}" \
-        "${PRELOAD[@]}" \
+        "${WEB_DEFINES[@]}" \
+        "${WEB_PRELOAD[@]}" \
+        "${WEB_EXTRA[@]}" \
         "${EXTRA_CFLAGS[@]}"
     echo "Built: build/web/$ENV/game.html"
-    WEBSITE_DIR="${PUFFER_WEBSITE_DIR:-../docker/puffer.ai}"
-    WEBSITE_ASSETS="$WEBSITE_DIR/docs/assets"
-    if [ -d "$WEBSITE_ASSETS" ]; then
-        mkdir -p "$WEBSITE_ASSETS/$ENV"
-        cp -a "build/web/$ENV/." "$WEBSITE_ASSETS/$ENV/"
-        echo "Published: $WEBSITE_ASSETS/$ENV/"
+    if [ "$WEB_PUBLISH" = 1 ]; then
+        WEBSITE_DIR="${PUFFER_WEBSITE_DIR:-../docker/puffer.ai}"
+        WEBSITE_ASSETS="$WEBSITE_DIR/docs/assets"
+        if [ -d "$WEBSITE_ASSETS" ]; then
+            mkdir -p "$WEBSITE_ASSETS/$ENV"
+            cp -a "build/web/$ENV/." "$WEBSITE_ASSETS/$ENV/"
+            echo "Published: $WEBSITE_ASSETS/$ENV/"
+        fi
     fi
     exit 0
 elif [ "$MODE" = "cpu" ]; then
