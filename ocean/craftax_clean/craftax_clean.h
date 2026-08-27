@@ -14,55 +14,6 @@ typedef float obs_t;
 #include <stdio.h>
 #include <stdlib.h>
 
-#ifdef CRAFTAX_CLEAN_PROFILE
-#define CLEAN_PROF_ZONES 9
-static const char* clean_prof_names[CLEAN_PROF_ZONES] = {
-    "floor+craft",
-    "do",
-    "place+shoot+potion",
-    "book+enchant+move",
-    "update_mobs",
-    "spawn",
-    "plants+intrinsics",
-    "reward+reset",
-    "obs",
-};
-static uint64_t clean_prof_ticks[CLEAN_PROF_ZONES];
-static uint64_t clean_prof_count[CLEAN_PROF_ZONES];
-
-static inline uint64_t clean_prof_now(void) {
-    return __builtin_ia32_rdtsc();
-}
-
-static inline void clean_prof_add(int zone, uint64_t t0) {
-    clean_prof_ticks[zone] += clean_prof_now() - t0;
-    clean_prof_count[zone]++;
-}
-
-void clean_prof_report(void) {
-    uint64_t total = 0;
-    for (int i = 0; i < CLEAN_PROF_ZONES; i++) {
-        total += clean_prof_ticks[i];
-    }
-    fprintf(stderr, "\n=== puf_step zones ===\n");
-    for (int i = 0; i < CLEAN_PROF_ZONES; i++) {
-        double pct = total ? 100.0 * (double)clean_prof_ticks[i] / (double)total : 0.0;
-        fprintf(stderr, "%-22s %6.2f%%  %lu calls  ticks=%lu\n",
-            clean_prof_names[i], pct, (unsigned long)clean_prof_count[i],
-            (unsigned long)clean_prof_ticks[i]);
-    }
-}
-
-#define CLEAN_PROF_START() uint64_t _z0 = 0
-#define CLEAN_ZONE(n) do { _z0 = clean_prof_now(); } while (0)
-#define CLEAN_ZONE_END(n) clean_prof_add((n), _z0)
-#else
-#define CLEAN_PROF_START()
-#define CLEAN_ZONE(n)
-#define CLEAN_ZONE_END(n)
-#define clean_prof_report()
-#endif
-
 #define ACT_SIZES {ATN_DIM}
 #define NUM_ATNS 1
 #ifdef PUFFERCPU_EVAL_MAIN
@@ -1837,7 +1788,6 @@ void puf_step(Craftax* env) {
     if (craftax_clean_human_controls(env) < 0) {
         return;
     }
-    CLEAN_PROF_START();
     env->agents[0].rewards[0] = 0.0f;
     env->agents[0].terminals[0] = 0.0f;
     int action = env->agents[0].actions[0];
@@ -1863,7 +1813,6 @@ void puf_step(Craftax* env) {
             action = ACTION_NOOP;
         }
 
-    CLEAN_ZONE(0);
     int level = state->player_level;
     int row = state->player_position[0];
     int col = state->player_position[1];
@@ -2007,9 +1956,7 @@ void puf_step(Craftax* env) {
         inv->armour[idx] = 2;
         state->achievements[ACH_MAKE_DIAMOND_ARMOUR] = 1;
     }
-    CLEAN_ZONE_END(0);
 
-    CLEAN_ZONE(1);
     Rng interact_rng = rng_key(&step_rng);
     int direction[2];
 
@@ -2168,9 +2115,7 @@ void puf_step(Craftax* env) {
             state->chests_opened[level] |= block == BLOCK_CHEST;
         }
     }
-    CLEAN_ZONE_END(1);
 
-    CLEAN_ZONE(2);
     action_to_direction(state->player_direction, direction);
     row = state->player_position[0] + direction[0];
     col = state->player_position[1] + direction[1];
@@ -2294,9 +2239,7 @@ void puf_step(Craftax* env) {
         }
         state->achievements[ACH_DRINK_POTION] = 1;
     }
-    CLEAN_ZONE_END(2);
 
-    CLEAN_ZONE(3);
     Rng book_rng = rng_key(&step_rng);
 
     bool reading = action == ACTION_READ_BOOK && state->inventory.books > 0;
@@ -2407,9 +2350,7 @@ void puf_step(Craftax* env) {
     if (direction[0] != 0 || direction[1] != 0) {
         state->player_direction = action;
     }
-    CLEAN_ZONE_END(3);
 
-    CLEAN_ZONE(4);
     Rng mobs_rng = rng_key(&step_rng);
 
     level = state->player_level;
@@ -2428,9 +2369,7 @@ void puf_step(Craftax* env) {
     update_projectile_set(state, false);
     rng_key(&mobs_rng);
     update_projectile_set(state, true);
-    CLEAN_ZONE_END(4);
 
-    CLEAN_ZONE(5);
     Rng spawn_rng = rng_key(&step_rng);
 
     level = state->player_level;
@@ -2519,9 +2458,7 @@ void puf_step(Craftax* env) {
             }
         }
     }
-    CLEAN_ZONE_END(5);
 
-    CLEAN_ZONE(6);
     for (int plant = 0; plant < MAX_GROWING_PLANTS; plant++) {
         if (!state->growing_plants_mask[plant]) {
             continue;
@@ -2657,7 +2594,6 @@ void puf_step(Craftax* env) {
     state->achievements[ACH_MAKE_IRON_SWORD] |= state->inventory.sword >= 3;
     state->achievements[ACH_MAKE_DIAMOND_SWORD] |= state->inventory.sword >= 4;
     update_log_state(env);
-    CLEAN_ZONE_END(6);
 
     store_rng(state, rng_key(&step_rng));
     state->timestep += 1;
@@ -2667,7 +2603,6 @@ void puf_step(Craftax* env) {
     done = state->player_health <= 0.0f || state->timestep >= DEFAULT_MAX_TIMESTEPS;
     } while (!done && (state->is_sleeping || state->is_resting));
 
-    CLEAN_ZONE(7);
     float reward = 0.0f;
     for (int i = 0; i < NUM_ACHIEVEMENTS; i++) {
         int delta = state->achievements[i] - initial_achievements[i];
@@ -2717,11 +2652,8 @@ void puf_step(Craftax* env) {
             generate_world_from_key(&env->state, world_key);
         }
     }
-    CLEAN_ZONE_END(7);
 
-    CLEAN_ZONE(8);
     compute_observations(env);
-    CLEAN_ZONE_END(8);
 }
 
 void puf_init(Env* env, Dict* kwargs) {
