@@ -1833,51 +1833,6 @@ void puf_reset(Craftax* env) {
     update_log_state(env);
 }
 
-// Windowed play: step only on a keypress. Training/headless has no window
-// and returns 0 so the loop keeps stepping. Keys match the action panel.
-static int craftax_clean_human_controls(Craftax* env) {
-    if (!IsWindowReady()) {
-        return 0;
-    }
-    static const int keys[ATN_DIM] = {
-        KEY_Q, KEY_A, KEY_D, KEY_W, KEY_S, KEY_SPACE, KEY_TAB,
-        KEY_R, KEY_T, KEY_F, KEY_P,
-        KEY_ONE, KEY_TWO, KEY_THREE,
-        KEY_FIVE, KEY_SIX, KEY_SEVEN,
-        KEY_E, KEY_PERIOD, KEY_COMMA,
-        KEY_FOUR, KEY_EIGHT,
-        KEY_Y, KEY_U,
-        KEY_I, KEY_O, KEY_G, KEY_H, KEY_J,
-        KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N,
-        KEY_M, KEY_K, KEY_L, KEY_LEFT_BRACKET,
-        KEY_RIGHT_BRACKET, KEY_MINUS, KEY_EQUAL,
-        KEY_SEMICOLON,
-    };
-    int action = -1;
-    for (int i = 0; i < ATN_DIM; i++) {
-        if (IsKeyPressed(keys[i])) {
-            action = i;
-            break;
-        }
-    }
-    if (action < 0) {
-        if (IsKeyPressed(KEY_LEFT)) {
-            action = ACTION_LEFT;
-        } else if (IsKeyPressed(KEY_RIGHT)) {
-            action = ACTION_RIGHT;
-        } else if (IsKeyPressed(KEY_UP)) {
-            action = ACTION_UP;
-        } else if (IsKeyPressed(KEY_DOWN)) {
-            action = ACTION_DOWN;
-        }
-    }
-    if (action < 0) {
-        return -1;
-    }
-    env->agents[0].actions[0] = (float)action;
-    return 1;
-}
-
 void puf_step(Craftax* env) {
     if (craftax_clean_human_controls(env) < 0) {
         return;
@@ -3365,7 +3320,7 @@ void puf_render(Craftax* env) {
     int taken_action = env->agents[0].actions[0];
     DrawRectangle(panel_x, 0, ACTION_PANEL_W, panel_h, (Color){12, 18, 22, 255});
     DrawRectangleLines(panel_x, 0, ACTION_PANEL_W, panel_h, (Color){55, 70, 76, 255});
-    DrawText("Actions (step on key)", panel_x + 10, 8, 18, RAYWHITE);
+    DrawText("Actions", panel_x + 10, 8, 18, RAYWHITE);
     DrawText("key", panel_x + 12, 32, 11, (Color){140, 160, 166, 255});
     DrawText("action", panel_x + 78, 32, 11, (Color){140, 160, 166, 255});
     for (int action = 0; action < ATN_DIM; action++) {

@@ -59,7 +59,7 @@ static int key_to_action(void) {
 }
 
 // Shift + action-panel key. 1 = applied, 0 = policy, -1 = skip tick.
-int craftax_clean_human_controls(Craftax* env) {
+static int craftax_clean_human_controls(Craftax* env) {
     int shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     if (!IsWindowReady() || !shift
         || env->state.is_sleeping || env->state.is_resting) {
