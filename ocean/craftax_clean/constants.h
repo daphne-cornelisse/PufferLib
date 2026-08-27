@@ -250,18 +250,16 @@ typedef enum {
     ACH_DEFEAT_ARCHER = 66,
 } Achievement;
 
-// Original weights {1, 3, 5, 8} divided by 10 so each reward is in (0, 1)
-// and episode return is the old score / 10. Trainer clamps per-step rewards to [-1, 1].
 static const float ACHIEVEMENT_REWARD_MAP[NUM_ACHIEVEMENTS] = {
-    0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
-    0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
-    0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f,
-    0.1f, 0.3f, 0.3f, 0.3f, 0.3f, 0.3f, 0.5f, 0.5f,
-    0.5f, 0.8f, 0.8f, 0.8f, 0.3f, 0.3f, 0.3f, 0.3f,
-    0.5f, 0.5f, 0.5f, 0.5f, 0.8f, 0.8f, 0.8f, 0.8f,
-    0.8f, 0.8f, 0.3f, 0.3f, 0.3f, 0.3f, 0.3f, 0.5f,
-    0.5f, 0.5f, 0.5f, 0.3f, 0.3f, 0.3f, 0.3f, 0.5f,
-    0.5f, 0.5f, 0.5f,
+    1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+    1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+    1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+    1.0f, 3.0f, 3.0f, 3.0f, 3.0f, 3.0f, 5.0f, 5.0f,
+    5.0f, 8.0f, 8.0f, 8.0f, 3.0f, 3.0f, 3.0f, 3.0f,
+    5.0f, 5.0f, 5.0f, 5.0f, 8.0f, 8.0f, 8.0f, 8.0f,
+    8.0f, 8.0f, 3.0f, 3.0f, 3.0f, 3.0f, 3.0f, 5.0f,
+    5.0f, 5.0f, 5.0f, 3.0f, 3.0f, 3.0f, 3.0f, 5.0f,
+    5.0f, 5.0f, 5.0f,
 };
 
 static inline float max_achievement_return(void) {

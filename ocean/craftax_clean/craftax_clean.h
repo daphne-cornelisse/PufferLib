@@ -2673,8 +2673,11 @@ void puf_step(Craftax* env) {
         int delta = state->achievements[i] - initial_achievements[i];
         reward += delta * ACHIEVEMENT_REWARD_MAP[i];
     }
-    reward += (state->player_health - initial_health) * 0.1f;
-    reward += (equipped_armour(state) - initial_armour) * 0.1f;
+    //reward += (state->player_health - initial_health) * 0.1f;
+    reward += (equipped_armour(state) - initial_armour);
+    if (state->player_health <= 0.0f) {
+        reward = -1.0f; // dead
+    }
 
     memcpy(env->achievements, env->state.achievements, sizeof(env->achievements));
 
