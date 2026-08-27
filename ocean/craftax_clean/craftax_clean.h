@@ -1828,17 +1828,59 @@ void puf_reset(Craftax* env) {
     update_log_state(env);
 }
 
+// Windowed play: step only on a keypress. Training/headless has no window
+// and returns 0 so the loop keeps stepping. Keys match the action panel.
+static int craftax_clean_human_controls(Craftax* env) {
+    if (!IsWindowReady()) {
+        return 0;
+    }
+    static const int keys[ATN_DIM] = {
+        KEY_Q, KEY_A, KEY_D, KEY_W, KEY_S, KEY_SPACE, KEY_TAB,
+        KEY_R, KEY_T, KEY_F, KEY_P,
+        KEY_ONE, KEY_TWO, KEY_THREE,
+        KEY_FIVE, KEY_SIX, KEY_SEVEN,
+        KEY_E, KEY_PERIOD, KEY_COMMA,
+        KEY_FOUR, KEY_EIGHT,
+        KEY_Y, KEY_U,
+        KEY_I, KEY_O, KEY_G, KEY_H, KEY_J,
+        KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N,
+        KEY_M, KEY_K, KEY_L, KEY_LEFT_BRACKET,
+        KEY_RIGHT_BRACKET, KEY_MINUS, KEY_EQUAL,
+        KEY_SEMICOLON,
+    };
+    int action = -1;
+    for (int i = 0; i < ATN_DIM; i++) {
+        if (IsKeyPressed(keys[i])) {
+            action = i;
+            break;
+        }
+    }
+    if (action < 0) {
+        if (IsKeyPressed(KEY_LEFT)) {
+            action = ACTION_LEFT;
+        } else if (IsKeyPressed(KEY_RIGHT)) {
+            action = ACTION_RIGHT;
+        } else if (IsKeyPressed(KEY_UP)) {
+            action = ACTION_UP;
+        } else if (IsKeyPressed(KEY_DOWN)) {
+            action = ACTION_DOWN;
+        }
+    }
+    if (action < 0) {
+        return -1;
+    }
+    env->agents[0].actions[0] = (float)action;
+    return 1;
+}
+
 void puf_step(Craftax* env) {
+    if (craftax_clean_human_controls(env) < 0) {
+        return;
+    }
     CLEAN_PROF_START();
     env->agents[0].rewards[0] = 0.0f;
     env->agents[0].terminals[0] = 0.0f;
     int action = env->agents[0].actions[0];
-
-    Rng step_key;
-    rng_split(env->env_rng, &env->env_rng, &step_key);
-    Rng step_rng;
-    Rng reset_key;
-    rng_split(step_key, &step_rng, &reset_key);
 
     State* state = &env->state;
     int initial_achievements[NUM_ACHIEVEMENTS];
@@ -1846,9 +1888,20 @@ void puf_step(Craftax* env) {
     float initial_health = state->player_health;
     int initial_armour = equipped_armour(state);
 
-    if (state->is_sleeping || state->is_resting) {
-        action = ACTION_NOOP;
-    }
+    // Sleep/rest used to return control every tick as forced NOOPs (~100
+    // agent steps). Collapse those ticks into this one puf_step so credit
+    // assignment sees a single action that ends on wake, hit, or death.
+    Rng reset_key = 0;
+    bool done = false;
+    do {
+        Rng step_key;
+        rng_split(env->env_rng, &env->env_rng, &step_key);
+        Rng step_rng;
+        rng_split(step_key, &step_rng, &reset_key);
+
+        if (state->is_sleeping || state->is_resting) {
+            action = ACTION_NOOP;
+        }
 
     CLEAN_ZONE(0);
     int level = state->player_level;
@@ -2646,6 +2699,14 @@ void puf_step(Craftax* env) {
     update_log_state(env);
     CLEAN_ZONE_END(6);
 
+    store_rng(state, rng_key(&step_rng));
+    state->timestep += 1;
+    float day_progress = fmodf(state->timestep / (float)DAY_LENGTH, 1.0f) + 0.3f;
+    state->light_level = 1.0f - powf(fabsf(cosf(3.14159265358979323846f * day_progress)), 3.0f);
+
+    done = state->player_health <= 0.0f || state->timestep >= DEFAULT_MAX_TIMESTEPS;
+    } while (!done && (state->is_sleeping || state->is_resting));
+
     CLEAN_ZONE(7);
     float reward = 0.0f;
     for (int i = 0; i < NUM_ACHIEVEMENTS; i++) {
@@ -2654,13 +2715,6 @@ void puf_step(Craftax* env) {
     }
     reward += (state->player_health - initial_health) * 0.1f;
     reward += (equipped_armour(state) - initial_armour) * 0.1f;
-
-    store_rng(state, rng_key(&step_rng));
-    state->timestep += 1;
-    float day_progress = fmodf(state->timestep / (float)DAY_LENGTH, 1.0f) + 0.3f;
-    state->light_level = 1.0f - powf(fabsf(cosf(3.14159265358979323846f * day_progress)), 3.0f);
-
-    bool done = state->player_health <= 0.0f || state->timestep >= DEFAULT_MAX_TIMESTEPS;
 
     memcpy(env->achievements, env->state.achievements, sizeof(env->achievements));
 
@@ -2805,13 +2859,18 @@ void puf_log(Log* log, Dict* out) {
     dict_set(out, "n", log->n);
 }
 
-static Texture2D textures[TEX_NUM];
+static Texture2D textures;
 static int textures_loaded;
 
 static void draw_tile(int tex_id, int x, int y, int px) {
-    Rectangle src = {0, 0, TEX_TILE_PX, TEX_TILE_PX};
+    Rectangle src = {
+        (float)((tex_id % TEX_SHEET_COLS) * TEX_TILE_PX),
+        (float)((tex_id / TEX_SHEET_COLS) * TEX_TILE_PX),
+        (float)TEX_TILE_PX,
+        (float)TEX_TILE_PX,
+    };
     Rectangle dst = {(float)x, (float)y, (float)px, (float)px};
-    DrawTexturePro(textures[tex_id], src, dst, (Vector2){0, 0}, 0.0f, WHITE);
+    DrawTexturePro(textures, src, dst, (Vector2){0, 0}, 0.0f, WHITE);
 }
 
 static int projectile_tex(int ptype, int dr, int dc) {
@@ -3015,40 +3074,21 @@ void puf_render(Craftax* env) {
     }
     if (!textures_loaded) {
         const char* candidates[] = {
-            "resources/craftax/textures.bin",
-            "../resources/craftax/textures.bin",
-            "../../resources/craftax/textures.bin",
+            "resources/craftax/textures.png",
+            "../resources/craftax/textures.png",
+            "../../resources/craftax/textures.png",
         };
-        FILE* f = NULL;
         for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
-            f = fopen(candidates[i], "rb");
-            if (f != NULL) {
+            if (FileExists(candidates[i])) {
+                textures = LoadTexture(candidates[i]);
                 break;
             }
         }
-        if (f == NULL) {
-            fprintf(stderr, "craftax_clean: textures.bin not found in resources/craftax\n");
+        if (textures.id == 0) {
+            fprintf(stderr, "craftax_clean: textures.png not found in resources/craftax\n");
             exit(1);
         }
-        const size_t tile_bytes = TEX_TILE_PX * TEX_TILE_PX * 4;
-        uint8_t* buf = (uint8_t*)malloc(tile_bytes);
-        for (int i = 0; i < TEX_NUM; i++) {
-            if (fread(buf, 1, tile_bytes, f) != tile_bytes) {
-                fprintf(stderr, "craftax_clean: short read on textures.bin at tile %d\n", i);
-                exit(1);
-            }
-            Image img = {
-                .data = buf,
-                .width = TEX_TILE_PX,
-                .height = TEX_TILE_PX,
-                .mipmaps = 1,
-                .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
-            };
-            textures[i] = LoadTextureFromImage(img);
-            SetTextureFilter(textures[i], TEXTURE_FILTER_POINT);
-        }
-        free(buf);
-        fclose(f);
+        SetTextureFilter(textures, TEXTURE_FILTER_POINT);
         textures_loaded = 1;
     }
     if (IsKeyDown(KEY_ESCAPE)) {
@@ -3276,7 +3316,7 @@ void puf_render(Craftax* env) {
     int taken_action = env->agents[0].actions[0];
     DrawRectangle(panel_x, 0, ACTION_PANEL_W, panel_h, (Color){12, 18, 22, 255});
     DrawRectangleLines(panel_x, 0, ACTION_PANEL_W, panel_h, (Color){55, 70, 76, 255});
-    DrawText("Actions", panel_x + 10, 8, 18, RAYWHITE);
+    DrawText("Actions (step on key)", panel_x + 10, 8, 18, RAYWHITE);
     DrawText("key", panel_x + 12, 32, 11, (Color){140, 160, 166, 255});
     DrawText("action", panel_x + 78, 32, 11, (Color){140, 160, 166, 255});
     for (int action = 0; action < ATN_DIM; action++) {

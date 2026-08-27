@@ -69,9 +69,7 @@ int main(void) {
 
     while (!WindowShouldClose()) {
         int action = key_to_action();
-        if (action < 0 && (env.state.is_sleeping || env.state.is_resting)) {
-            action = ACTION_NOOP;
-        } else if (action < 0) {
+        if (action < 0) {
             env.agents[0].actions[0] = -1.0f;
             puf_render(&env);
             continue;
