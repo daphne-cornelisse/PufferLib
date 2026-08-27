@@ -1,4 +1,5 @@
 // Full native Craftax port.
+#pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -208,6 +209,7 @@ struct Env {
     State* reset_pool;
     int reset_pool_size;
     int use_action_mask;
+    float predicted_value;
 };
 
 Rng rng_seed(uint32_t seed) {
@@ -1802,6 +1804,9 @@ void update_log_state(Craftax* env) {
     }
 }
 
+#define CRAFTAX_CLEAN_IN_HEADER
+#include "craftax_clean.c"
+
 void puf_reset(Craftax* env) {
     env->agents[0].rewards[0] = 0.0f;
     env->agents[0].terminals[0] = 0.0f;
@@ -2985,6 +2990,20 @@ static void draw_agent_obs(Craftax* env, int panel_x, int panel_y,
         player_tex = TEX_PLAYER_UP;
     }
     draw_tile(player_tex, grid_x + rc * px, grid_y + rr * px, px);
+
+    float v = env->predicted_value;
+    float t = clampf(v, -1.0f, 1.0f);
+    unsigned char fade = (unsigned char)(255.0f * (1.0f - fabsf(t)));
+    Color vc = WHITE;
+    if (t < 0.0f) {
+        vc = (Color){255, fade, fade, 255};
+    } else if (t > 0.0f) {
+        vc = (Color){fade, 255, fade, 255};
+    }
+    const char* vlabel = TextFormat("V(o, h) = %.2f", v);
+    int tw = MeasureText(vlabel, 18);
+    DrawText(vlabel, panel_x + (panel_w - tw) / 2,
+        grid_y + OBS_ROWS * px + 10, 18, vc);
 }
 
 static void draw_icon_count(int tex_id, int value, int x, int y) {
@@ -2992,11 +3011,14 @@ static void draw_icon_count(int tex_id, int value, int x, int y) {
     DrawText(TextFormat("%d", value), x + 23, y + 4, 14, RAYWHITE);
 }
 
-static void draw_inv_slot(int tex_id, int x, int y) {
+static void draw_inv_slot(int tex_id, int overlay, int x, int y) {
     DrawRectangle(x, y, 24, 24, (Color){32, 32, 32, 255});
     DrawRectangleLines(x, y, 24, 24, (Color){80, 80, 80, 255});
     if (tex_id >= 0) {
         draw_tile(tex_id, x, y, 24);
+    }
+    if (overlay >= 0) {
+        draw_tile(overlay, x, y, 24);
     }
 }
 
@@ -3094,6 +3116,7 @@ void puf_render(Craftax* env) {
     if (IsKeyDown(KEY_ESCAPE)) {
         exit(0);
     }
+    craftax_clean_human_controls(env);
 
     int level = clampi(env->state.player_level, 0, NUM_LEVELS - 1);
     int player_row = clampi(env->state.player_position[0], 0, MAP_SIZE - 1);
@@ -3281,7 +3304,14 @@ void puf_render(Craftax* env) {
         if (alvl > 0) {
             tex = (alvl >= 2 ? TEX_ARMOUR_DIAMOND : TEX_ARMOUR_IRON) + slot;
         }
-        draw_inv_slot(tex, armour_x + slot * 30, inv_y);
+        int overlay = -1;
+        int ench = env->state.armour_enchantments[slot];
+        if (ench == 1) {
+            overlay = TEX_ARMOUR_ENCHANT_FIRE + slot;
+        } else if (ench == 2) {
+            overlay = TEX_ARMOUR_ENCHANT_ICE + slot;
+        }
+        draw_inv_slot(tex, overlay, armour_x + slot * 30, inv_y);
     }
     int weap_y = hud_y + 90;
     int gear[] = {
@@ -3290,25 +3320,44 @@ void puf_render(Craftax* env) {
         inv->bow > 0 ? TEX_BOW : -1,
         inv->arrows > 0 ? TEX_ARROW_UP : -1,
     };
+    int overlays[4] = {-1, -1, -1, -1};
+    if (env->state.sword_enchantment == 1) {
+        overlays[1] = TEX_SWORD_ENCHANT_FIRE;
+    } else if (env->state.sword_enchantment == 2) {
+        overlays[1] = TEX_SWORD_ENCHANT_ICE;
+    }
+    if (inv->arrows > 0) {
+        if (env->state.bow_enchantment == 1) {
+            overlays[3] = TEX_ARROW_ENCHANT_FIRE;
+        } else if (env->state.bow_enchantment == 2) {
+            overlays[3] = TEX_ARROW_ENCHANT_ICE;
+        }
+    }
     for (int i = 0; i < 4; i++) {
-        draw_inv_slot(gear[i], armour_x + 30 * i, weap_y);
+        draw_inv_slot(gear[i], overlays[i], armour_x + 30 * i, weap_y);
     }
     DrawText(TextFormat("%d", inv->arrows), armour_x + 117, weap_y + 6, 14, RAYWHITE);
     for (int p = 0; p < NUM_POTIONS; p++) {
         draw_icon_count(TEX_POTION + p, inv->potions[p], inv_x + 52 * p, weap_y);
     }
+    draw_inv_slot(env->state.learned_spells[0] ? TEX_PROJ_FIREBALL : -1,
+        -1, inv_x + 52 * 6, weap_y);
+    draw_inv_slot(env->state.learned_spells[1] ? TEX_PROJ_ICEBALL : -1,
+        -1, inv_x + 52 * 7, weap_y);
+    int human = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     DrawText(
         TextFormat(
-            "ach:%d/%d  ret:%.2f len:%d",
+            "ach:%d/%d  ret:%.2f len:%d   %s",
             achievements,
             NUM_ACHIEVEMENTS,
             env->episode_return_accum,
-            env->episode_length_accum
+            env->episode_length_accum,
+            human ? "HUMAN" : "Hold SHIFT to take control"
         ),
         origin_x + 4,
         hud_y + 118,
         14,
-        (Color){200, 200, 140, 255}
+        human ? (Color){255, 210, 40, 255} : (Color){200, 200, 140, 255}
     );
 
     int panel_x = origin_x + view_w + OBS_PANEL_W;
