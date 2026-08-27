@@ -22,6 +22,10 @@ CRAFTAX_TEX_* / CC_TEX_* / TEX_* enums in the env headers.
   [88..90] passive types: cow, bat, snail
   [91..98] ranged types: skeleton, gnome_archer, orc_mage, kobold, knight_archer, deep_thing, fire_elemental, ice_elemental
   [99..102] projectiles: dagger, fireball, iceball, slimeball
+  [103..104] sword enchant overlays: fire, ice
+  [105..106] arrow enchant overlays: fire, ice
+  [107..110] armour fire overlays: helmet, chest, pants, boots
+  [111..114] armour ice overlays: helmet, chest, pants, boots
 """
 
 import os
@@ -213,6 +217,21 @@ PROJECTILE_TYPE_FILES = [
     "iceball.png",
     "slimeball.png",
 ]
+# HUD enchant overlays. Level 0 is empty (no tile); fire then ice.
+ENCHANT_FILES = [
+    "sword_fire_enchantment.png",
+    "sword_ice_enchantment.png",
+    "arrow_fire_enchantment.png",
+    "arrow_ice_enchantment.png",
+    "helmet_fire_enchantment.png",
+    "chestplate_fire_enchantment.png",
+    "pants_fire_enchantment.png",
+    "boots_fire_enchantment.png",
+    "helmet_ice_enchantment.png",
+    "chestplate_ice_enchantment.png",
+    "pants_ice_enchantment.png",
+    "boots_ice_enchantment.png",
+]
 
 
 def load_tile(name: str | None) -> np.ndarray:
@@ -250,7 +269,7 @@ def main() -> None:
         MOB_FILES + ARROW_FILES + ARMOUR_FILES + WEAPON_FILES
         + POTION_FILES + HUD_ITEM_FILES
         + MELEE_TYPE_FILES + PASSIVE_TYPE_FILES + RANGED_TYPE_FILES
-        + PROJECTILE_TYPE_FILES
+        + PROJECTILE_TYPE_FILES + ENCHANT_FILES
     ):
         tiles.append(load_tile(f))
 

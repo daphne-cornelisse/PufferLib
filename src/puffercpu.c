@@ -638,7 +638,7 @@ void free_puffernet(PufferNet* net) {
 
 #include ENV_HEADER
 
-#if !defined(PUF_NMMO3_NET) && !defined(PUF_ASTEROIDS_NET) && !defined(PUF_MINIMAL_NET)
+#if !defined(PUF_NMMO3_NET) && !defined(PUF_ASTEROIDS_NET) && !defined(PUF_MINIMAL_NET) && !defined(PUF_CRAFTAX_NET)
 static int puf_align8(int n) {
     return (n + 7) & ~7;
 }
@@ -724,7 +724,10 @@ int main(int argc, char** argv) {
     if (argc >= 2 && argv[1][0] && argv[1][0] != '-' &&
             strchr(argv[1], '=') == NULL && strchr(argv[1], '/') == NULL &&
             strstr(argv[1], ".bin") == NULL && strcmp(argv[1], "latest") != 0) {
-        env_name = argv[1];
+        if (strcmp(argv[1], "eval") != 0 && strcmp(argv[1], "train") != 0
+                && strcmp(argv[1], "match") != 0 && strcmp(argv[1], "sweep") != 0) {
+            env_name = argv[1];
+        }
         argi = 2;
     }
     Ini ini = {0};
@@ -768,6 +771,8 @@ int main(int argc, char** argv) {
     int need = asteroids_weight_count(hidden_size, num_layers);
 #elif defined(PUF_MINIMAL_NET)
     int need = minimal_weight_count(hidden_size, num_layers);
+#elif defined(PUF_CRAFTAX_NET)
+    int need = craftax_weight_count(hidden_size, num_layers);
 #else
     int need = puffernet_weight_count(OBS_SIZE, hidden_size, num_layers,
         act_sizes, num_actions);
@@ -802,7 +807,7 @@ int main(int argc, char** argv) {
     size_t n_atn = (size_t)env.num_agents * (size_t)NUM_ATNS;
     size_t n_agt = (size_t)env.num_agents;
     obs_t* observations = (obs_t*)calloc(n_obs, sizeof(obs_t));
-#if !defined(PUF_NMMO3_NET) && !defined(PUF_ASTEROIDS_NET) && !defined(PUF_MINIMAL_NET)
+#if !defined(PUF_NMMO3_NET) && !defined(PUF_ASTEROIDS_NET) && !defined(PUF_MINIMAL_NET) && !defined(PUF_CRAFTAX_NET)
     float* obs_f = (float*)calloc(n_obs, sizeof(float));
 #endif
     float* actions = (float*)calloc(n_atn, sizeof(float));
@@ -841,6 +846,12 @@ int main(int argc, char** argv) {
     MinimalNet* net = NULL;
     if (have_net) {
         net = init_minimal_net(weights, env.num_agents,
+            hidden_size, num_layers);
+    }
+#elif defined(PUF_CRAFTAX_NET)
+    CraftaxNet* net = NULL;
+    if (have_net) {
+        net = init_craftax_net(weights, env.num_agents,
             hidden_size, num_layers);
     }
 #else
@@ -901,6 +912,9 @@ int main(int argc, char** argv) {
                 forward_asteroids(net, (float*)observations, terminals, actions);
 #elif defined(PUF_MINIMAL_NET)
                 forward_minimal(net, (float*)observations, terminals, actions);
+#elif defined(PUF_CRAFTAX_NET)
+                forward_craftax(net, (float*)observations, terminals, actions, masks);
+                env.predicted_value = craftax_value(net, 0);
 #else
                 float* fwd = (float*)observations;
                 if (sizeof(obs_t) != sizeof(float)) {
