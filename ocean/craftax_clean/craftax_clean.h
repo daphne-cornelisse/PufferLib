@@ -2833,6 +2833,11 @@ static void draw_tile(int tex_id, int x, int y, int px) {
     DrawTexturePro(textures, src, dst, (Vector2){0, 0}, 0.0f, WHITE);
 }
 
+static int map_lit(const State* state, int level, int wr, int wc) {
+    return (unsigned)wr < MAP_SIZE && (unsigned)wc < MAP_SIZE
+        && state->light_map[level][wr][wc] > 12;
+}
+
 static int projectile_tex(int ptype, int dr, int dc) {
     if (ptype == PROJECTILE_DAGGER) {
         return TEX_PROJ_DAGGER;
@@ -2885,10 +2890,8 @@ static void draw_agent_obs(Craftax* env, int panel_x, int panel_y,
             int wc = pc + (vc - rc);
             int dst_x = grid_x + vc * px;
             int dst_y = grid_y + vr * px;
-            int lit = (unsigned)wr < MAP_SIZE && (unsigned)wc < MAP_SIZE
-                && state->light_map[level][wr][wc] > 12;
-            if (!lit) {
-                DrawRectangle(dst_x, dst_y, px, px, BLACK);
+            if (!map_lit(state, level, wr, wc)) {
+                draw_tile(BLOCK_DARKNESS, dst_x, dst_y, px);
                 continue;
             }
             int block = state->map[level][wr][wc];
@@ -2922,9 +2925,8 @@ static void draw_agent_obs(Craftax* env, int panel_x, int panel_y,
             int col = projectiles->position[i][1];
             int vr = row - pr + rr;
             int vc = col - pc + rc;
-            int lit = (unsigned)row < MAP_SIZE && (unsigned)col < MAP_SIZE
-                && state->light_map[level][row][col] > 12;
-            if (vr < 0 || vr >= OBS_ROWS || vc < 0 || vc >= OBS_COLS || !lit) {
+            if (vr < 0 || vr >= OBS_ROWS || vc < 0 || vc >= OBS_COLS
+                    || !map_lit(state, level, row, col)) {
                 continue;
             }
             int dr = directions[level][i][0];
@@ -3091,18 +3093,15 @@ void puf_render(Craftax* env) {
             int dst_x = origin_x + vc * TEX_DRAW_PX;
             int dst_y = vr * TEX_DRAW_PX;
 
-            int in_map = wr >= 0 && wr < MAP_SIZE && wc >= 0 && wc < MAP_SIZE;
-            int block = BLOCK_OUT_OF_BOUNDS;
-            if (in_map) {
-                block = env->state.map[level][wr][wc];
+            if (!map_lit(&env->state, level, wr, wc)) {
+                draw_tile(BLOCK_DARKNESS, dst_x, dst_y, TEX_DRAW_PX);
+                continue;
             }
+            int block = env->state.map[level][wr][wc];
             if (block < 0 || block >= NUM_BLOCK_TYPES) {
                 block = BLOCK_INVALID;
             }
             draw_tile(block, dst_x, dst_y, TEX_DRAW_PX);
-            if (!in_map) {
-                continue;
-            }
             int item = env->state.item_map[level][wr][wc];
             if (item > ITEM_NONE) {
                 draw_tile(TEX_ITEM_BASE + item, dst_x, dst_y, TEX_DRAW_PX);
@@ -3112,7 +3111,8 @@ void puf_render(Craftax* env) {
             if (find_mob_at(&env->state, level, wr, wc, &mob_class, &slot)) {
                 int type_id = mobs_for_class(&env->state, level, mob_class)
                     ->type_id[slot];
-                draw_tile(mob_tex_base[mob_class] + type_id, dst_x, dst_y, TEX_DRAW_PX);
+                draw_tile(mob_tex_base[mob_class] + type_id, dst_x, dst_y,
+                    TEX_DRAW_PX);
             }
         }
     }
@@ -3128,9 +3128,12 @@ void puf_render(Craftax* env) {
             if (!projectiles->mask[i]) {
                 continue;
             }
-            int vr = projectiles->position[i][0] - top_row;
-            int vc = projectiles->position[i][1] - left_col;
-            if (vr < 0 || vr >= RENDER_ROWS || vc < 0 || vc >= RENDER_COLS) {
+            int wr = projectiles->position[i][0];
+            int wc = projectiles->position[i][1];
+            int vr = wr - top_row;
+            int vc = wc - left_col;
+            if (vr < 0 || vr >= RENDER_ROWS || vc < 0 || vc >= RENDER_COLS
+                    || !map_lit(&env->state, level, wr, wc)) {
                 continue;
             }
             int dr = directions[level][i][0];
@@ -3152,11 +3155,6 @@ void puf_render(Craftax* env) {
     }
     draw_tile(player_tex, origin_x + half_c * TEX_DRAW_PX,
         half_r * TEX_DRAW_PX, TEX_DRAW_PX);
-
-    if (env->state.light_level < 1.0f) {
-        unsigned char alpha = (unsigned char)((1.0f - env->state.light_level) * 140.0f);
-        DrawRectangle(origin_x, 0, view_w, view_h, (Color){0, 0, 40, alpha});
-    }
 
     int floor_bar_h = 16;
     int cell_w = view_w / NUM_LEVELS;
