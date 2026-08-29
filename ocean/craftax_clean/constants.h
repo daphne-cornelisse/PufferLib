@@ -447,11 +447,13 @@ static const DungeonConfig DUNGEON_LEVEL_CONFIGS[3] = {
 };
 
 
-// Rendering parameters. tiles.png is 16x16 RGBA tiles, row-major, 16 columns:
+// Rendering parameters. textures.png is 16x16 RGBA tiles, row-major, 16 columns:
 //   [0..36]  blocks  [37..41] player  [42..46] items  [47..49] generic mobs
 //   [50..53] arrows  [54..61] armour  [62..70] tools  [71..76] potions
 //   [77..79] HUD     [80..87] melee   [88..90] passive [91..98] ranged
 //   [99..102] projectiles
+//   [103..104] sword enchant  [105..106] arrow enchant
+//   [107..110] armour fire overlay  [111..114] armour ice overlay
 #define TEX_TILE_PX 16
 #define TEX_SHEET_COLS 16
 #define TEX_SCALE 3
