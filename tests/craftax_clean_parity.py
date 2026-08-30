@@ -1,20 +1,40 @@
 #!/usr/bin/env python3
-"""Compare craftax_clean against ocean/craftax.
+"""Compare craftax_clean against original JAX Craftax-Symbolic-v1.
+
+https://github.com/MichaelTMatthews/Craftax
+
+The reference is the symbolic env (8268-d one-hot obs from
+render_craftax_symbolic), not the pixels env. Those observations are packed
+into the 9x11x8+51 layout used by craftax_clean.
 
 Checks:
 1. Reset worldgen (maps, items, lights, ladders, starter stats)
-2. Packed observations after reset and after a shared action sequence
+2. Packed symbolic observations after reset and after a shared action sequence
+
+JAX sleep/rest is collapsed into one agent step to match puf_step. Rewards are
+not compared: clean dropped health shaping, adds armour delta, and uses -1 on
+death.
 """
 
 from __future__ import annotations
 
 import argparse
 import ctypes
+import os
 import random
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+from craftax.craftax.envs.craftax_symbolic_env import CraftaxSymbolicEnvNoAutoReset
+from craftax.craftax_env import make_craftax_env_from_name
 
 
 MAP_SIZE = 48
@@ -24,9 +44,17 @@ MAP_CELLS = NUM_LEVELS * MAP_SIZE * MAP_SIZE
 OBS_ROWS = 9
 OBS_COLS = 11
 NUM_MOB_CLASSES = 5
+NUM_MOB_TYPES = 8
+NUM_BLOCK_TYPES = 37
+NUM_ITEM_TYPES = 5
 INVENTORY_OBS_SIZE = 51
 OBS_TILE_CHANNELS = 3 + NUM_MOB_CLASSES
 OBS_SIZE = OBS_ROWS * OBS_COLS * OBS_TILE_CHANNELS + INVENTORY_OBS_SIZE
+JAX_TILE_CHANNELS = (
+    NUM_BLOCK_TYPES + NUM_ITEM_TYPES + NUM_MOB_CLASSES * NUM_MOB_TYPES + 1
+)
+JAX_MAP_OBS = OBS_ROWS * OBS_COLS * JAX_TILE_CHANNELS
+JAX_OBS_SIZE = JAX_MAP_OBS + INVENTORY_OBS_SIZE
 NUM_ACTIONS = 43
 
 DUNGEON_FLOORS = (1, 3, 4)
@@ -82,7 +110,6 @@ class WorldDump(ctypes.Structure):
 SOURCE = r"""
 #include <stdint.h>
 #include <string.h>
-#include "ocean/craftax/worldgen.h"
 #include "ocean/craftax_clean/craftax_clean.h"
 
 static void flatten_clean(const State* state, WorldDump* out) {
@@ -119,50 +146,17 @@ static void flatten_clean(const State* state, WorldDump* out) {
     out->boss_timesteps = state->boss_timestep_to_spawn_this_round;
 }
 
-static void flatten_full(const CraftaxWorldState* world, WorldDump* out) {
-    int cell = 0;
-    for (int level = 0; level < NUM_LEVELS; level++) {
-        for (int row = 0; row < MAP_SIZE; row++) {
-            for (int col = 0; col < MAP_SIZE; col++) {
-                out->map[cell] = world->map[level][row][col];
-                out->item_map[cell] = world->item_map[level][row][col];
-                out->light_map[cell] = world->light_map[level][row][col];
-                cell++;
-            }
-        }
-        out->down_ladders[level * 2 + 0] = world->down_ladders[level][0];
-        out->down_ladders[level * 2 + 1] = world->down_ladders[level][1];
-        out->up_ladders[level * 2 + 0] = world->up_ladders[level][0];
-        out->up_ladders[level * 2 + 1] = world->up_ladders[level][1];
-        out->monsters_killed[level] = world->monsters_killed[level];
-    }
-    memcpy(out->potion_mapping, world->potion_mapping, sizeof(out->potion_mapping));
-    out->player_position[0] = world->player_position[0];
-    out->player_position[1] = world->player_position[1];
-    out->player_level = world->player_level;
-    out->player_direction = world->player_direction;
-    out->player_health = world->player_health;
-    out->player_food = world->player_food;
-    out->player_drink = world->player_drink;
-    out->player_energy = world->player_energy;
-    out->player_mana = world->player_mana;
-    out->player_dexterity = world->player_dexterity;
-    out->player_strength = world->player_strength;
-    out->player_intelligence = world->player_intelligence;
-    out->light_level = world->light_level;
-    out->boss_timesteps = world->boss_timesteps_to_spawn_this_round;
-}
-
 void generate_clean_world(int32_t seed, WorldDump* out) {
     State state;
-    generate_world(&state, seed);
+    Rng initial = rng_seed((uint32_t)seed);
+    Rng env_rng;
+    Rng reset_key;
+    rng_split(initial, &env_rng, &reset_key);
+    Rng unused;
+    Rng world_key;
+    rng_split(reset_key, &unused, &world_key);
+    generate_world_from_key(&state, world_key);
     flatten_clean(&state, out);
-}
-
-void generate_full_world(int32_t seed, WorldDump* out) {
-    CraftaxWorldState world;
-    craftax_generate_world_from_seed((uint32_t)seed, &world);
-    flatten_full(&world, out);
 }
 """
 
@@ -193,7 +187,6 @@ void replay_clean(
     env.agents[0].terminals = &terminal_value;
     env.agents[0].observations = live_obs;
 
-    craftax_clean_set_reset_pool_size(0);
     puf_reset(&env);
     memcpy(obs_out, live_obs, OBS_SIZE * sizeof(float));
     *terminal_step = -1;
@@ -210,64 +203,115 @@ void replay_clean(
 }
 """
 
-FULL_REPLAY = r"""
-#include <stdint.h>
-#include <string.h>
-#include "ocean/craftax/craftax.h"
-#include "ocean/craftax/step_crafting.h"
-#include "ocean/craftax/step_update_mobs.h"
-#include "ocean/craftax/step_spawn_mobs.h"
 
-void replay_full(
-    int32_t seed,
-    const int32_t* actions,
-    int32_t num_actions,
-    float* obs_out,
-    float* rewards_out,
-    int32_t* terminal_step
-) {
-    Craftax env;
-    float action_value = 0.0f;
-    float reward_value = 0.0f;
-    float terminal_value = 0.0f;
-    float live_obs[OBS_SIZE];
-    memset(&env, 0, sizeof(env));
-    env.num_agents = 1;
-    env.seed = (uint64_t)(uint32_t)seed;
-    env.rng = (unsigned int)seed;
-    env.agents[0].actions = &action_value;
-    env.agents[0].rewards = &reward_value;
-    env.agents[0].terminals = &terminal_value;
-    env.agents[0].observations = live_obs;
+def _fill_c_array(c_arr, values, dtype):
+    flat = np.ascontiguousarray(values, dtype=dtype).reshape(-1)
+    if flat.size != len(c_arr):
+        raise ValueError(f"size mismatch: {flat.size} vs {len(c_arr)}")
+    ctypes.memmove(ctypes.addressof(c_arr), flat.ctypes.data, flat.nbytes)
 
-    craftax_set_reset_pool_size(0);
-    c_init(&env);
-    puf_reset(&env);
-    memcpy(obs_out, live_obs, OBS_SIZE * sizeof(float));
-    *terminal_step = -1;
-    for (int32_t i = 0; i < num_actions; i++) {
-        action_value = (float)actions[i];
-        // puf_step also polls raylib human controls; skip that so the
-        // harness stays deterministic when multiple raylib .so copies load.
-        c_step_gameplay(&env);
-        c_step_encode(&env);
-        memcpy(obs_out + (size_t)(i + 1) * OBS_SIZE, live_obs, OBS_SIZE * sizeof(float));
-        rewards_out[i] = env.agents[0].rewards[0];
-        if (env.agents[0].terminals[0] > 0.5f) {
-            *terminal_step = i;
-            break;
-        }
-    }
-    puf_close(&env);
-}
-"""
+
+def jax_state_to_dump(state) -> WorldDump:
+    dump = WorldDump()
+    _fill_c_array(dump.map, state.map, np.int32)
+    _fill_c_array(dump.item_map, state.item_map, np.int32)
+    lights = np.clip(np.asarray(state.light_map) * 255.0, 0, 255).astype(np.uint8)
+    _fill_c_array(dump.light_map, lights, np.uint8)
+    _fill_c_array(dump.down_ladders, state.down_ladders, np.int32)
+    _fill_c_array(dump.up_ladders, state.up_ladders, np.int32)
+    _fill_c_array(dump.monsters_killed, state.monsters_killed, np.int32)
+    _fill_c_array(dump.potion_mapping, state.potion_mapping, np.int32)
+    pos = np.asarray(state.player_position, dtype=np.int32).reshape(-1)
+    dump.player_position[0] = int(pos[0])
+    dump.player_position[1] = int(pos[1])
+    dump.player_level = int(np.asarray(state.player_level))
+    dump.player_direction = int(np.asarray(state.player_direction))
+    dump.player_health = float(np.asarray(state.player_health))
+    dump.player_food = int(np.asarray(state.player_food))
+    dump.player_drink = int(np.asarray(state.player_drink))
+    dump.player_energy = int(np.asarray(state.player_energy))
+    dump.player_mana = int(np.asarray(state.player_mana))
+    dump.player_dexterity = int(np.asarray(state.player_dexterity))
+    dump.player_strength = int(np.asarray(state.player_strength))
+    dump.player_intelligence = int(np.asarray(state.player_intelligence))
+    dump.light_level = float(np.asarray(state.light_level))
+    dump.boss_timesteps = int(np.asarray(state.boss_timesteps_to_spawn_this_round))
+    return dump
+
+
+def pack_symbolic_obs(obs) -> np.ndarray:
+    """Convert JAX 8268-d one-hot symbolic obs to craftax_clean packed obs."""
+    obs = np.asarray(obs, dtype=np.float32).reshape(-1)
+    if obs.size != JAX_OBS_SIZE:
+        raise ValueError(f"JAX obs size {obs.size}, expected {JAX_OBS_SIZE}")
+    tiled = obs[:JAX_MAP_OBS].reshape(OBS_ROWS, OBS_COLS, JAX_TILE_CHANNELS)
+    blocks = tiled[..., :NUM_BLOCK_TYPES]
+    items = tiled[..., NUM_BLOCK_TYPES : NUM_BLOCK_TYPES + NUM_ITEM_TYPES]
+    mobs = tiled[
+        ...,
+        NUM_BLOCK_TYPES + NUM_ITEM_TYPES : NUM_BLOCK_TYPES
+        + NUM_ITEM_TYPES
+        + NUM_MOB_CLASSES * NUM_MOB_TYPES,
+    ].reshape(OBS_ROWS, OBS_COLS, NUM_MOB_CLASSES, NUM_MOB_TYPES)
+    visible = tiled[..., -1]
+    packed = np.zeros((OBS_ROWS, OBS_COLS, OBS_TILE_CHANNELS), dtype=np.float32)
+    packed[..., 0] = np.argmax(blocks, axis=-1).astype(np.float32) * visible
+    packed[..., 1] = (np.argmax(items, axis=-1).astype(np.float32) + 1.0) * visible
+    packed[..., 2] = visible
+    present = mobs.max(axis=-1)
+    packed[..., 3:] = (np.argmax(mobs, axis=-1).astype(np.float32) + 1.0) * present
+    return np.concatenate([packed.reshape(-1), obs[JAX_MAP_OBS:]], axis=0)
+
+
+class JaxCraftax:
+    def __init__(self):
+        self.env = make_craftax_env_from_name("Craftax-Symbolic-v1", auto_reset=False)
+        if not isinstance(self.env, CraftaxSymbolicEnvNoAutoReset):
+            raise TypeError(
+                f"expected Craftax-Symbolic-v1, got {type(self.env).__name__}"
+            )
+        self.params = self.env.default_params
+        self._step = self.env.step
+
+    def reset(self, seed: int):
+        rng = jax.random.PRNGKey(int(seed))
+        rng, reset_key = jax.random.split(rng)
+        obs, state = self.env.reset(reset_key, self.params)
+        return rng, obs, state
+
+    def replay(self, seed: int, actions):
+        rng, obs, state = self.reset(seed)
+        packed = [pack_symbolic_obs(obs)]
+        terminal_step = -1
+        for i, action in enumerate(actions):
+            current = int(action)
+            while True:
+                rng, step_key = jax.random.split(rng)
+                step_rng, reset_key = jax.random.split(step_key)
+                obs, state, _reward, done, _info = self._step(
+                    step_rng, state, jnp.int32(current), self.params
+                )
+                done = bool(np.asarray(done))
+                sleeping = bool(np.asarray(state.is_sleeping)) or bool(
+                    np.asarray(state.is_resting)
+                )
+                if done or not sleeping:
+                    break
+                current = 0
+            if done:
+                # puf_step generates a new world from this tick's reset_key.
+                obs, state = self.env.reset(reset_key, self.params)
+                packed.append(pack_symbolic_obs(obs))
+                terminal_step = i
+                break
+            packed.append(pack_symbolic_obs(obs))
+        return packed, terminal_step
 
 
 def compile_lib(root: Path) -> ctypes.CDLL:
     tmp = tempfile.TemporaryDirectory(prefix="craftax_clean_parity_")
     src = Path(tmp.name) / "parity.c"
     so = Path(tmp.name) / "parity.so"
-    # Keep the tempdir alive for the process lifetime.
     compile_lib._tmp = tmp  # type: ignore[attr-defined]
     c_struct = f"""
 #include <stdint.h>
@@ -325,12 +369,15 @@ typedef struct WorldDump {{
     lib = ctypes.CDLL(str(so))
     lib.generate_clean_world.argtypes = [ctypes.c_int32, ctypes.POINTER(WorldDump)]
     lib.generate_clean_world.restype = None
-    lib.generate_full_world.argtypes = [ctypes.c_int32, ctypes.POINTER(WorldDump)]
-    lib.generate_full_world.restype = None
     return lib
 
 
-def _cc(root: Path, src: Path, so: Path) -> None:
+def compile_replay_lib(root: Path) -> ctypes.CDLL:
+    tmp = tempfile.TemporaryDirectory(prefix="craftax_clean_replay_")
+    compile_replay_lib._tmp = tmp  # type: ignore[attr-defined]
+    src = Path(tmp.name) / "replay_clean.c"
+    so = Path(tmp.name) / "replay_clean.so"
+    src.write_text(CLEAN_REPLAY)
     subprocess.run(
         [
             "cc",
@@ -358,18 +405,7 @@ def _cc(root: Path, src: Path, so: Path) -> None:
         check=True,
         cwd=root,
     )
-
-
-def compile_replay_libs(root: Path) -> tuple[ctypes.CDLL, ctypes.CDLL]:
-    tmp = tempfile.TemporaryDirectory(prefix="craftax_clean_replay_")
-    compile_replay_libs._tmp = tmp  # type: ignore[attr-defined]
-    tmp_path = Path(tmp.name)
-
-    clean_src = tmp_path / "replay_clean.c"
-    clean_so = tmp_path / "replay_clean.so"
-    clean_src.write_text(CLEAN_REPLAY)
-    _cc(root, clean_src, clean_so)
-    clean = ctypes.CDLL(str(clean_so))
+    clean = ctypes.CDLL(str(so))
     clean.replay_clean.argtypes = [
         ctypes.c_int32,
         ctypes.POINTER(ctypes.c_int32),
@@ -379,22 +415,7 @@ def compile_replay_libs(root: Path) -> tuple[ctypes.CDLL, ctypes.CDLL]:
         ctypes.POINTER(ctypes.c_int32),
     ]
     clean.replay_clean.restype = None
-
-    full_src = tmp_path / "replay_full.c"
-    full_so = tmp_path / "replay_full.so"
-    full_src.write_text(FULL_REPLAY)
-    _cc(root, full_src, full_so)
-    full = ctypes.CDLL(str(full_so))
-    full.replay_full.argtypes = [
-        ctypes.c_int32,
-        ctypes.POINTER(ctypes.c_int32),
-        ctypes.c_int32,
-        ctypes.POINTER(ctypes.c_float),
-        ctypes.POINTER(ctypes.c_float),
-        ctypes.POINTER(ctypes.c_int32),
-    ]
-    full.replay_full.restype = None
-    return clean, full
+    return clean
 
 
 def obs_section(index: int) -> str:
@@ -402,43 +423,50 @@ def obs_section(index: int) -> str:
     if index < map_size:
         cell = index // OBS_TILE_CHANNELS
         channel = index % OBS_TILE_CHANNELS
-        names = ["block", "item", "visible", "melee", "passive", "ranged", "mob_proj", "player_proj"]
+        names = [
+            "block",
+            "item",
+            "visible",
+            "melee",
+            "passive",
+            "ranged",
+            "mob_proj",
+            "player_proj",
+        ]
         name = names[channel] if channel < len(names) else str(channel)
         return f"map cell={cell} channel={name}"
     return f"scalar[{index - map_size}]"
 
 
-def first_obs_mismatch(clean, full, atol: float):
-    best_index = None
-    best_diff = 0.0
-    for index, (left, right) in enumerate(zip(clean, full)):
-        diff = abs(float(left) - float(right))
-        if diff > atol and diff > best_diff:
-            best_index = index
-            best_diff = diff
-    if best_index is None:
+def first_obs_mismatch(clean, jax_obs, atol: float):
+    clean = np.asarray(clean, dtype=np.float32).reshape(-1)
+    jax_obs = np.asarray(jax_obs, dtype=np.float32).reshape(-1)
+    diff = np.abs(clean - jax_obs)
+    index = int(np.argmax(diff))
+    max_diff = float(diff[index])
+    if max_diff <= atol:
         return None
-    return best_index, best_diff, float(clean[best_index]), float(full[best_index])
+    return index, max_diff, float(clean[index]), float(jax_obs[index])
 
 
 def first_mismatch(left, right, name: str):
     for index, (a, b) in enumerate(zip(left, right)):
         if a != b:
-            return f"{name}[{index}] clean={a} full={b}"
+            return f"{name}[{index}] clean={a} jax={b}"
     return None
 
 
-def compare_dumps(clean: WorldDump, full: WorldDump) -> list[str]:
+def compare_dumps(clean: WorldDump, jax_dump: WorldDump) -> list[str]:
     diffs = []
     for name, _ctype in WorldDump._fields_:
         left = getattr(clean, name)
-        right = getattr(full, name)
+        right = getattr(jax_dump, name)
         if hasattr(left, "__len__"):
             mismatch = first_mismatch(left, right, name)
             if mismatch:
                 diffs.append(mismatch)
         elif left != right:
-            diffs.append(f"{name} clean={left} full={right}")
+            diffs.append(f"{name} clean={left} jax={right}")
     return diffs
 
 
@@ -516,16 +544,13 @@ def check_structure(dump: WorldDump) -> list[str]:
     return errors
 
 
-def replay_seed(clean_lib, full_lib, seed: int, actions, atol: float):
+def replay_seed(clean_lib, jax_env: JaxCraftax, seed: int, actions, atol: float):
     num_actions = len(actions)
     action_array = (ctypes.c_int32 * num_actions)(*actions)
     obs_count = (num_actions + 1) * OBS_SIZE
     clean_obs = (ctypes.c_float * obs_count)()
-    full_obs = (ctypes.c_float * obs_count)()
     clean_rewards = (ctypes.c_float * num_actions)()
-    full_rewards = (ctypes.c_float * num_actions)()
     clean_done = ctypes.c_int32(-1)
-    full_done = ctypes.c_int32(-1)
 
     clean_lib.replay_clean(
         seed,
@@ -535,82 +560,73 @@ def replay_seed(clean_lib, full_lib, seed: int, actions, atol: float):
         clean_rewards,
         ctypes.byref(clean_done),
     )
-    full_lib.replay_full(
-        seed,
-        action_array,
-        num_actions,
-        full_obs,
-        full_rewards,
-        ctypes.byref(full_done),
-    )
+    jax_obs, jax_done = jax_env.replay(seed, actions)
 
-    compare_steps = num_actions + 1
-    if clean_done.value >= 0 or full_done.value >= 0:
+    compare_steps = min(len(jax_obs), num_actions + 1)
+    if clean_done.value >= 0 or jax_done >= 0:
         compare_steps = min(
             clean_done.value if clean_done.value >= 0 else num_actions,
-            full_done.value if full_done.value >= 0 else num_actions,
+            jax_done if jax_done >= 0 else num_actions,
         ) + 2
-        compare_steps = min(compare_steps, num_actions + 1)
+        compare_steps = min(compare_steps, len(jax_obs), num_actions + 1)
 
     for step in range(compare_steps):
         start = step * OBS_SIZE
         end = start + OBS_SIZE
-        mismatch = first_obs_mismatch(clean_obs[start:end], full_obs[start:end], atol)
+        mismatch = first_obs_mismatch(clean_obs[start:end], jax_obs[step], atol)
         if mismatch is not None:
-            index, abs_diff, clean_value, full_value = mismatch
+            index, abs_diff, clean_value, jax_value = mismatch
             return (
                 f"obs mismatch seed={seed} step={step} "
                 f"index={index} section={obs_section(index)} "
-                f"abs_diff={abs_diff:.8g} clean={clean_value:.8g} full={full_value:.8g}"
+                f"abs_diff={abs_diff:.8g} clean={clean_value:.8g} jax={jax_value:.8g}"
             )
-        if step > 0:
-            reward_index = step - 1
-            if abs(float(clean_rewards[reward_index]) - float(full_rewards[reward_index])) > atol:
-                return (
-                    f"reward mismatch seed={seed} step={step} "
-                    f"clean={clean_rewards[reward_index]:.8g} "
-                    f"full={full_rewards[reward_index]:.8g}"
-                )
-    if clean_done.value != full_done.value:
+    if clean_done.value != jax_done:
         return (
             f"terminal mismatch seed={seed} "
-            f"clean_done={clean_done.value} full_done={full_done.value}"
+            f"clean_done={clean_done.value} jax_done={jax_done}"
         )
     return None
 
 
 def run(args: argparse.Namespace) -> int:
     root = Path(__file__).resolve().parents[1]
-    print(f"Compiling craftax_clean vs craftax worldgen harness in {root}")
+    print(f"Compiling craftax_clean worldgen harness in {root}")
     lib = compile_lib(root)
-    print("Compiling step/observation replay harnesses")
-    clean_lib, full_lib = compile_replay_libs(root)
+    print("Compiling craftax_clean replay harness")
+    clean_lib = compile_replay_lib(root)
+    print("Loading JAX Craftax-Symbolic-v1")
+    jax_env = JaxCraftax()
+    print(f"Reference env: {type(jax_env.env).__name__}")
 
     failures = 0
     for seed in range(args.seeds):
         clean = WorldDump()
-        full = WorldDump()
         lib.generate_clean_world(seed, ctypes.byref(clean))
-        lib.generate_full_world(seed, ctypes.byref(full))
+        _rng, _obs, jax_state = jax_env.reset(seed)
+        jax_dump = jax_state_to_dump(jax_state)
 
-        diffs = compare_dumps(clean, full)
+        diffs = compare_dumps(clean, jax_dump)
         struct_errors = check_structure(clean)
+        jax_struct_errors = [f"jax {error}" for error in check_structure(jax_dump)]
         rng = random.Random(args.action_seed + seed)
         actions = [rng.randrange(NUM_ACTIONS) for _ in range(args.steps)]
-        obs_error = replay_seed(clean_lib, full_lib, seed, actions, args.atol)
+        obs_error = replay_seed(clean_lib, jax_env, seed, actions, args.atol)
 
-        if diffs or struct_errors or obs_error:
+        if diffs or struct_errors or jax_struct_errors or obs_error:
             failures += 1
             print(f"FAIL seed={seed}")
             for diff in diffs[:8]:
                 print(f"  {diff}")
             for error in struct_errors:
                 print(f"  {error}")
+            for error in jax_struct_errors:
+                print(f"  {error}")
             if obs_error:
                 print(f"  {obs_error}")
             if not args.keep_going:
                 return 1
-        elif args.verbose:
+        else:
             print(
                 f"PASS seed={seed} "
                 f"dungeon_dark={count_block(clean, 1, BLOCK_DARKNESS)} "
@@ -619,14 +635,18 @@ def run(args: argparse.Namespace) -> int:
                 f"steps={args.steps}"
             )
 
+    passed = args.seeds - failures
     if failures:
-        print(f"FAIL craftax_clean parity: {failures}/{args.seeds} seeds diverged")
+        print(
+            f"FAIL craftax_clean vs JAX parity: "
+            f"{passed}/{args.seeds} passed, {failures}/{args.seeds} diverged"
+        )
         return 1
 
     sample = WorldDump()
     lib.generate_clean_world(0, ctypes.byref(sample))
     print(
-        "PASS craftax_clean parity: "
+        "PASS craftax_clean vs JAX Craftax: "
         f"seeds={args.seeds} steps={args.steps} atol={args.atol} "
         f"dungeon_chests={count_block(sample, 1, BLOCK_CHEST)} "
         f"dungeon_darkness={count_block(sample, 1, BLOCK_DARKNESS)} "
