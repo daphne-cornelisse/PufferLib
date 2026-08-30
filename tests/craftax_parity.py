@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Compare craftax_clean against original JAX Craftax-Symbolic-v1.
+"""Compare ocean/craftax against original JAX Craftax-Symbolic-v1.
 
 https://github.com/MichaelTMatthews/Craftax
 
 The reference is the symbolic env (8268-d one-hot obs from
 render_craftax_symbolic), not the pixels env. Those observations are packed
-into the 9x11x8+51 layout used by craftax_clean.
+into the 9x11x8+51 layout used by ocean/craftax.
 
 Checks:
 1. Reset worldgen (maps, items, lights, ladders, starter stats)
@@ -110,7 +110,7 @@ class WorldDump(ctypes.Structure):
 SOURCE = r"""
 #include <stdint.h>
 #include <string.h>
-#include "ocean/craftax_clean/craftax_clean.h"
+#include "ocean/craftax/craftax.h"
 
 static void flatten_clean(const State* state, WorldDump* out) {
     int cell = 0;
@@ -163,7 +163,7 @@ void generate_clean_world(int32_t seed, WorldDump* out) {
 CLEAN_REPLAY = r"""
 #include <stdint.h>
 #include <string.h>
-#include "ocean/craftax_clean/craftax_clean.h"
+#include "ocean/craftax/craftax.h"
 
 void replay_clean(
     int32_t seed,
@@ -240,7 +240,7 @@ def jax_state_to_dump(state) -> WorldDump:
 
 
 def pack_symbolic_obs(obs) -> np.ndarray:
-    """Convert JAX 8268-d one-hot symbolic obs to craftax_clean packed obs."""
+    """Convert JAX 8268-d one-hot symbolic obs to packed 9x11x8+51 obs."""
     obs = np.asarray(obs, dtype=np.float32).reshape(-1)
     if obs.size != JAX_OBS_SIZE:
         raise ValueError(f"JAX obs size {obs.size}, expected {JAX_OBS_SIZE}")
@@ -309,7 +309,7 @@ class JaxCraftax:
 
 
 def compile_lib(root: Path) -> ctypes.CDLL:
-    tmp = tempfile.TemporaryDirectory(prefix="craftax_clean_parity_")
+    tmp = tempfile.TemporaryDirectory(prefix="craftax_parity_")
     src = Path(tmp.name) / "parity.c"
     so = Path(tmp.name) / "parity.so"
     compile_lib._tmp = tmp  # type: ignore[attr-defined]
@@ -351,7 +351,7 @@ typedef struct WorldDump {{
             "-I",
             str(root / "src"),
             "-I",
-            str(root / "ocean" / "craftax_clean"),
+            str(root / "ocean" / "craftax"),
             "-I",
             str(root / "raylib-5.5_linux_amd64/include"),
             str(src),
@@ -373,7 +373,7 @@ typedef struct WorldDump {{
 
 
 def compile_replay_lib(root: Path) -> ctypes.CDLL:
-    tmp = tempfile.TemporaryDirectory(prefix="craftax_clean_replay_")
+    tmp = tempfile.TemporaryDirectory(prefix="craftax_replay_")
     compile_replay_lib._tmp = tmp  # type: ignore[attr-defined]
     src = Path(tmp.name) / "replay_clean.c"
     so = Path(tmp.name) / "replay_clean.so"
@@ -390,7 +390,7 @@ def compile_replay_lib(root: Path) -> ctypes.CDLL:
             "-I",
             str(root / "src"),
             "-I",
-            str(root / "ocean" / "craftax_clean"),
+            str(root / "ocean" / "craftax"),
             "-I",
             str(root / "raylib-5.5_linux_amd64/include"),
             str(src),
@@ -591,9 +591,9 @@ def replay_seed(clean_lib, jax_env: JaxCraftax, seed: int, actions, atol: float)
 
 def run(args: argparse.Namespace) -> int:
     root = Path(__file__).resolve().parents[1]
-    print(f"Compiling craftax_clean worldgen harness in {root}")
+    print(f"Compiling craftax worldgen harness in {root}")
     lib = compile_lib(root)
-    print("Compiling craftax_clean replay harness")
+    print("Compiling craftax replay harness")
     clean_lib = compile_replay_lib(root)
     print("Loading JAX Craftax-Symbolic-v1")
     jax_env = JaxCraftax()
@@ -638,7 +638,7 @@ def run(args: argparse.Namespace) -> int:
     passed = args.seeds - failures
     if failures:
         print(
-            f"FAIL craftax_clean vs JAX parity: "
+            f"FAIL craftax vs JAX parity: "
             f"{passed}/{args.seeds} passed, {failures}/{args.seeds} diverged"
         )
         return 1
@@ -646,7 +646,7 @@ def run(args: argparse.Namespace) -> int:
     sample = WorldDump()
     lib.generate_clean_world(0, ctypes.byref(sample))
     print(
-        "PASS craftax_clean vs JAX Craftax: "
+        "PASS craftax vs JAX Craftax: "
         f"seeds={args.seeds} steps={args.steps} atol={args.atol} "
         f"dungeon_chests={count_block(sample, 1, BLOCK_CHEST)} "
         f"dungeon_darkness={count_block(sample, 1, BLOCK_DARKNESS)} "

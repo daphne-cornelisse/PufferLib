@@ -52,9 +52,6 @@ __device__ static const float OSRS_ITEM_OBS_TABLE_DEV
 #ifdef PUFFER_CRAFTAX
 #include "../ocean/craftax/craftax.cu"
 #endif
-#ifdef PUFFER_CRAFTAX_CLEAN
-#include "../ocean/craftax_clean/craftax_clean.cu"
-#endif
 
 // Override encoder vtable for known ocean environments. No-op for unknown envs.
 static void create_custom_encoder(const char* env_name, Encoder* enc) {
@@ -68,12 +65,6 @@ static void create_custom_encoder(const char* env_name, Encoder* enc) {
 #endif
 #ifdef PUFFER_CRAFTAX
     if (strcmp(env_name, "craftax") == 0) {
-        create_craftax_encoder(enc);
-        return;
-    }
-#endif
-#ifdef PUFFER_CRAFTAX_CLEAN
-    if (strcmp(env_name, "craftax_clean") == 0) {
         create_craftax_encoder(enc);
         return;
     }

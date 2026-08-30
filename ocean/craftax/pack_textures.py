@@ -1,6 +1,6 @@
 """Pack Craftax upstream 16x16 PNG assets into resources/craftax/textures.png.
 
-Consumed by ocean/craftax_clean (and craftax_classic). Layout is a 16-column
+Consumed by ocean/craftax (and craftax_classic). Layout is a 16-column
 row-major RGBA atlas of 16x16 tiles. Order must match the TEX_* enums.
 
   [0..36]  block textures (37) -- BlockType; first 17 entries also valid for classic
