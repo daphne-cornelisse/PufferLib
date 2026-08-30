@@ -393,6 +393,7 @@ void generate_world_from_key(State* state, Rng rng) {
         float path_x[MAP_CELLS];
         float tree_noise[MAP_CELLS];
         bool lava_map[MAP_SIZE][MAP_SIZE];
+        float light_acc[MAP_SIZE][MAP_SIZE];
         Rng subkey;
 
         rng_split(level_rng, &level_rng, &subkey);
@@ -457,7 +458,7 @@ void generate_world_from_key(State* state, Rng rng) {
 
                 state->map[level][row][col] = block;
                 state->item_map[level][row][col] = ITEM_NONE;
-                state->light_map[level][row][col] = (unsigned char)(config->default_light * 255.0f);
+                light_acc[row][col] = config->default_light;
             }
         }
 
@@ -548,8 +549,7 @@ void generate_world_from_key(State* state, Rng rng) {
                     torch = 0.0f;
                 }
                 float light = torch * (1.0f - config->default_light) + config->default_light;
-                state->light_map[level][light_row + lr][light_col + lc] =
-                    (unsigned char)(light * 255.0f);
+                light_acc[light_row + lr][light_col + lc] = light;
             }
         }
         if (config->lava == BLOCK_LAVA) {
@@ -576,12 +576,24 @@ void generate_world_from_key(State* state, Rng rng) {
                             }
                         }
                     }
-                    float light = state->light_map[level][row][col] / 255.0f + add;
+                    float light = light_acc[row][col] + add;
                     if (light > 1.0f) {
                         light = 1.0f;
                     }
-                    state->light_map[level][row][col] = (unsigned char)(light * 255.0f);
+                    light_acc[row][col] = light;
                 }
+            }
+        }
+        for (int row = 0; row < MAP_SIZE; row++) {
+            for (int col = 0; col < MAP_SIZE; col++) {
+                float light = light_acc[row][col];
+                if (light < 0.0f) {
+                    light = 0.0f;
+                }
+                if (light > 1.0f) {
+                    light = 1.0f;
+                }
+                state->light_map[level][row][col] = (unsigned char)(light * 255.0f);
             }
         }
         if (config->ladder_up) {
