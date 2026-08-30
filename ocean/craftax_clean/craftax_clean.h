@@ -163,19 +163,56 @@ struct Env {
     float predicted_value;
 };
 
+static uint32_t rng_rotl32(uint32_t x, uint32_t k) {
+    return (uint32_t)((x << k) | (x >> (32u - k)));
+}
+
+static void rng_threefry2x32(Rng key, uint32_t count0, uint32_t count1, uint32_t out[2]) {
+    static const uint32_t rotations[2][4] = {
+        {13u, 15u, 26u, 6u},
+        {17u, 29u, 16u, 24u},
+    };
+    uint32_t k0 = (uint32_t)key;
+    uint32_t k1 = (uint32_t)(key >> 32);
+    uint32_t ks[3] = {
+        k0,
+        k1,
+        k0 ^ k1 ^ 0x1BD11BDAu,
+    };
+    uint32_t x0 = count0 + ks[0];
+    uint32_t x1 = count1 + ks[1];
+    for (uint32_t block = 0; block < 5u; block++) {
+        const uint32_t* rs = rotations[block & 1u];
+        for (int i = 0; i < 4; i++) {
+            x0 += x1;
+            x1 = rng_rotl32(x1, rs[i]);
+            x1 ^= x0;
+        }
+        x0 += ks[(block + 1u) % 3u];
+        x1 += ks[(block + 2u) % 3u] + block + 1u;
+    }
+    out[0] = x0;
+    out[1] = x1;
+}
+
+static Rng rng_counter_key(Rng key, uint32_t count0, uint32_t count1) {
+    uint32_t out[2];
+    rng_threefry2x32(key, count0, count1, out);
+    return (uint64_t)out[0] | ((uint64_t)out[1] << 32);
+}
+
 Rng rng_seed(uint32_t seed) {
-    return (uint64_t)seed | ((uint64_t)(seed ^ 0x9E3779B9u) << 32);
+    return (uint64_t)seed << 32;
 }
 
 void rng_split(Rng key, Rng* left, Rng* right) {
-    *left = key * 6364136223846793005ULL + 1;
-    *right = *left * 6364136223846793005ULL + 1;
+    *left = rng_counter_key(key, 0u, 0u);
+    *right = rng_counter_key(key, 0u, 1u);
 }
 
 void rng_split_n(Rng key, Rng* out, int n) {
     for (int i = 0; i < n; i++) {
-        key = key * 6364136223846793005ULL + 1;
-        out[i] = key;
+        out[i] = rng_counter_key(key, 0u, (uint32_t)i);
     }
 }
 
@@ -185,19 +222,10 @@ Rng rng_key(Rng* rng) {
     return draw;
 }
 
-uint64_t rng_hash(Rng key, uint64_t i) {
-    uint64_t x = key ^ i;
-    x ^= x >> 33;
-    x *= 0xff51afd7ed558ccdULL;
-    x ^= x >> 33;
-    x *= 0xc4ceb9fe1a85ec53ULL;
-    x ^= x >> 33;
-    return x;
-}
-
 uint32_t rng_u32(Rng key, uint64_t i) {
-    uint64_t h = rng_hash(key, i);
-    return (uint32_t)h ^ (uint32_t)(h >> 32);
+    uint32_t out[2];
+    rng_threefry2x32(key, (uint32_t)(i >> 32), (uint32_t)i, out);
+    return out[0] ^ out[1];
 }
 
 float rng_f32(Rng key, uint64_t i) {
@@ -208,11 +236,21 @@ float rng_f32(Rng key, uint64_t i) {
 }
 
 int randint(Rng key, uint64_t i, int lo, int hi) {
+    Rng k1;
+    Rng k2;
+    rng_split(key, &k1, &k2);
+    uint32_t higher_bits = rng_u32(k1, i);
+    uint32_t lower_bits = rng_u32(k2, i);
     uint32_t span = (uint32_t)hi > (uint32_t)lo ? (uint32_t)(hi - lo) : 1u;
-    if ((span & (span - 1)) == 0) {
-        return lo + (int)(rng_u32(key, i) & (span - 1));
-    }
-    return lo + (int)((rng_hash(key, i) >> 32) * (uint64_t)span >> 32);
+    uint32_t multiplier = 65536u % span;
+    multiplier = (uint32_t)(((uint64_t)multiplier * (uint64_t)multiplier)
+        % (uint64_t)span);
+    uint32_t random_offset = (uint32_t)(
+        (((uint64_t)(higher_bits % span) * (uint64_t)multiplier)
+            + (uint64_t)(lower_bits % span))
+        % (uint64_t)span
+    );
+    return lo + (int)random_offset;
 }
 
 void store_rng(State* state, Rng rng) {
@@ -833,26 +871,35 @@ void generate_world_from_key(State* state, Rng rng) {
 void write_mob_obs(float* obs, const State* state, const Mobs* mobs, int slots,
         int channel) {
     int level = state->player_level;
+    int half_r = OBS_ROWS / 2;
+    int half_c = OBS_COLS / 2;
     for (int i = 0; i < slots; i++) {
-        if (!mobs->mask[i]) {
+        int local_row = mobs->position[i][0] - state->player_position[0] + half_r;
+        int local_col = mobs->position[i][1] - state->player_position[1] + half_c;
+        int on_screen = mobs->mask[i]
+            && local_row >= 0 && local_row < OBS_ROWS
+            && local_col >= 0 && local_col < OBS_COLS;
+        if (local_row >= OBS_ROWS || local_row < -OBS_ROWS
+                || local_col >= OBS_COLS || local_col < -OBS_COLS) {
             continue;
         }
-        int type_id = mobs->type_id[i];
-        int world_row = mobs->position[i][0];
-        int world_col = mobs->position[i][1];
-        int local_row = world_row - state->player_position[0] + OBS_ROWS / 2;
-        int local_col = world_col - state->player_position[1] + OBS_COLS / 2;
-        if ((unsigned)local_row >= OBS_ROWS
-                || (unsigned)local_col >= OBS_COLS) {
-            continue;
+        if (local_row < 0) {
+            local_row += OBS_ROWS;
         }
-        if ((unsigned)world_row >= MAP_SIZE
-                || (unsigned)world_col >= MAP_SIZE
-                || state->light_map[level][world_row][world_col] <= 12) {
-            continue;
+        if (local_col < 0) {
+            local_col += OBS_COLS;
+        }
+        int dest_row = state->player_position[0] + local_row - half_r;
+        int dest_col = state->player_position[1] + local_col - half_c;
+        int dest_visible = dest_row >= 0 && dest_row < MAP_SIZE
+            && dest_col >= 0 && dest_col < MAP_SIZE
+            && state->light_map[level][dest_row][dest_col] > 12;
+        float value = 0.0f;
+        if (on_screen && dest_visible) {
+            value = (float)(mobs->type_id[i] + 1);
         }
         int base = (local_row * OBS_COLS + local_col) * OBS_TILE_CHANNELS;
-        obs[base + 3 + channel] = type_id + 1;
+        obs[base + 3 + channel] = value;
     }
 }
 
@@ -1422,9 +1469,6 @@ int signi(int value) {
 void move_melee_slot(State* state, int level, int slot, Rng* rng) {
     Mobs* mobs = &state->melee_mobs[level];
     bool alive = mobs->mask[slot];
-    if (!alive) {
-        return;
-    }
     int old_row = mobs->position[slot][0];
     int old_col = mobs->position[slot][1];
     int type_id = mobs->type_id[slot];
@@ -1479,9 +1523,6 @@ void move_melee_slot(State* state, int level, int slot, Rng* rng) {
 void move_passive_slot(State* state, int level, int slot, Rng* rng) {
     Mobs* mobs = &state->passive_mobs[level];
     bool alive = mobs->mask[slot];
-    if (!alive) {
-        return;
-    }
     int old_row = mobs->position[slot][0];
     int old_col = mobs->position[slot][1];
     int type_id = mobs->type_id[slot];
@@ -1504,9 +1545,6 @@ void move_passive_slot(State* state, int level, int slot, Rng* rng) {
 void move_ranged_slot(State* state, int level, int slot, Rng* rng) {
     Mobs* mobs = &state->ranged_mobs[level];
     bool alive = mobs->mask[slot];
-    if (!alive) {
-        return;
-    }
     int old_row = mobs->position[slot][0];
     int old_col = mobs->position[slot][1];
     int type_id = mobs->type_id[slot];
