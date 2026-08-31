@@ -100,10 +100,10 @@ typedef struct {
     Mobs ranged_mobs[NUM_LEVELS];
     Mobs mob_projectiles[NUM_LEVELS];
 
-    int mob_projectile_directions[NUM_LEVELS][MAX_MOB_PROJECTILES][2];
+    int mob_projectile_dirs[NUM_LEVELS][MAX_MOB_PROJECTILES][2];
     Mobs player_projectiles[NUM_LEVELS];
     int player_projectile_directions[NUM_LEVELS][MAX_PLAYER_PROJECTILES][2];
-    int growing_plants_positions[MAX_GROWING_PLANTS][2];
+    int growing_plants_pos[MAX_GROWING_PLANTS][2];
     int growing_plants_age[MAX_GROWING_PLANTS];
     int growing_plants_mask[MAX_GROWING_PLANTS];
     int potion_mapping[NUM_POTIONS];
@@ -816,8 +816,8 @@ void generate_world_from_key(State* state, Rng rng) {
             state->ranged_mobs[level].health[i] = 1.0f;
         }
         for (int projectile = 0; projectile < MAX_MOB_PROJECTILES; projectile++) {
-            state->mob_projectile_directions[level][projectile][0] = 1;
-            state->mob_projectile_directions[level][projectile][1] = 1;
+            state->mob_projectile_dirs[level][projectile][0] = 1;
+            state->mob_projectile_dirs[level][projectile][1] = 1;
         }
         for (int projectile = 0; projectile < MAX_PLAYER_PROJECTILES; projectile++) {
             state->player_projectile_directions[level][projectile][0] = 1;
@@ -1205,7 +1205,7 @@ bool spawn_projectile(State* state, bool from_player, int projectile_type,
     int level = state->player_level;
     Mobs* projectiles = from_player ? &state->player_projectiles[level] : &state->mob_projectiles[level];
     int (*directions)[MAX_PLAYER_PROJECTILES][2] =
-        from_player ? state->player_projectile_directions : state->mob_projectile_directions;
+        from_player ? state->player_projectile_directions : state->mob_projectile_dirs;
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
         if (projectiles->mask[i]) {
             continue;
@@ -1298,8 +1298,8 @@ void update_projectile_set(State* state, bool from_player) {
             }
             int old_row = projectiles->position[i][0];
             int old_col = projectiles->position[i][1];
-            int proposed_row = old_row + state->mob_projectile_directions[level][i][0];
-            int proposed_col = old_col + state->mob_projectile_directions[level][i][1];
+            int proposed_row = old_row + state->mob_projectile_dirs[level][i][0];
+            int proposed_col = old_col + state->mob_projectile_dirs[level][i][1];
             bool proposed_in_player = proposed_row == state->player_position[0]
                 && proposed_col == state->player_position[1];
             bool proposed_in_bounds = proposed_row >= 0 && proposed_row < MAP_SIZE
@@ -1904,7 +1904,7 @@ void puf_step(Craftax* env) {
     State* state = &env->state;
     int initial_achievements[NUM_ACHIEVEMENTS];
     memcpy(initial_achievements, state->achievements, sizeof(initial_achievements));
-    float initial_health = state->player_health;
+
     int initial_armour = equipped_armour(state);
 
     // Sleep/rest used to return control every tick as forced NOOPs (~100
@@ -1925,17 +1925,18 @@ void puf_step(Craftax* env) {
     int level = state->player_level;
     int row = state->player_position[0];
     int col = state->player_position[1];
-
+    
+    // Ascend/descend ladders if possible, otherwise stay on the same level.
     bool on_down_ladder = state->item_map[level][row][col] == ITEM_LADDER_DOWN;
+    bool on_up_ladder = state->item_map[level][row][col] == ITEM_LADDER_UP;
+
     bool can_move_down = action == ACTION_DESCEND
         && on_down_ladder
         && state->monsters_killed[level] >= MONSTERS_KILLED_TO_CLEAR_LEVEL
         && level < NUM_LEVELS - 1;
 
-    bool on_up_ladder = state->item_map[level][row][col] == ITEM_LADDER_UP;
-    bool can_move_up = action == ACTION_ASCEND
-        && on_up_ladder
-        && level > 0;
+    
+    bool can_move_up = action == ACTION_ASCEND && on_up_ladder && level > 0;
 
     if (can_move_down || can_move_up) {
         int new_level = level + (can_move_down ? 1 : -1);
@@ -1959,7 +1960,8 @@ void puf_step(Craftax* env) {
         }
     }
 
-    static const int offsets[8][2] = {
+    // Crafting actions require a crafting table and/or furnace nearby.
+    static const int nearby_tiles[8][2] = {
         {0, -1}, {0, 1}, {-1, 0}, {1, 0},
         {-1, -1}, {-1, 1}, {1, -1}, {1, 1},
     };
@@ -1967,105 +1969,127 @@ void puf_step(Craftax* env) {
     bool at_table = false;
     bool at_furnace = false;
     for (int i = 0; i < 8; i++) {
-        int row = state->player_position[0] + offsets[i][0];
-        int col = state->player_position[1] + offsets[i][1];
+        int row = state->player_position[0] + nearby_tiles[i][0];
+        int col = state->player_position[1] + nearby_tiles[i][1];
         if (row < 0 || row >= MAP_SIZE || col < 0 || col >= MAP_SIZE) {
             continue;
         }
-        int nblock = state->map[level][row][col];
-        at_table = at_table || nblock == BLOCK_CRAFTING_TABLE;
-        at_furnace = at_furnace || nblock == BLOCK_FURNACE;
+        at_table = at_table || state->map[level][row][col] == BLOCK_CRAFTING_TABLE;
+        at_furnace = at_furnace || state->map[level][row][col] == BLOCK_FURNACE;
     }
+
     Inventory* inv = &state->inventory;
 
-    if (action == ACTION_MAKE_WOOD_PICKAXE && at_table && inv->wood >= 1
-            && inv->pickaxe < 1) {
+    if (action == ACTION_MAKE_WOOD_PICKAXE 
+        && at_table && inv->wood >= 1 
+        && inv->pickaxe < 1
+    ) {
         inv->wood -= 1;
         inv->pickaxe = 1;
-    } else if (action == ACTION_MAKE_STONE_PICKAXE && at_table && inv->wood >= 1
-            && inv->stone >= 1 && inv->pickaxe < 2) {
+    } else if (action == ACTION_MAKE_STONE_PICKAXE 
+        && at_table && inv->wood >= 1
+        && inv->stone >= 1 
+        && inv->pickaxe < 2) {
         inv->wood -= 1;
         inv->stone -= 1;
         inv->pickaxe = 2;
-    } else if (action == ACTION_MAKE_IRON_PICKAXE && at_table && at_furnace
-            && inv->wood >= 1 && inv->stone >= 1 && inv->iron >= 1
-            && inv->coal >= 1 && inv->pickaxe < 3) {
+    } else if (action == ACTION_MAKE_IRON_PICKAXE 
+        && at_table 
+        && at_furnace
+        && inv->wood >= 1 
+        && inv->stone >= 1 
+        && inv->iron >= 1
+        && inv->coal >= 1 
+        && inv->pickaxe < 3
+    ) {
         inv->wood -= 1;
         inv->stone -= 1;
         inv->iron -= 1;
         inv->coal -= 1;
         inv->pickaxe = 3;
-    } else if (action == ACTION_MAKE_DIAMOND_PICKAXE && at_table && inv->wood >= 1
-            && inv->diamond >= 3 && inv->pickaxe < 4) {
+    } else if (action == ACTION_MAKE_DIAMOND_PICKAXE 
+        && at_table && inv->wood >= 1
+        && inv->diamond >= 3 
+        && inv->pickaxe < 4
+    ) {
         inv->wood -= 1;
         inv->diamond -= 3;
         inv->pickaxe = 4;
-    } else if (action == ACTION_MAKE_WOOD_SWORD && at_table && inv->wood >= 1
-            && inv->sword < 1) {
+    } else if (action == ACTION_MAKE_WOOD_SWORD 
+        && at_table && inv->wood >= 1
+        && inv->sword < 1
+    ) {
         inv->wood -= 1;
         inv->sword = 1;
-    } else if (action == ACTION_MAKE_STONE_SWORD && at_table && inv->wood >= 1
-            && inv->stone >= 1 && inv->sword < 2) {
+    } else if (action == ACTION_MAKE_STONE_SWORD 
+        && at_table && inv->wood >= 1
+        && inv->stone >= 1 
+        && inv->sword < 2
+    ) {
         inv->wood -= 1;
         inv->stone -= 1;
         inv->sword = 2;
-    } else if (action == ACTION_MAKE_IRON_SWORD && at_table && at_furnace
-            && inv->wood >= 1 && inv->stone >= 1 && inv->iron >= 1
-            && inv->coal >= 1 && inv->sword < 3) {
+    } else if (action == ACTION_MAKE_IRON_SWORD 
+        && at_table && at_furnace
+        && inv->wood >= 1 && inv->stone >= 1 && inv->iron >= 1
+        && inv->coal >= 1 && inv->sword < 3
+    ) {
         inv->wood -= 1;
         inv->stone -= 1;
         inv->iron -= 1;
         inv->coal -= 1;
         inv->sword = 3;
-    } else if (action == ACTION_MAKE_DIAMOND_SWORD && at_table && inv->wood >= 1
-            && inv->diamond >= 2 && inv->sword < 4) {
+    } else if (action == ACTION_MAKE_DIAMOND_SWORD 
+        && at_table && inv->wood >= 1
+        && inv->diamond >= 2 && inv->sword < 4
+    ) {
         inv->wood -= 1;
         inv->diamond -= 2;
         inv->sword = 4;
-    } else if (action == ACTION_MAKE_ARROW && at_table && inv->wood >= 1
-            && inv->stone >= 1 && inv->arrows < 99) {
+    } else if (action == ACTION_MAKE_ARROW 
+        && at_table && inv->wood >= 1
+        && inv->stone >= 1 && inv->arrows < 99
+    ) {
         inv->wood -= 1;
         inv->stone -= 1;
         inv->arrows += 2;
-    } else if (action == ACTION_MAKE_TORCH && at_table && inv->wood >= 1
-            && inv->coal >= 1 && inv->torches < 99) {
+    } else if (action == ACTION_MAKE_TORCH 
+        && at_table && inv->wood >= 1
+        && inv->coal >= 1 && inv->torches < 99
+    ) {
         inv->wood -= 1;
         inv->coal -= 1;
         inv->torches += 4;
-    }
-
-    int count = 0;
-    int idx = 0;
-    for (int i = 0; i < 4; i++) {
-        bool below = inv->armour[i] < 1;
-        if (count == 0 && below) {
-            idx = i;
+    } else if (action == ACTION_MAKE_IRON_ARMOUR 
+        && at_table 
+        && at_furnace
+        && inv->iron >= 3 
+        && inv->coal >= 3
+    ) {
+        for (int i = 0; i < 4; i++) {
+            if (inv->armour[i] < 1) {
+                inv->iron -= 3;
+                inv->coal -= 3;
+                inv->armour[i] = 1;
+                state->achievements[ACH_MAKE_IRON_ARMOUR] = 1;
+                break;
+            }
         }
-        count += below ? 1 : 0;
-    }
-    if (action == ACTION_MAKE_IRON_ARMOUR && at_table && at_furnace && count > 0
-            && inv->iron >= 3 && inv->coal >= 3) {
-        inv->iron -= 3;
-        inv->coal -= 3;
-        inv->armour[idx] = 1;
-        state->achievements[ACH_MAKE_IRON_ARMOUR] = 1;
-    }
-
-    count = 0;
-    idx = 0;
-    for (int i = 0; i < 4; i++) {
-        bool below = inv->armour[i] < 2;
-        if (count == 0 && below) {
-            idx = i;
+    } else if (action == ACTION_MAKE_DIAMOND_ARMOUR 
+        && at_table
+        && inv->diamond >= 3
+    ) {
+        for (int i = 0; i < 4; i++) {
+            if (inv->armour[i] < 2) {
+                inv->diamond -= 3;
+                inv->armour[i] = 2;
+                state->achievements[ACH_MAKE_DIAMOND_ARMOUR] = 1;
+                break;
+            }
         }
-        count += below ? 1 : 0;
-    }
-    if (action == ACTION_MAKE_DIAMOND_ARMOUR && at_table && count > 0 && inv->diamond >= 3) {
-        inv->diamond -= 3;
-        inv->armour[idx] = 2;
-        state->achievements[ACH_MAKE_DIAMOND_ARMOUR] = 1;
     }
 
+    // Check interactions with the world (trees, rocks, mobs, etc.).
     Rng interact_rng = rng_key(&step_rng);
     int direction[2];
 
@@ -2081,6 +2105,7 @@ void puf_step(Craftax* env) {
         int attack_class;
         int attack_slot;
         if (find_mob_at(state, level, row, col, &attack_class, &attack_slot)) {
+            // Compute damage based on sword level and player stats.
             Mobs* attack_mobs = mobs_for_class(state, level, attack_class);
             static const float base_damage[5] = {1, 2, 3, 5, 8};
             float base = base_damage[clampi(state->inventory.sword, 0, 4)];
@@ -2093,9 +2118,7 @@ void puf_step(Craftax* env) {
             };
             did_attack = damage_mob_at(
                 state, level, row, col,
-                damage_to_mob(vector, attack_mobs->type_id[attack_slot], attack_class),
-                true, true
-            );
+                damage_to_mob(vector, attack_mobs->type_id[attack_slot], attack_class), true, true);
         }
         Rng sapling_key = rng_key(&interact_rng);
         Rng chest_key = rng_key(&interact_rng);
@@ -2103,9 +2126,13 @@ void puf_step(Craftax* env) {
             int block = state->map[level][row][col];
 
             if (block == BLOCK_TREE || block == BLOCK_FIRE_TREE || block == BLOCK_ICE_SHRUB) {
-                set_block(state, level, row, col,
-                    block == BLOCK_TREE ? BLOCK_GRASS
-                        : (block == BLOCK_FIRE_TREE ? BLOCK_FIRE_GRASS : BLOCK_ICE_GRASS));
+                int ground = BLOCK_GRASS;
+                if (block == BLOCK_FIRE_TREE) {
+                    ground = BLOCK_FIRE_GRASS;
+                } else if (block == BLOCK_ICE_SHRUB) {
+                    ground = BLOCK_ICE_GRASS;
+                }
+                set_block(state, level, row, col, ground);
                 inv->wood += 1;
             } else if (block == BLOCK_STONE && inv->pickaxe >= 1) {
                 set_block(state, level, row, col, BLOCK_PATH);
@@ -2137,8 +2164,7 @@ void puf_step(Craftax* env) {
             } else if (block == BLOCK_RIPE_PLANT) {
                 set_block(state, level, row, col, BLOCK_PLANT);
                 for (int i = 0; i < MAX_GROWING_PLANTS; i++) {
-                    if (state->growing_plants_positions[i][0] == row
-                            && state->growing_plants_positions[i][1] == col) {
+                    if (state->growing_plants_pos[i][0] == row && state->growing_plants_pos[i][1] == col) {
                         state->growing_plants_age[i] = 0;
                         break;
                     }
@@ -2284,8 +2310,8 @@ void puf_step(Craftax* env) {
             inv->sapling -= 1;
             for (int i = 0; i < MAX_GROWING_PLANTS; i++) {
                 if (!state->growing_plants_mask[i]) {
-                    state->growing_plants_positions[i][0] = row;
-                    state->growing_plants_positions[i][1] = col;
+                    state->growing_plants_pos[i][0] = row;
+                    state->growing_plants_pos[i][1] = col;
                     state->growing_plants_age[i] = 0;
                     state->growing_plants_mask[i] = 1;
                     break;
@@ -2578,8 +2604,8 @@ void puf_step(Craftax* env) {
             continue;
         }
 
-        int row = state->growing_plants_positions[plant][0];
-        int col = state->growing_plants_positions[plant][1];
+        int row = state->growing_plants_pos[plant][0];
+        int col = state->growing_plants_pos[plant][1];
         if (state->growing_plants_age[plant] >= 600) {
             set_block(state, 0, row, col, BLOCK_RIPE_PLANT);
         }
@@ -2957,7 +2983,7 @@ static void draw_agent_obs(Craftax* env, int panel_x, int panel_y,
         Mobs* projectiles = from_player
             ? &state->player_projectiles[level] : &state->mob_projectiles[level];
         int (*directions)[MAX_PLAYER_PROJECTILES][2] = from_player
-            ? state->player_projectile_directions : state->mob_projectile_directions;
+            ? state->player_projectile_directions : state->mob_projectile_dirs;
         for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
             if (!projectiles->mask[i]) {
                 continue;
@@ -3167,7 +3193,7 @@ void puf_render(Craftax* env) {
             : &env->state.mob_projectiles[level];
         int (*directions)[MAX_PLAYER_PROJECTILES][2] = from_player
             ? env->state.player_projectile_directions
-            : env->state.mob_projectile_directions;
+            : env->state.mob_projectile_dirs;
         for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
             if (!projectiles->mask[i]) {
                 continue;
