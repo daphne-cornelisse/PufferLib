@@ -1906,6 +1906,7 @@ void puf_step(Craftax* env) {
     memcpy(initial_achievements, state->achievements, sizeof(initial_achievements));
 
     int initial_armour = equipped_armour(state);
+    // float initial_health = state->player_health;
 
     // Sleep/rest used to return control every tick as forced NOOPs (~100
     // agent steps). Collapse those ticks into this one puf_step so credit
@@ -2704,22 +2705,22 @@ void puf_step(Craftax* env) {
     done = state->player_health <= 0.0f || state->timestep >= DEFAULT_MAX_TIMESTEPS;
     } while (!done && (state->is_sleeping || state->is_resting));
 
-    float reward = 0.0f;
+    float achievement_reward = 0.0f;
     for (int i = 0; i < NUM_ACHIEVEMENTS; i++) {
         int delta = state->achievements[i] - initial_achievements[i];
-        reward += delta * ACHIEVEMENT_REWARD_MAP[i];
+        achievement_reward += delta * ACHIEVEMENT_REWARD_MAP[i];
     }
-    //reward += (state->player_health - initial_health) * 0.1f;
-    reward += (equipped_armour(state) - initial_armour);
+    float reward = achievement_reward + (equipped_armour(state) - initial_armour);
+    // reward += (state->player_health - initial_health) * 0.1f;
     if (state->player_health <= 0.0f) {
-        reward = -1.0f; // dead
+        reward = -1.0f; // Dead
     }
 
     memcpy(env->achievements, env->state.achievements, sizeof(env->achievements));
 
     env->agents[0].rewards[0] = reward;
     env->agents[0].terminals[0] = done ? 1.0f : 0.0f;
-    env->episode_return_accum += reward;
+    env->episode_return_accum += achievement_reward;
     env->episode_length_accum += 1;
 
     if (done) {
