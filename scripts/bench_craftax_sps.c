@@ -5,13 +5,7 @@
 //     scripts/bench_craftax_sps.c raylib-5.5_linux_amd64/lib/libraylib.a \
 //     -lm -lpthread -lGL -ldl -o bench_craftax_sps
 //
-//   clang -O2 -mavx2 -mfma -fopenmp -std=c11 -D_POSIX_C_SOURCE=200809L -DPLATFORM_DESKTOP \
-//     -DBENCH_CLEAN -I. -Isrc -Ivendor -Iocean/craftax_clean -Iraylib-5.5_linux_amd64/include \
-//     scripts/bench_craftax_sps.c raylib-5.5_linux_amd64/lib/libraylib.a \
-//     -lm -lpthread -lGL -ldl -o bench_craftax_clean_sps
-//
 //   ./bench_craftax_sps [n_envs=8192] [n_threads=1]
-//   ./bench_craftax_clean_sps 8192 16
 
 #define _POSIX_C_SOURCE 200809L
 #include <stdint.h>
@@ -21,21 +15,10 @@
 #include <time.h>
 #include <omp.h>
 
-#ifdef BENCH_CLEAN
-#include "ocean/craftax_clean/craftax_clean.h"
-#define BENCH_OBS OBS_SIZE
-#define BENCH_ACTIONS NUM_ACTIONS
-#define BENCH_ENV_NAME "craftax_clean"
-#else
-#define CRAFTAX_ENABLE_ENV_IMPL
 #include "ocean/craftax/craftax.h"
-#include "ocean/craftax/step_crafting.h"
-#include "ocean/craftax/step_update_mobs.h"
-#include "ocean/craftax/step_spawn_mobs.h"
-#define BENCH_OBS CRAFTAX_OBS_SIZE
-#define BENCH_ACTIONS CRAFTAX_NUM_ACTIONS
+#define BENCH_OBS OBS_SIZE
+#define BENCH_ACTIONS ATN_DIM
 #define BENCH_ENV_NAME "craftax"
-#endif
 
 static double now_s(void) {
     struct timespec ts;
