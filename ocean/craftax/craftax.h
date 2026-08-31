@@ -905,7 +905,7 @@ void write_mob_obs(float* obs, const State* state, const Mobs* mobs, int slots,
         int dest_col = state->player_position[1] + local_col - half_c;
         int dest_visible = dest_row >= 0 && dest_row < MAP_SIZE
             && dest_col >= 0 && dest_col < MAP_SIZE
-            && state->light_map[level][dest_row][dest_col] > 12;
+            && state->light_map[level][dest_row][dest_col] > VISIBLE_LIGHT_THRESHOLD;
         float value = 0.0f;
         if (on_screen && dest_visible) {
             value = (float)(mobs->type_id[i] + 1);
@@ -1701,35 +1701,23 @@ void compute_observations(Craftax* env) {
     int level = state->player_level;
     int row = state->player_position[0];
     int col = state->player_position[1];
-    const int row_radius = OBS_ROWS / 2;
-    const int col_radius = OBS_COLS / 2;
-    int r0 = -row_radius;
-    int r1 = row_radius;
-    int c0 = -col_radius;
-    int c1 = col_radius;
-    if (row + r0 < 0) {
-        r0 = -row;
-    }
-    if (row + r1 >= MAP_SIZE) {
-        r1 = MAP_SIZE - 1 - row;
-    }
-    if (col + c0 < 0) {
-        c0 = -col;
-    }
-    if (col + c1 >= MAP_SIZE) {
-        c1 = MAP_SIZE - 1 - col;
-    }
+    int row_radius = OBS_ROWS / 2;
+    int col_radius = OBS_COLS / 2;
+    int r0 = clampi(-row, -row_radius, row_radius);
+    int r1 = clampi(MAP_SIZE - 1 - row, -row_radius, row_radius);
+    int c0 = clampi(-col, -col_radius, col_radius);
+    int c1 = clampi(MAP_SIZE - 1 - col, -col_radius, col_radius);
 
+    // Add map information
     for (int r = r0; r <= r1; r++) {
         int obs_row = row + r;
         uint8_t* map_row = state->map[level][obs_row];
         uint8_t* item_row = state->item_map[level][obs_row];
         uint8_t* light_row = state->light_map[level][obs_row];
-        float* tile = obs + ((r + row_radius) * OBS_COLS + (c0 + col_radius))
-            * OBS_TILE_CHANNELS;
+        float* tile = obs + ((r + row_radius) * OBS_COLS + (c0 + col_radius)) * OBS_TILE_CHANNELS;
         for (int c = c0; c <= c1; c++) {
             int obs_col = col + c;
-            if (light_row[obs_col] > 12) {
+            if (light_row[obs_col] > VISIBLE_LIGHT_THRESHOLD) {
                 tile[0] = map_row[obs_col];
                 tile[1] = item_row[obs_col] + 1;
                 tile[2] = 1.0f;
@@ -1737,7 +1725,7 @@ void compute_observations(Craftax* env) {
             tile += OBS_TILE_CHANNELS;
         }
     }
-
+    // Add mob information
     write_mob_obs(obs, state, &state->melee_mobs[level], MAX_MELEE_MOBS, 0);
     write_mob_obs(obs, state, &state->passive_mobs[level], MAX_PASSIVE_MOBS, 1);
     write_mob_obs(obs, state, &state->ranged_mobs[level], MAX_RANGED_MOBS, 2);
@@ -1746,6 +1734,7 @@ void compute_observations(Craftax* env) {
 
     int obs_idx = map_obs;
 
+    // Inventory and player stats
     obs[obs_idx++] = sqrtf(state->inventory.wood) / 10.0f;
     obs[obs_idx++] = sqrtf(state->inventory.stone) / 10.0f;
     obs[obs_idx++] = sqrtf(state->inventory.coal) / 10.0f;
@@ -2941,7 +2930,7 @@ static void draw_agent_obs(Craftax* env, int panel_x, int panel_y,
             int dst_x = grid_x + vc * px;
             int dst_y = grid_y + vr * px;
             int lit = (unsigned)wr < MAP_SIZE && (unsigned)wc < MAP_SIZE
-                && state->light_map[level][wr][wc] > 12;
+                && state->light_map[level][wr][wc] > VISIBLE_LIGHT_THRESHOLD;
             if (!lit) {
                 DrawRectangle(dst_x, dst_y, px, px, BLACK);
                 continue;
@@ -2978,7 +2967,7 @@ static void draw_agent_obs(Craftax* env, int panel_x, int panel_y,
             int vr = row - pr + rr;
             int vc = col - pc + rc;
             int lit = (unsigned)row < MAP_SIZE && (unsigned)col < MAP_SIZE
-                && state->light_map[level][row][col] > 12;
+                && state->light_map[level][row][col] > VISIBLE_LIGHT_THRESHOLD;
             if (vr < 0 || vr >= OBS_ROWS || vc < 0 || vc >= OBS_COLS || !lit) {
                 continue;
             }
