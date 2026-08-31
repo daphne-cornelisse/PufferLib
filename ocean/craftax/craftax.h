@@ -2089,18 +2089,16 @@ void puf_step(Craftax* env) {
         }
     }
 
-    // Check interactions with the world (trees, rocks, mobs, etc.).
     Rng interact_rng = rng_key(&step_rng);
     int direction[2];
+    action_to_direction(state->player_direction, direction);
+    row = state->player_position[0] + direction[0];
+    col = state->player_position[1] + direction[1];
+    bool in_bounds = (unsigned)row < MAP_SIZE && (unsigned)col < MAP_SIZE;
+    level = state->player_level;
+    inv = &state->inventory;
 
     if (action == ACTION_DO) {
-        action_to_direction(state->player_direction, direction);
-        row = state->player_position[0] + direction[0];
-        col = state->player_position[1] + direction[1];
-        bool in_bounds = row >= 0 && row < MAP_SIZE && col >= 0 && col < MAP_SIZE;
-        level = state->player_level;
-        inv = &state->inventory;
-
         bool did_attack = false;
         int attack_class;
         int attack_slot;
@@ -2108,7 +2106,7 @@ void puf_step(Craftax* env) {
             // Compute damage based on sword level and player stats.
             Mobs* attack_mobs = mobs_for_class(state, level, attack_class);
             static const float base_damage[5] = {1, 2, 3, 5, 8};
-            float base = base_damage[clampi(state->inventory.sword, 0, 4)];
+            float base = base_damage[clampi(inv->sword, 0, 4)];
             float physical = base * (1.0f + 0.25f * (state->player_strength - 1));
             float magic = base * 0.5f * (1.0f + 0.05f * (state->player_intelligence - 1));
             Damage vector = {
@@ -2175,21 +2173,21 @@ void puf_step(Craftax* env) {
             } else if (block == BLOCK_CHEST) {
                 set_block(state, level, row, col, BLOCK_PATH);
                 Rng chest_rng = chest_key;
-
-                inv = &state->inventory;
                 rng_key(&chest_rng);
                 randint(rng_key(&chest_rng), 0u, 1, 6);
                 bool torch = rng_f32(rng_key(&chest_rng), 0) < 0.6f;
                 int torches = randint(rng_key(&chest_rng), 0u, 4, 8);
                 bool ore = rng_f32(rng_key(&chest_rng), 0) < 0.6f;
-                const float ore_weights[5] = {0.3f, 0.3f, 0.15f, 0.125f, 0.125f};
+                float ore_weights[5] = {0.3f, 0.3f, 0.15f, 0.125f, 0.125f};
                 int ore_id = choose_weighted_key(rng_key(&chest_rng), ore_weights, 5);
                 Rng amount_key = rng_key(&chest_rng);
-                int coal = randint(amount_key, 0u, 1, 4);
-                int iron = randint(amount_key, 0u, 1, 3);
-                int diamond = randint(amount_key, 0u, 1, 2);
-                int sapphire = randint(amount_key, 0u, 1, 2);
-                int ruby = randint(amount_key, 0u, 1, 2);
+                int ore_amt[5] = {
+                    randint(amount_key, 0u, 1, 4),
+                    randint(amount_key, 0u, 1, 3),
+                    randint(amount_key, 0u, 1, 2),
+                    randint(amount_key, 0u, 1, 2),
+                    randint(amount_key, 0u, 1, 2),
+                };
                 bool potion = rng_f32(rng_key(&chest_rng), 0) < 0.5f;
                 int potion_id = randint(rng_key(&chest_rng), 0u, 0, 6);
                 int potion_amount = randint(rng_key(&chest_rng), 0u, 1, 3);
@@ -2197,46 +2195,31 @@ void puf_step(Craftax* env) {
                 int arrow_amount = randint(rng_key(&chest_rng), 0u, 1, 5);
                 bool tool = rng_f32(rng_key(&chest_rng), 0) < 0.2f;
                 int tool_id = randint(rng_key(&chest_rng), 0u, 0, 2);
-                const float tool_weights[4] = {0.4f, 0.3f, 0.2f, 0.1f};
+                float tool_weights[4] = {0.4f, 0.3f, 0.2f, 0.1f};
                 int pickaxe = choose_weighted_key(rng_key(&chest_rng), tool_weights, 4) + 1;
                 int sword = choose_weighted_key(rng_key(&chest_rng), tool_weights, 4) + 1;
-                level = state->player_level;
-
-                if (torch) {
-                    inv->torches += torches;
+                int* ore_inv[5] = {
+                    &inv->coal, &inv->iron, &inv->diamond, &inv->sapphire, &inv->ruby,
+                };
+                inv->torches += torch * torches;
+                if (ore) {
+                    *ore_inv[ore_id] += ore_amt[ore_id];
                 }
-                if (ore && ore_id == 0) {
-                    inv->coal += coal;
-                }
-                if (ore && ore_id == 1) {
-                    inv->iron += iron;
-                }
-                if (ore && ore_id == 2) {
-                    inv->diamond += diamond;
-                }
-                if (ore && ore_id == 3) {
-                    inv->sapphire += sapphire;
-                }
-                if (ore && ore_id == 4) {
-                    inv->ruby += ruby;
-                }
-                if (potion) {
-                    inv->potions[potion_id] += potion_amount;
-                }
-                if (arrows) {
-                    inv->arrows += arrow_amount;
-                }
+                inv->potions[potion_id] += potion * potion_amount;
+                inv->arrows += arrows * arrow_amount;
                 if (tool && tool_id == 0 && pickaxe > inv->pickaxe) {
                     inv->pickaxe = pickaxe;
                 }
                 if (tool && tool_id == 1 && sword > inv->sword) {
                     inv->sword = sword;
                 }
-                if (state->player_level == 1 && !state->chests_opened[level]) {
-                    inv->bow = 1;
-                }
-                if (!state->chests_opened[level] && (state->player_level == 3 || state->player_level == 4)) {
-                    inv->books += 1;
+                if (!state->chests_opened[level]) {
+                    if (level == 1) {
+                        inv->bow = 1;
+                    }
+                    if (level == 3 || level == 4) {
+                        inv->books += 1;
+                    }
                 }
                 state->achievements[ACH_OPEN_CHEST] = 1;
             } else if (block == BLOCK_NECROMANCER && boss_vulnerable(state) && fighting_boss(state)) {
@@ -2251,15 +2234,10 @@ void puf_step(Craftax* env) {
         }
     }
 
-    action_to_direction(state->player_direction, direction);
-    row = state->player_position[0] + direction[0];
-    col = state->player_position[1] + direction[1];
-    if (row >= 0 && row < MAP_SIZE && col >= 0 && col < MAP_SIZE) {
-        level = state->player_level;
+    if (in_bounds) {
         int block = state->map[level][row][col];
         bool occupied = is_solid_block(block) || state->item_map[level][row][col] != ITEM_NONE
             || mob_at(state, level, row, col);
-        inv = &state->inventory;
 
         if (action == ACTION_PLACE_TABLE && !occupied && inv->wood >= 2) {
             set_block(state, level, row, col, BLOCK_CRAFTING_TABLE);
@@ -2282,12 +2260,12 @@ void puf_step(Craftax* env) {
             state->item_map[level][row][col] = ITEM_TORCH;
             for (int dr = -4; dr <= 4; dr++) {
                 int light_row = row + dr;
-                if (light_row < 0 || light_row >= MAP_SIZE) {
+                if ((unsigned)light_row >= MAP_SIZE) {
                     continue;
                 }
                 for (int dc = -4; dc <= 4; dc++) {
                     int light_col = col + dc;
-                    if (light_col < 0 || light_col >= MAP_SIZE) {
+                    if ((unsigned)light_col >= MAP_SIZE) {
                         continue;
                     }
                     float torch = 1.0f - sqrtf(dr * dr + dc * dc) / 5.0f;
@@ -2321,25 +2299,24 @@ void puf_step(Craftax* env) {
         }
     }
 
-    action_to_direction(state->player_direction, direction);
-    if (direction[0] == 0 && direction[1] == 0) {
-        direction[0] = 1;
+    int fire_row = direction[0];
+    int fire_col = direction[1];
+    if (fire_row == 0 && fire_col == 0) {
+        fire_row = 1;
     }
-
-    if (action == ACTION_SHOOT_ARROW && state->inventory.bow > 0
-            && state->inventory.arrows > 0) {
+    int prow = state->player_position[0];
+    int pcol = state->player_position[1];
+    if (action == ACTION_SHOOT_ARROW && inv->bow > 0 && inv->arrows > 0) {
         bool fired = spawn_projectile(state, true, PROJECTILE_ARROW2,
-            state->player_position[0], state->player_position[1],
-            direction[0], direction[1]);
+            prow, pcol, fire_row, fire_col);
         if (fired) {
-            state->inventory.arrows -= 1;
+            inv->arrows -= 1;
             state->achievements[ACH_FIRE_BOW] = 1;
         }
     } else if (action == ACTION_CAST_FIREBALL && state->learned_spells[0]
             && state->player_mana >= 2) {
         bool cast = spawn_projectile(state, true, PROJECTILE_FIREBALL,
-            state->player_position[0], state->player_position[1],
-            direction[0], direction[1]);
+            prow, pcol, fire_row, fire_col);
         if (cast) {
             state->player_mana -= 2;
             state->achievements[ACH_CAST_FIREBALL] = 1;
@@ -2347,8 +2324,7 @@ void puf_step(Craftax* env) {
     } else if (action == ACTION_CAST_ICEBALL && state->learned_spells[1]
             && state->player_mana >= 2) {
         bool cast = spawn_projectile(state, true, PROJECTILE_ICEBALL,
-            state->player_position[0], state->player_position[1],
-            direction[0], direction[1]);
+            prow, pcol, fire_row, fire_col);
         if (cast) {
             state->player_mana -= 2;
             state->achievements[ACH_CAST_ICEBALL] = 1;
@@ -2356,9 +2332,9 @@ void puf_step(Craftax* env) {
     }
 
     int potion = action - ACTION_DRINK_POTION_RED;
-    if (potion >= 0 && potion < NUM_POTIONS && state->inventory.potions[potion] > 0) {
+    if (potion >= 0 && potion < NUM_POTIONS && inv->potions[potion] > 0) {
         int effect = state->potion_mapping[potion];
-        state->inventory.potions[potion] -= 1;
+        inv->potions[potion] -= 1;
         if (effect == 0) {
             state->player_health += 8.0f;
         } else if (effect == 1) {
@@ -2377,7 +2353,7 @@ void puf_step(Craftax* env) {
 
     Rng book_rng = rng_key(&step_rng);
 
-    bool reading = action == ACTION_READ_BOOK && state->inventory.books > 0;
+    bool reading = action == ACTION_READ_BOOK && inv->books > 0;
     Rng unused;
     Rng choice_key;
     rng_split(book_rng, &unused, &choice_key);
@@ -2389,31 +2365,24 @@ void puf_step(Craftax* env) {
         spell = r <= (p0 / (p0 + p1)) ? 0 : 1;
     }
     if (reading) {
-        state->inventory.books -= 1;
+        inv->books -= 1;
         state->learned_spells[spell] = 1;
         state->achievements[spell == 0 ? ACH_LEARN_FIREBALL : ACH_LEARN_ICEBALL] = 1;
     }
     Rng enchant_rng = rng_key(&step_rng);
 
-    action_to_direction(state->player_direction, direction);
-    level = state->player_level;
-    int erow = state->player_position[0] + direction[0];
-    int ecol = state->player_position[1] + direction[1];
     int eblock = 0;
-    if (erow >= 0 && erow < MAP_SIZE && ecol >= 0 && ecol < MAP_SIZE) {
-        eblock = state->map[level][erow][ecol];
+    if (in_bounds) {
+        eblock = state->map[level][row][col];
     }
     int enchant = eblock == BLOCK_ENCHANTMENT_TABLE_FIRE ? 1 :
         (eblock == BLOCK_ENCHANTMENT_TABLE_ICE ? 2 : 0);
-    int gems = enchant == 1 ? state->inventory.ruby : state->inventory.sapphire;
+    int gems = enchant == 1 ? inv->ruby : inv->sapphire;
     bool could = state->player_mana >= 9 && enchant != 0 && gems >= 1;
-    bool enchanting_sword = could && action == ACTION_ENCHANT_SWORD && state->inventory.sword > 0;
-    bool enchanting_bow = could && action == ACTION_ENCHANT_BOW && state->inventory.bow > 0;
-    int armour_count = 0;
-    for (int i = 0; i < 4; i++) {
-        armour_count += state->inventory.armour[i];
-    }
-    bool enchanting_armour = could && action == ACTION_ENCHANT_ARMOUR && armour_count > 0;
+    bool enchanting_sword = could && action == ACTION_ENCHANT_SWORD && inv->sword > 0;
+    bool enchanting_bow = could && action == ACTION_ENCHANT_BOW && inv->bow > 0;
+    bool enchanting_armour = could && action == ACTION_ENCHANT_ARMOUR
+        && equipped_armour(state) > 0;
     Rng armour_key = rng_key(&enchant_rng);
     int unenchanted = 0;
     for (int i = 0; i < 4; i++) {
@@ -2439,9 +2408,9 @@ void puf_step(Craftax* env) {
     bool enchanting = enchanting_sword || enchanting_bow || enchanting_armour;
     if (enchanting) {
         if (enchant == 1) {
-            state->inventory.ruby -= 1;
+            inv->ruby -= 1;
         } else {
-            state->inventory.sapphire -= 1;
+            inv->sapphire -= 1;
         }
         state->player_mana -= 9;
     }
@@ -2470,9 +2439,8 @@ void puf_step(Craftax* env) {
     action_to_direction(action, direction);
     int proposed_row = state->player_position[0] + direction[0];
     int proposed_col = state->player_position[1] + direction[1];
-    level = state->player_level;
-    bool valid = proposed_row >= 0 && proposed_row < MAP_SIZE
-        && proposed_col >= 0 && proposed_col < MAP_SIZE;
+    bool valid = (unsigned)proposed_row < MAP_SIZE
+        && (unsigned)proposed_col < MAP_SIZE;
     if (valid) {
         int pblock = state->map[level][proposed_row][proposed_col];
         valid = !is_solid_block(pblock) && pblock != BLOCK_WATER && pblock != BLOCK_LAVA
@@ -2487,8 +2455,6 @@ void puf_step(Craftax* env) {
     }
 
     Rng mobs_rng = rng_key(&step_rng);
-
-    level = state->player_level;
     rng_key(&mobs_rng);
     move_melee_slot(state, level, 0, &mobs_rng);
     move_melee_slot(state, level, 1, &mobs_rng);
@@ -2506,8 +2472,6 @@ void puf_step(Craftax* env) {
     update_projectile_set(state, true);
 
     Rng spawn_rng = rng_key(&step_rng);
-
-    level = state->player_level;
     bool boss = fighting_boss(state);
     int coeff = 1 + (state->monsters_killed[level] < MONSTERS_KILLED_TO_CLEAR_LEVEL ? 2 : 0);
     if (boss) {
@@ -2600,14 +2564,9 @@ void puf_step(Craftax* env) {
         }
 
         state->growing_plants_age[plant] += 1;
-        if (state->growing_plants_age[plant] < 600) {
-            continue;
-        }
-
-        int row = state->growing_plants_pos[plant][0];
-        int col = state->growing_plants_pos[plant][1];
         if (state->growing_plants_age[plant] >= 600) {
-            set_block(state, 0, row, col, BLOCK_RIPE_PLANT);
+            set_block(state, 0, state->growing_plants_pos[plant][0],
+                state->growing_plants_pos[plant][1], BLOCK_RIPE_PLANT);
         }
     }
 
