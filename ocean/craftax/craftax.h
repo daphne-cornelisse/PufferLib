@@ -2490,9 +2490,17 @@ void puf_step(Craftax* env) {
         {0.1f, 0.06f, 0.05f, 0.0f},
     };
 
+    // Mobs despawn if they are too far from the player. This is to prevent mobs from
+    // accumulating in the distance and slowing down the game.
+    int despawn_radius = MOB_DESPAWN_DISTANCE * MOB_DESPAWN_DISTANCE;
+    float night = 1.0f - state->light_level;
+    float melee_chance = chances[level][1] + chances[level][3] * night * night;
+    int hostile = boss ? state->boss_progress : level;
+
     int passive_count;
     int passive_slot;
-    count_and_empty(&state->passive_mobs[level], MAX_PASSIVE_MOBS, &passive_count, &passive_slot);
+    count_and_empty(&state->passive_mobs[level], MAX_PASSIVE_MOBS,
+        &passive_count, &passive_slot);
     Rng passive_prob = rng_key(&spawn_rng);
     Rng passive_pos = rng_key(&spawn_rng);
     int passive_type = floor_mob_type(level, MOB_PASSIVE);
@@ -2500,20 +2508,19 @@ void puf_step(Craftax* env) {
 
     int melee_count;
     int melee_slot;
-    count_and_empty(&state->melee_mobs[level], MAX_MELEE_MOBS, &melee_count, &melee_slot);
-    int melee_type = floor_mob_type(boss ? state->boss_progress : level, MOB_MELEE);
+    count_and_empty(&state->melee_mobs[level], MAX_MELEE_MOBS,
+        &melee_count, &melee_slot);
     Rng melee_prob = rng_key(&spawn_rng);
-    float night = 1.0f - state->light_level;
-    float melee_chance = chances[level][1] + chances[level][3] * night * night;
     Rng melee_pos = rng_key(&spawn_rng);
+    int melee_type = floor_mob_type(hostile, MOB_MELEE);
     state->melee_mobs[level].type_id[melee_slot] = melee_type;
 
     int ranged_count;
     int ranged_slot;
     count_and_empty(&state->ranged_mobs[level], MAX_RANGED_MOBS, &ranged_count, &ranged_slot);
-    int ranged_type = floor_mob_type(boss ? state->boss_progress : level, MOB_RANGED);
     Rng ranged_prob = rng_key(&spawn_rng);
     Rng ranged_pos = rng_key(&spawn_rng);
+    int ranged_type = floor_mob_type(hostile, MOB_RANGED);
     state->ranged_mobs[level].type_id[ranged_slot] = ranged_type;
 
     bool try_passive = !boss && passive_count < MAX_PASSIVE_MOBS
@@ -2524,14 +2531,14 @@ void puf_step(Craftax* env) {
         && rng_f32(ranged_prob, 0) < chances[level][2] * coeff;
     if (try_passive || try_melee || try_ranged) {
         int min_hostile = boss ? -1 : 81;
-        int max_hostile = boss ? 37 : MOB_DESPAWN_DISTANCE * MOB_DESPAWN_DISTANCE;
+        int max_hostile = boss ? 37 : despawn_radius;
         int spawn_rows[729];
         int spawn_cols[729];
         int row;
         int col;
         if (try_passive) {
             int n = collect_spawn_cells(
-                state, level, 9, MOB_DESPAWN_DISTANCE * MOB_DESPAWN_DISTANCE,
+                state, level, 9, despawn_radius,
                 false, false, spawn_rows, spawn_cols);
             if (pick_spawn_cell(spawn_rows, spawn_cols, n, passive_pos, &row, &col)) {
                 spawn_into_slot(state, level, &state->passive_mobs[level],
@@ -2984,9 +2991,8 @@ static void draw_agent_obs(Craftax* env, int panel_x, int panel_y,
     } else if (t > 0.0f) {
         vc = (Color){fade, 255, fade, 255};
     }
-    const char* vlabel = TextFormat("V(o, h) = %.2f", v);
-    int tw = MeasureText(vlabel, 18);
-    DrawText(vlabel, panel_x + (panel_w - tw) / 2,
+    char* vlabel = TextFormat("V(o, h) = %.2f", v);
+    DrawText(vlabel, panel_x + (panel_w - MeasureText(vlabel, 18)) / 2,
         grid_y + OBS_ROWS * px + 10, 18, vc);
 }
 
