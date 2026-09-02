@@ -1815,8 +1815,10 @@ static void render_draw_encounter_status_text(RenderClient* rc) {
 }
 
 static RenderClient* render_make_client(OsrsEnv* env) {
+    double t0 = osrs_now_ms();
     osrs_asset_require_group(OSRS_ASSET_GROUP_CORE);
     osrs_asset_require_group(OSRS_ASSET_GROUP_GUI);
+    osrs_time_log("require_group core+gui", &t0);
 
     RenderClient* rc = (RenderClient*)calloc(1, sizeof(RenderClient));
     rc->ticks_per_second = RENDER_DEFAULT_GAME_TICKS_PER_SECOND;
@@ -1925,6 +1927,7 @@ static RenderClient* render_make_client(OsrsEnv* env) {
     rc->context_menu.hover_idx = -1;
 
     gui_load_sprites(&rc->gui);
+    osrs_time_log("gui_load_sprites", &t0);
 
     return rc;
 }

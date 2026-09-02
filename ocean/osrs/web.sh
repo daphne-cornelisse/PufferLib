@@ -27,6 +27,18 @@ if [ "${#OSRS_PRELOAD[@]}" -eq 0 ]; then
     exit 1
 fi
 
+# Inferno route graphs are optional: not in the required tarball, but the
+# browser pack should ship them so WASM does not rebuild LOS at startup.
+if [ "$ENV" = "osrs_inferno" ]; then
+    INF_ROUTE_BAKE="ocean/osrs/data/inferno_route.bin"
+    if [ -f "$INF_ROUTE_BAKE" ]; then
+        OSRS_PRELOAD+=(--preload-file "$INF_ROUTE_BAKE@$INF_ROUTE_BAKE")
+        echo "Preloading Inferno route bake: $INF_ROUTE_BAKE"
+    else
+        echo "Warning: $INF_ROUTE_BAKE missing; Inferno web will rebuild route topology at runtime" >&2
+    fi
+fi
+
 mkdir -p "build/web/$ENV"
 echo "Compiling $ENV for web..."
 emcc \
@@ -40,9 +52,16 @@ emcc \
     -sUSE_GLFW=3 -sUSE_WEBGL2=1 -sASYNCIFY -sFILESYSTEM -sFORCE_FILESYSTEM=1 \
     -sLZ4=1 \
     --js-library vendor/puf_web_vsync.js \
-    --shell-file tools/web/osrs_shell.html \
+    --shell-file ocean/osrs/osrs_shell.html \
     -sINITIAL_MEMORY=512MB -sALLOW_MEMORY_GROWTH -sSTACK_SIZE=512KB \
     -DPLATFORM_WEB -DGRAPHICS_API_OPENGL_ES3 \
     "${OSRS_PRELOAD[@]}" \
     "${EXTRA_CFLAGS[@]}"
 echo "Built: build/web/$ENV/game.html"
+WEBSITE_DIR="${PUFFER_WEBSITE_DIR:-../docker/puffer.ai}"
+WEBSITE_ASSETS="$WEBSITE_DIR/docs/assets"
+if [ -d "$WEBSITE_ASSETS" ]; then
+    mkdir -p "$WEBSITE_ASSETS/$ENV"
+    cp -a "build/web/$ENV/." "$WEBSITE_ASSETS/$ENV/"
+    echo "Published: $WEBSITE_ASSETS/$ENV/"
+fi
