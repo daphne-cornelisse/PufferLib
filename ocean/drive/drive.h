@@ -33,8 +33,12 @@ typedef float obs_t;
 #define INVALID_POSITION -10000.0f
 
 // Simulation constants
-#define TRAJECTORY_LENGTH 91 // Discretized Waymo scenarios
+#define TRAJECTORY_LENGTH 91 // Discretized Waymo scenarios (micro)
 #define SIM_DT 0.1f
+// I24 is ~5-7 km. At 0.1 s/step, 4096 steps is ~6.8 min — enough to
+// traverse the highway at freeway speed with congestion slack.
+#define MACRO_EPISODE_LENGTH 4096
+#define MACRO_MIN_GOAL_SPAWN_DIST 100.0f
 
 // Simulation regime. Selected at runtime by [env].mode in config/drive.ini.
 #define DRIVE_MICRO 0  // WOMD: many maps, agents from scenario trajectories
@@ -245,6 +249,7 @@ struct Env {
     int expert_static_agent_count;
     int* expert_static_agent_indices;
     int timestep;
+    int max_episode_length;
     int dynamics_model;
     float* map_corners;
     int* grid_cells;
@@ -925,6 +930,44 @@ static void alloc_vehicle_entity(Entity* e) {
     e->respawn_timestep = -1;
 }
 
+// Two farthest lane endpoints = the two ends of the highway corridor.
+static void macro_highway_ends(Drive* env, float* ax, float* ay, float* bx, float* by) {
+    enum { MAX_ENDS = 2048 };
+    float xs[MAX_ENDS];
+    float ys[MAX_ENDS];
+    int n = 0;
+    for (int i = 0; i < env->num_entities && n + 1 < MAX_ENDS; i++) {
+        Entity* e = &env->entities[i];
+        if (e->type != ROAD_LANE || e->array_size < 2) continue;
+        xs[n] = e->traj_x[0];
+        ys[n] = e->traj_y[0];
+        n++;
+        xs[n] = e->traj_x[e->array_size - 1];
+        ys[n] = e->traj_y[e->array_size - 1];
+        n++;
+    }
+    *ax = *ay = *bx = *by = 0.0f;
+    if (n < 2) return;
+    float best = -1.0f;
+    int ia = 0, ib = 1;
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            float dx = xs[j] - xs[i];
+            float dy = ys[j] - ys[i];
+            float d2 = dx * dx + dy * dy;
+            if (d2 > best) {
+                best = d2;
+                ia = i;
+                ib = j;
+            }
+        }
+    }
+    *ax = xs[ia];
+    *ay = ys[ia];
+    *bx = xs[ib];
+    *by = ys[ib];
+}
+
 static int point_along_lane(Entity* lane, float dist, float* x, float* y, float* heading) {
     float rem = dist;
     for (int j = 0; j < lane->array_size - 1; j++) {
@@ -989,6 +1032,7 @@ static void spawn_macro_agents(Drive* env) {
     if (n_lanes == 0 || total_len <= 0.0f) {
         free(lane_len);
         free(lane_idx);
+        env->max_episode_length = MACRO_EPISODE_LENGTH;
         for (int i = 0; i < n_agents; i++) {
             alloc_vehicle_entity(&env->entities[i]);
             env->entities[i].traj_x[0] = INVALID_POSITION;
@@ -997,33 +1041,47 @@ static void spawn_macro_agents(Drive* env) {
         return;
     }
 
+    float end_ax, end_ay, end_bx, end_by;
+    macro_highway_ends(env, &end_ax, &end_ay, &end_bx, &end_by);
+    float highway_len = relative_distance_2d(end_ax, end_ay, end_bx, end_by);
+    env->max_episode_length = MACRO_EPISODE_LENGTH;
+    printf("macro: highway %.0fm  ends (%.0f,%.0f)-(%.0f,%.0f)  episode_len=%d\n",
+        highway_len, end_ax, end_ay, end_bx, end_by, env->max_episode_length);
+
     float spacing = total_len / (float)n_agents;
     for (int a = 0; a < n_agents; a++) {
         float target = ((float)a + 0.5f) * spacing;
-        int li = 0;
-        float acc = 0.0f;
-        for (int i = 0; i < n_lanes; i++) {
-            if (acc + lane_len[i] >= target) {
+        float x = 0.0f, y = 0.0f, heading = 0.0f;
+        float goal_x = end_ax, goal_y = end_ay;
+        for (int tries = 0; tries < 16; tries++) {
+            float sample = target + (float)tries * spacing * 0.37f;
+            while (sample >= total_len) sample -= total_len;
+            int li = 0;
+            float acc = 0.0f;
+            for (int i = 0; i < n_lanes; i++) {
+                if (acc + lane_len[i] >= sample) {
+                    li = i;
+                    break;
+                }
+                acc += lane_len[i];
                 li = i;
+            }
+            Entity* lane = &env->entities[lane_idx[li]];
+            point_along_lane(lane, sample - acc, &x, &y, &heading);
+            float hx = cosf(heading);
+            float hy = sinf(heading);
+            float da = (end_ax - x) * hx + (end_ay - y) * hy;
+            float db = (end_bx - x) * hx + (end_by - y) * hy;
+            if (da >= db) {
+                goal_x = end_ax;
+                goal_y = end_ay;
+            } else {
+                goal_x = end_bx;
+                goal_y = end_by;
+            }
+            if (relative_distance_2d(x, y, goal_x, goal_y) >= MACRO_MIN_GOAL_SPAWN_DIST) {
                 break;
             }
-            acc += lane_len[i];
-            li = i;
-        }
-        Entity* lane = &env->entities[lane_idx[li]];
-        float x, y, heading;
-        point_along_lane(lane, target - acc, &x, &y, &heading);
-        float goal_x = lane->traj_x[lane->array_size - 1];
-        float goal_y = lane->traj_y[lane->array_size - 1];
-        float dist_goal = relative_distance_2d(x, y, goal_x, goal_y);
-        if (dist_goal < MIN_DISTANCE_TO_GOAL) {
-            goal_x = lane->traj_x[0];
-            goal_y = lane->traj_y[0];
-            dist_goal = relative_distance_2d(x, y, goal_x, goal_y);
-        }
-        if (dist_goal < MIN_DISTANCE_TO_GOAL) {
-            goal_x = x + 50.0f * cosf(heading);
-            goal_y = y + 50.0f * sinf(heading);
         }
 
         Entity* e = &env->entities[a];
@@ -1054,9 +1112,13 @@ void init(Drive* env) {
         exit(1);
     }
     env->dynamics_model = CLASSIC;
+    env->max_episode_length = TRAJECTORY_LENGTH;
     set_means(env);
     if (env->mode == DRIVE_MACRO) {
         spawn_macro_agents(env);
+        if (env->max_episode_length < MACRO_EPISODE_LENGTH) {
+            env->max_episode_length = MACRO_EPISODE_LENGTH;
+        }
     }
     init_grid_map(env);
     env->vision_range = VISION_RANGE;
@@ -1326,7 +1388,8 @@ void puf_step(Drive* env) {
     }
     env->timestep++;
 
-    if (env->timestep == TRAJECTORY_LENGTH) {
+    int max_t = env->max_episode_length > 0 ? env->max_episode_length : TRAJECTORY_LENGTH;
+    if (env->timestep >= max_t) {
         add_log(env);
         puf_reset(env);
         return;
@@ -1405,6 +1468,8 @@ struct Client {
     Texture2D puffers;
     Vector3 camera_target;
     float camera_zoom;
+    float default_fovy;
+    int follow_agent;
     Camera3D camera;
     Model cars[6];
     int car_assignments[MAX_AGENTS];
@@ -1416,7 +1481,7 @@ Client* make_client(Drive* env) {
     Client* client = (Client*)calloc(1, sizeof(Client));
     client->width = 1280;
     client->height = 704;
-    SetConfigFlags(FLAG_MSAA_4X_HINT);
+    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(client->width, client->height, "PufferLib Ray GPU Drive");
     SetTargetFPS(30);
     client->puffers = LoadTexture("resources/puffers_128.png");
@@ -1432,13 +1497,34 @@ Client* make_client(Drive* env) {
     float map_center_x = 0.0f;
     float map_center_y = 0.0f;
     float span = 200.0f;
+    float span_x = 200.0f;
+    float span_y = 200.0f;
     if (env->map_corners) {
         map_center_x = (env->map_corners[0] + env->map_corners[2]) / 2.0f;
         map_center_y = (env->map_corners[1] + env->map_corners[3]) / 2.0f;
-        float span_x = env->map_corners[2] - env->map_corners[0];
-        float span_y = env->map_corners[3] - env->map_corners[1];
+        span_x = env->map_corners[2] - env->map_corners[0];
+        span_y = env->map_corners[3] - env->map_corners[1];
         span = span_x > span_y ? span_x : span_y;
         if (span < 200.0f) span = 200.0f;
+        if (span_x < 200.0f) span_x = 200.0f;
+        if (span_y < 200.0f) span_y = 200.0f;
+    }
+    client->camera.up = (Vector3){ 0.0f, -1.0f, 0.0f };
+    client->camera_zoom = 1.0f;
+    client->follow_agent = 0;
+    if (env->mode == DRIVE_MACRO) {
+        float aspect = client->width / (client->height > 1.0f ? client->height : 1.0f);
+        float fovy = span_y;
+        if (fovy * aspect < span_x) fovy = span_x / aspect;
+        fovy *= 1.08f;
+        client->default_fovy = fovy;
+        client->default_camera_target = (Vector3){ map_center_x, map_center_y, 0.0f };
+        client->default_camera_position = (Vector3){ map_center_x, map_center_y, 400.0f };
+        client->camera.position = client->default_camera_position;
+        client->camera.target = client->default_camera_target;
+        client->camera.fovy = fovy;
+        client->camera.projection = CAMERA_ORTHOGRAPHIC;
+        return client;
     }
     Vector3 target_pos = { map_center_x, map_center_y, 1.0f };
     float cam_z = span * 0.85f;
@@ -1455,12 +1541,11 @@ Client* make_client(Drive* env) {
         cam_z
     };
     client->default_camera_target = target_pos;
+    client->default_fovy = 45.0f;
     client->camera.position = client->default_camera_position;
     client->camera.target = client->default_camera_target;
-    client->camera.up = (Vector3){ 0.0f, -1.0f, 0.0f };  // Y is up
     client->camera.fovy = 45.0f;
     client->camera.projection = CAMERA_PERSPECTIVE;
-    client->camera_zoom = 1.0f;
     return client;
 }
 
@@ -1470,32 +1555,25 @@ void handle_camera_controls(Client* client) {
     static bool is_dragging = false;
     float camera_move_speed = 0.5f;
     
-    // Handle mouse drag for camera movement
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        prev_mouse_pos = GetMousePosition();
+    int pan_down = IsMouseButtonDown(MOUSE_BUTTON_LEFT)
+        || IsMouseButtonDown(MOUSE_BUTTON_RIGHT)
+        || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE);
+    Vector2 current_mouse_pos = GetMousePosition();
+    if (pan_down) {
+        if (is_dragging) {
+            Vector2 delta = {
+                (current_mouse_pos.x - prev_mouse_pos.x) * camera_move_speed,
+                -(current_mouse_pos.y - prev_mouse_pos.y) * camera_move_speed
+            };
+            client->camera.position.x += delta.x;
+            client->camera.position.y += delta.y;
+            client->camera.target.x += delta.x;
+            client->camera.target.y += delta.y;
+        }
         is_dragging = true;
-    }
-    
-    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
-        is_dragging = false;
-    }
-    
-    if (is_dragging) {
-        Vector2 current_mouse_pos = GetMousePosition();
-        Vector2 delta = {
-            (current_mouse_pos.x - prev_mouse_pos.x) * camera_move_speed,
-            -(current_mouse_pos.y - prev_mouse_pos.y) * camera_move_speed
-        };
-
-        // Update camera position (only X and Y)
-        client->camera.position.x += delta.x;
-        client->camera.position.y += delta.y;
-        
-        // Update camera target (only X and Y)
-        client->camera.target.x += delta.x;
-        client->camera.target.y += delta.y;
-
         prev_mouse_pos = current_mouse_pos;
+    } else {
+        is_dragging = false;
     }
 
     // Handle mouse wheel for zoom
@@ -1516,6 +1594,155 @@ void handle_camera_controls(Client* client) {
         client->camera.position.x = client->camera.target.x + direction.x;
         client->camera.position.y = client->camera.target.y + direction.y;
         client->camera.position.z = client->camera.target.z + direction.z;
+    }
+}
+
+// Top-down ortho with up=(0,-1,0): look-at right is world -X, screen down is world +Y.
+static void drive_screen_to_world(Client* client, Vector2 screen, float* x, float* y) {
+    float w = client->width;
+    float h = client->height;
+    if (screen.x > w * 1.25f || screen.y > h * 1.25f) {
+        w = (float)GetRenderWidth();
+        h = (float)GetRenderHeight();
+        if (w < 1.0f) w = 1.0f;
+        if (h < 1.0f) h = 1.0f;
+    }
+    float aspect = w / h;
+    float half_h = client->camera.fovy * 0.5f;
+    float half_w = half_h * aspect;
+    float nx = (screen.x / w) * 2.0f - 1.0f;
+    float ny = (screen.y / h) * 2.0f - 1.0f;
+    *x = client->camera.target.x - nx * half_w;
+    *y = client->camera.target.y + ny * half_h;
+}
+
+static void drive_set_camera_xy(Client* client, float x, float y) {
+    float dz = client->camera.position.z - client->camera.target.z;
+    if (dz == 0.0f) dz = 400.0f;
+    client->camera.position.x = x;
+    client->camera.position.y = y;
+    client->camera.position.z = dz;
+    client->camera.target.x = x;
+    client->camera.target.y = y;
+    client->camera.target.z = 0.0f;
+}
+
+static void drive_set_fovy(Client* client, float fovy) {
+    float min_fovy = 20.0f;
+    float max_fovy = client->default_fovy * 1.5f;
+    if (max_fovy < 200.0f) max_fovy = 200.0f;
+    if (fovy < min_fovy) fovy = min_fovy;
+    if (fovy > max_fovy) fovy = max_fovy;
+    client->camera.fovy = fovy;
+    if (client->default_fovy > 1e-4f) {
+        client->camera_zoom = client->default_fovy / fovy;
+    }
+}
+
+static int drive_in_view(Client* client, float x, float y, float margin) {
+    float half_h = client->camera.fovy * 0.5f + margin;
+    float aspect = client->width / (client->height > 1.0f ? client->height : 1.0f);
+    float half_w = half_h * aspect;
+    float cx = client->camera.target.x;
+    float cy = client->camera.target.y;
+    return x >= cx - half_w && x <= cx + half_w && y >= cy - half_h && y <= cy + half_h;
+}
+
+static int drive_seg_in_view(Client* client, float x0, float y0, float x1, float y1, float margin) {
+    float minx = x0 < x1 ? x0 : x1;
+    float maxx = x0 > x1 ? x0 : x1;
+    float miny = y0 < y1 ? y0 : y1;
+    float maxy = y0 > y1 ? y0 : y1;
+    float half_h = client->camera.fovy * 0.5f + margin;
+    float aspect = client->width / (client->height > 1.0f ? client->height : 1.0f);
+    float half_w = half_h * aspect;
+    float cx = client->camera.target.x;
+    float cy = client->camera.target.y;
+    return maxx >= cx - half_w && minx <= cx + half_w && maxy >= cy - half_h && miny <= cy + half_h;
+}
+
+// MACRO: orthographic map camera. Scroll zooms toward the cursor, drag pans,
+// F follows the selected agent, R resets to the full map.
+static void handle_macro_camera(Client* client, Drive* env) {
+    static Vector2 prev_mouse = {0};
+    static int dragging = 0;
+
+    client->width = (float)GetScreenWidth();
+    client->height = (float)GetScreenHeight();
+    if (client->width < 1.0f) client->width = 1.0f;
+    if (client->height < 1.0f) client->height = 1.0f;
+
+    if (IsKeyPressed(KEY_R)) {
+        drive_set_camera_xy(client, client->default_camera_target.x, client->default_camera_target.y);
+        drive_set_fovy(client, client->default_fovy);
+        client->follow_agent = 0;
+    }
+
+    if (IsKeyPressed(KEY_F) && env->active_agent_count > 0) {
+        client->follow_agent = !client->follow_agent;
+        if (client->follow_agent && client->camera.fovy > 120.0f) {
+            drive_set_fovy(client, 80.0f);
+        }
+    }
+
+    // Hold left/right/middle and move. Do not require IsMouseButtonPressed:
+    // WindowShouldClose() polls input before puf_render, which drops Pressed.
+    int pan_down = IsMouseButtonDown(MOUSE_BUTTON_LEFT)
+        || IsMouseButtonDown(MOUSE_BUTTON_RIGHT)
+        || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE);
+    Vector2 mouse = GetMousePosition();
+    if (pan_down) {
+        if (dragging) {
+            float wx0 = 0.0f, wy0 = 0.0f, wx1 = 0.0f, wy1 = 0.0f;
+            drive_screen_to_world(client, prev_mouse, &wx0, &wy0);
+            drive_screen_to_world(client, mouse, &wx1, &wy1);
+            if (wx0 != wx1 || wy0 != wy1) {
+                client->follow_agent = 0;
+                drive_set_camera_xy(client,
+                    client->camera.target.x + (wx0 - wx1),
+                    client->camera.target.y + (wy0 - wy1));
+            }
+        }
+        dragging = 1;
+        prev_mouse = mouse;
+        SetMouseCursor(MOUSE_CURSOR_RESIZE_ALL);
+    } else {
+        dragging = 0;
+        SetMouseCursor(MOUSE_CURSOR_DEFAULT);
+    }
+
+    float wheel_mouse = GetMouseWheelMove();
+    float wheel = wheel_mouse;
+    if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD)) wheel += 1.0f;
+    if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT)) wheel -= 1.0f;
+    if (wheel != 0.0f) {
+        float factor = 1.0f - wheel * 0.12f;
+        if (factor < 0.5f) factor = 0.5f;
+        if (factor > 1.6f) factor = 1.6f;
+        float wx = 0.0f, wy = 0.0f;
+        int have_anchor = 0;
+        Vector2 mouse = GetMousePosition();
+        if (wheel_mouse != 0.0f) {
+            drive_screen_to_world(client, mouse, &wx, &wy);
+            have_anchor = 1;
+        }
+        drive_set_fovy(client, client->camera.fovy * factor);
+        if (have_anchor) {
+            client->follow_agent = 0;
+            float wx2 = 0.0f, wy2 = 0.0f;
+            drive_screen_to_world(client, mouse, &wx2, &wy2);
+            drive_set_camera_xy(client,
+                client->camera.target.x + (wx - wx2),
+                client->camera.target.y + (wy - wy2));
+        }
+    }
+
+    if (client->follow_agent && env->active_agent_count > 0 && env->active_agent_indices) {
+        int idx = env->human_agent_idx;
+        if (idx < 0 || idx >= env->active_agent_count) idx = 0;
+        int ei = env->active_agent_indices[idx];
+        Entity* a = &env->entities[ei];
+        drive_set_camera_xy(client, a->x, a->y);
     }
 }
 
@@ -1655,6 +1882,7 @@ static void drive_maybe_screenshot(void) {
 }
 
 static void draw_scene(Drive* env, Client* client) {
+    int detailed = client->camera.projection != CAMERA_ORTHOGRAPHIC || client->camera.fovy < 250.0f;
     if (env->map_corners) {
         DrawLine3D((Vector3){env->map_corners[0], env->map_corners[1], 0}, (Vector3){env->map_corners[2], env->map_corners[1], 0}, PUFF_CYAN);
         DrawLine3D((Vector3){env->map_corners[0], env->map_corners[1], 0}, (Vector3){env->map_corners[0], env->map_corners[3], 0}, PUFF_CYAN);
@@ -1684,6 +1912,9 @@ static void draw_scene(Drive* env, Client* client) {
             if ((!is_active_agent && !is_static_agent) || env->entities[i].respawn_timestep != -1) {
                 continue;
             }
+            if (!drive_in_view(client, env->entities[i].x, env->entities[i].y, 20.0f)) {
+                continue;
+            }
 
             Vector3 position = {env->entities[i].x, env->entities[i].y, 1};
             float heading = env->entities[i].heading;
@@ -1693,45 +1924,57 @@ static void draw_scene(Drive* env, Client* client) {
             rlTranslatef(position.x, position.y, position.z);
             rlRotatef(heading * RAD2DEG, 0.0f, 0.0f, 1.0f);
 
-            Model car_model = client->cars[5];
-            if (is_active_agent) {
-                car_model = client->cars[client->car_assignments[i % MAX_AGENTS]];
-            }
-            if (is_active_agent && env->entities[i].collision_state > NO_COLLISION) {
-                car_model = client->cars[0];
-            }
-
             if (agent_index == env->human_agent_idx && agent_index >= 0
                 && !env->entities[i].reached_goal) {
                 draw_agent_obs(env, agent_index);
             }
 
-            BoundingBox bounds = GetModelBoundingBox(car_model);
-            Vector3 model_size = {
-                bounds.max.x - bounds.min.x,
-                bounds.max.y - bounds.min.y,
-                bounds.max.z - bounds.min.z
-            };
-            Vector3 scale = {size.x / model_size.x, size.y / model_size.y, size.z / model_size.z};
-            DrawModelEx(car_model, (Vector3){0, 0, 0}, (Vector3){1, 0, 0}, 90.0f, scale, WHITE);
+            if (detailed) {
+                Model car_model = client->cars[5];
+                if (is_active_agent) {
+                    car_model = client->cars[client->car_assignments[i % MAX_AGENTS]];
+                }
+                if (is_active_agent && env->entities[i].collision_state > NO_COLLISION) {
+                    car_model = client->cars[0];
+                }
+                BoundingBox bounds = GetModelBoundingBox(car_model);
+                Vector3 model_size = {
+                    bounds.max.x - bounds.min.x,
+                    bounds.max.y - bounds.min.y,
+                    bounds.max.z - bounds.min.z
+                };
+                Vector3 scale = {size.x / model_size.x, size.y / model_size.y, size.z / model_size.z};
+                DrawModelEx(car_model, (Vector3){0, 0, 0}, (Vector3){1, 0, 0}, 90.0f, scale, WHITE);
+            } else {
+                Color body = is_active_agent ? PUFF_CYAN : STONE_GRAY;
+                if (is_active_agent && env->entities[i].collision_state > NO_COLLISION) {
+                    body = PUFF_RED;
+                }
+                if (agent_index == env->human_agent_idx) {
+                    body = (Color){255, 214, 64, 255};
+                }
+                DrawCube((Vector3){0, 0, 0}, size.x, size.y, size.z, body);
+            }
             rlPopMatrix();
 
-            float cos_h = env->entities[i].heading_x;
-            float sin_h = env->entities[i].heading_y;
-            float hl = env->entities[i].length * 0.5f;
-            float hw = env->entities[i].width * 0.5f;
-            Vector3 corners[4] = {
-                {position.x + (hl * cos_h - hw * sin_h), position.y + (hl * sin_h + hw * cos_h), position.z},
-                {position.x + (hl * cos_h + hw * sin_h), position.y + (hl * sin_h - hw * cos_h), position.z},
-                {position.x + (-hl * cos_h - hw * sin_h), position.y + (-hl * sin_h + hw * cos_h), position.z},
-                {position.x + (-hl * cos_h + hw * sin_h), position.y + (-hl * sin_h - hw * cos_h), position.z}
-            };
-            for (int j = 0; j < 4; j++) {
-                DrawLine3D(corners[j], corners[(j + 1) % 4], PURPLE);
+            if (detailed) {
+                float cos_h = env->entities[i].heading_x;
+                float sin_h = env->entities[i].heading_y;
+                float hl = env->entities[i].length * 0.5f;
+                float hw = env->entities[i].width * 0.5f;
+                Vector3 corners[4] = {
+                    {position.x + (hl * cos_h - hw * sin_h), position.y + (hl * sin_h + hw * cos_h), position.z},
+                    {position.x + (hl * cos_h + hw * sin_h), position.y + (hl * sin_h - hw * cos_h), position.z},
+                    {position.x + (-hl * cos_h - hw * sin_h), position.y + (-hl * sin_h + hw * cos_h), position.z},
+                    {position.x + (-hl * cos_h + hw * sin_h), position.y + (-hl * sin_h - hw * cos_h), position.z}
+                };
+                for (int j = 0; j < 4; j++) {
+                    DrawLine3D(corners[j], corners[(j + 1) % 4], PURPLE);
+                }
             }
 
             if (!is_active_agent || env->entities[i].valid == 0) continue;
-            if (!IsKeyDown(KEY_LEFT_CONTROL)) {
+            if (detailed && !IsKeyDown(KEY_LEFT_CONTROL)) {
                 DrawSphere((Vector3){env->entities[i].goal_position_x, env->entities[i].goal_position_y, 1}, 0.5f, DARKGREEN);
             }
         }
@@ -1744,6 +1987,9 @@ static void draw_scene(Drive* env, Client* client) {
             float y0 = env->entities[i].traj_y[j];
             float x1 = env->entities[i].traj_x[j + 1];
             float y1 = env->entities[i].traj_y[j + 1];
+            if (!drive_seg_in_view(client, x0, y0, x1, y1, 30.0f)) {
+                continue;
+            }
             if (env->entities[i].type == ROAD_LANE || env->entities[i].type == ROAD_LINE) {
                 Color paint = env->entities[i].type == ROAD_LANE
                     ? (Color){255, 214, 64, 255}
@@ -1752,9 +1998,11 @@ static void draw_scene(Drive* env, Client* client) {
                 continue;
             }
             if (env->entities[i].type != ROAD_EDGE) continue;
-            if (!IsKeyDown(KEY_LEFT_CONTROL)) {
-                draw_road_edge(env, x0, y0, x1, y1);
+            if (!detailed || IsKeyDown(KEY_LEFT_CONTROL)) {
+                DrawLine3D((Vector3){x0, y0, 1.05f}, (Vector3){x1, y1, 1.05f}, (Color){200, 200, 200, 255});
+                continue;
             }
+            draw_road_edge(env, x0, y0, x1, y1);
         }
     }
 
@@ -1775,8 +2023,9 @@ static void draw_scene(Drive* env, Client* client) {
     }
 }
 
-// Orthographic bird's-eye view centered on human_agent_idx
-// (PufferDrive VIEW_MODE_BEV_AGENT_OBS).
+// MACRO: free orthographic camera over the full map (scroll zoom, drag pan).
+// MICRO: orthographic bird's-eye view centered on human_agent_idx
+// (PufferDrive VIEW_MODE_BEV_AGENT_OBS), with scroll zoom around the agent.
 void puf_render(Drive* env) {
     if (env->client == NULL) {
         env->client = make_client(env);
@@ -1795,33 +2044,49 @@ void puf_render(Drive* env) {
         env->human_agent_idx = agent_index;
     }
 
-    Camera3D camera = client->camera;
     int entity_idx = -1;
     Entity* agent = NULL;
     if (env->active_agent_count > 0 && env->active_agent_indices) {
         entity_idx = env->active_agent_indices[agent_index];
         agent = &env->entities[entity_idx];
+    }
+
+    Camera3D camera;
+    if (env->mode == DRIVE_MACRO) {
+        handle_macro_camera(client, env);
+        camera = client->camera;
+    } else if (agent) {
         int vr = env->vision_range > 0 ? env->vision_range : VISION_RANGE;
         float fovy = (float)vr * GRID_CELL_SIZE * 2.0f;
         if (fovy < 75.0f) fovy = 75.0f;
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0.0f) {
+            client->camera_zoom *= (1.0f - wheel * 0.12f);
+            if (client->camera_zoom < 0.25f) client->camera_zoom = 0.25f;
+            if (client->camera_zoom > 8.0f) client->camera_zoom = 8.0f;
+        }
         camera.position = (Vector3){agent->x, agent->y, 400.0f};
         camera.target = (Vector3){agent->x, agent->y, 0.0f};
         camera.up = (Vector3){0.0f, -1.0f, 0.0f};
         camera.projection = CAMERA_ORTHOGRAPHIC;
-        camera.fovy = fovy;
+        camera.fovy = fovy / client->camera_zoom;
+        client->camera = camera;
+        client->width = (float)GetScreenWidth();
+        client->height = (float)GetScreenHeight();
+    } else {
+        handle_camera_controls(client);
+        camera = client->camera;
     }
 
     BeginDrawing();
     ClearBackground(ROAD_COLOR);
     rlSetClipPlanes(1.0, 2000.0);
     BeginMode3D(camera);
-    if (!agent) {
-        handle_camera_controls(client);
-    }
     draw_scene(env, client);
     EndMode3D();
 
-    DrawText(TextFormat("t=%d", env->timestep), 10, 10, 26, PUFF_WHITE);
+    int max_t = env->max_episode_length > 0 ? env->max_episode_length : TRAJECTORY_LENGTH;
+    DrawText(TextFormat("t=%d/%d", env->timestep, max_t), 10, 10, 26, PUFF_WHITE);
     if (agent) {
         DrawText(TextFormat("Agent slot: %d  entity: %d", agent_index, entity_idx), 10, 40, 20, PUFF_WHITE);
         DrawText(TextFormat("pos (%.1f, %.1f)  heading %.2f", agent->x, agent->y, agent->heading), 10, 65, 20, PUFF_WHITE);
@@ -1829,7 +2094,15 @@ void puf_render(Drive* env) {
     DrawText(TextFormat("Mode: %s  Agents: %d  Roads: %d",
         env->mode == DRIVE_MACRO ? "macro" : "micro",
         env->active_agent_count, env->num_roads), 10, 90, 20, PUFF_WHITE);
-    DrawText("Tab: next agent   Shift+WASD: drive", 10, client->height - 30, 20, PUFF_WHITE);
+    if (env->mode == DRIVE_MACRO) {
+        DrawText(TextFormat("Zoom: %.1fx%s", client->camera_zoom,
+            client->follow_agent ? "  FOLLOW" : ""), 10, 115, 20, PUFF_WHITE);
+        DrawText("Scroll/+-: zoom   Click-drag: pan   F: follow   R: reset", 10, client->height - 50, 18, PUFF_WHITE);
+        DrawText("Tab: next agent   Shift+WASD: drive", 10, client->height - 28, 18, PUFF_WHITE);
+    } else {
+        DrawText(TextFormat("Zoom: %.1fx   Scroll to zoom", client->camera_zoom), 10, 115, 20, PUFF_WHITE);
+        DrawText("Tab: next agent   Shift+WASD: drive", 10, client->height - 30, 20, PUFF_WHITE);
+    }
     EndDrawing();
     puf_web_vsync();
     drive_maybe_screenshot();
