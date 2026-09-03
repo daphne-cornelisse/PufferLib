@@ -36,7 +36,8 @@ void demo() {
         .human_agent_idx = 0,
         .reward_vehicle_collision = -0.1f,
         .reward_offroad_collision = -0.1f,
-	    .map_name = "resources/drive/map_010.bin",
+        .mode = DRIVE_MACRO,
+        .map_name = MAP_I24_PATH,
     };
     init(&env);
     bind_demo_buffers(&env);
@@ -44,9 +45,14 @@ void demo() {
     puf_render(&env);
     Weights* weights = load_weights("resources/drive/drive_weights.bin");
     int logit_sizes[2] = {7, 13};
-    PufferNet* net = make_puffernet(weights, env.active_agent_count, OBS_SIZE, 256, 4, logit_sizes, 2);
+    PufferNet* net = NULL;
+    if (weights && env.active_agent_count > 0) {
+        net = make_puffernet(weights, env.active_agent_count, OBS_SIZE, 256, 4, logit_sizes, 2);
+    }
     while (!WindowShouldClose()) {
-        forward_puffernet(net, env.agents[0].observations, env.agents[0].actions);
+        if (net) {
+            forward_puffernet(net, env.agents[0].observations, env.agents[0].actions);
+        }
         puf_step(&env);
         puf_render(&env);
     }
@@ -54,7 +60,7 @@ void demo() {
     close_client(env.client);
     free_demo_buffers(&env);
     puf_close(&env);
-    free_puffernet(net);
+    if (net) free_puffernet(net);
     free(weights);
 }
 

@@ -36,10 +36,18 @@ typedef float obs_t;
 #define TRAJECTORY_LENGTH 91 // Discretized Waymo scenarios
 #define SIM_DT 0.1f
 
-// Agent limits
+// Simulation regime. Selected at runtime by [env].mode in config/drive.ini.
+#define DRIVE_MICRO 0  // WOMD: many maps, agents from scenario trajectories
+#define DRIVE_MACRO 1  // I24: single map, NUM_AGENTS spawned along lanes
+
+// Macro agent count per map. Micro caps scenario agents at MICRO_MAX_AGENTS.
+#define NUM_AGENTS 1024
+#define MICRO_MAX_AGENTS 64
 #ifndef MAX_AGENTS
-#define MAX_AGENTS 64
+#define MAX_AGENTS NUM_AGENTS
 #endif
+
+#define MAP_I24_PATH "resources/drive/I24_map.bin"
 
 // Dynamics models
 #define CLASSIC 0
@@ -62,7 +70,10 @@ typedef float obs_t;
 #define EGO_FEATURES 7
 #define ROAD_FEATURES 7
 
-#define OBS_SIZE (EGO_FEATURES + PARTNER_FEATURES * (MAX_AGENTS - 1) + ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS)
+// Partner obs is capped independently of NUM_AGENTS so OBS_SIZE stays
+// compatible with micro (MAX_AGENTS was 64 → 63 partners).
+#define MAX_PARTNER_OBS 63
+#define OBS_SIZE (EGO_FEATURES + PARTNER_FEATURES * MAX_PARTNER_OBS + ROAD_FEATURES * MAX_ROAD_SEGMENT_OBSERVATIONS)
 #define ACT_SIZES {7, 13}
 #define NUM_ATNS 2
 #define MY_VEC_INIT
@@ -218,7 +229,9 @@ struct Env {
     int num_agents;
     int tag;
     int boundary_reached;
+    int mode;
     int max_agents;
+    float grid_cell_size;
     int active_agent_count;
     int* active_agent_indices;
     int human_agent_idx;
@@ -382,10 +395,11 @@ int getGridIndex(Drive* env, float x1, float y1) {
         env->map_corners[1] >= env->map_corners[3]) {
         return -1;
     }
+    float cell = env->grid_cell_size > 0.0f ? env->grid_cell_size : GRID_CELL_SIZE;
     float relativeX = x1 - env->map_corners[0];
     float relativeY = y1 - env->map_corners[1];
-    int gridX = (int)(relativeX / GRID_CELL_SIZE);
-    int gridY = (int)(relativeY / GRID_CELL_SIZE);
+    int gridX = (int)(relativeX / cell);
+    int gridY = (int)(relativeY / cell);
     if (gridX < 0 || gridX >= env->grid_cols || gridY < 0 || gridY >= env->grid_rows) {
         return -1;
     }
@@ -442,8 +456,10 @@ void init_grid_map(Drive* env) {
 
     float grid_width = bottom_right_x - top_left_x;
     float grid_height = bottom_right_y - top_left_y;
-    env->grid_cols = ceil(grid_width / GRID_CELL_SIZE);
-    env->grid_rows = ceil(grid_height / GRID_CELL_SIZE);
+    float span = grid_width > grid_height ? grid_width : grid_height;
+    env->grid_cell_size = (span > 1000.0f) ? 20.0f : GRID_CELL_SIZE;
+    env->grid_cols = ceil(grid_width / env->grid_cell_size);
+    env->grid_rows = ceil(grid_height / env->grid_cell_size);
     int grid_cell_count = env->grid_cols * env->grid_rows;
     env->grid_cells = (int*)calloc(grid_cell_count * SLOTS_PER_CELL, sizeof(int));
 
@@ -890,9 +906,147 @@ void remove_bad_trajectories(Drive* env) {
     env->timestep = 0;
 }
 
+static void alloc_vehicle_entity(Entity* e) {
+    memset(e, 0, sizeof(Entity));
+    e->type = VEHICLE;
+    e->array_size = TRAJECTORY_LENGTH;
+    e->traj_x = (float*)calloc(TRAJECTORY_LENGTH, sizeof(float));
+    e->traj_y = (float*)calloc(TRAJECTORY_LENGTH, sizeof(float));
+    e->traj_z = (float*)calloc(TRAJECTORY_LENGTH, sizeof(float));
+    e->traj_vx = (float*)calloc(TRAJECTORY_LENGTH, sizeof(float));
+    e->traj_vy = (float*)calloc(TRAJECTORY_LENGTH, sizeof(float));
+    e->traj_vz = (float*)calloc(TRAJECTORY_LENGTH, sizeof(float));
+    e->traj_heading = (float*)calloc(TRAJECTORY_LENGTH, sizeof(float));
+    e->traj_valid = (int*)calloc(TRAJECTORY_LENGTH, sizeof(int));
+    e->width = 2.0f;
+    e->length = 4.5f;
+    e->height = 1.5f;
+    e->mark_as_expert = 0;
+    e->respawn_timestep = -1;
+}
+
+static int point_along_lane(Entity* lane, float dist, float* x, float* y, float* heading) {
+    float rem = dist;
+    for (int j = 0; j < lane->array_size - 1; j++) {
+        float dx = lane->traj_x[j + 1] - lane->traj_x[j];
+        float dy = lane->traj_y[j + 1] - lane->traj_y[j];
+        float seg = sqrtf(dx * dx + dy * dy);
+        if (seg < 1e-4f) continue;
+        if (rem <= seg) {
+            float t = rem / seg;
+            *x = lane->traj_x[j] + t * dx;
+            *y = lane->traj_y[j] + t * dy;
+            *heading = atan2f(dy, dx);
+            return 1;
+        }
+        rem -= seg;
+    }
+    int n = lane->array_size;
+    *x = lane->traj_x[n - 1];
+    *y = lane->traj_y[n - 1];
+    float dx = lane->traj_x[n - 1] - lane->traj_x[n - 2];
+    float dy = lane->traj_y[n - 1] - lane->traj_y[n - 2];
+    *heading = atan2f(dy, dx);
+    return 1;
+}
+
+// Replace map objects with NUM_AGENTS vehicles placed uniformly along lanes.
+static void spawn_macro_agents(Drive* env) {
+    int n_roads = env->num_roads;
+    int road_start = env->num_objects;
+    if (n_roads <= 0) return;
+
+    int n_agents = NUM_AGENTS;
+    Entity* ents = (Entity*)calloc((size_t)n_agents + (size_t)n_roads, sizeof(Entity));
+    memcpy(ents + n_agents, env->entities + road_start, (size_t)n_roads * sizeof(Entity));
+    for (int i = 0; i < env->num_objects; i++) {
+        free_entity(&env->entities[i]);
+    }
+    free(env->entities);
+    env->entities = ents;
+    env->num_objects = n_agents;
+    env->num_entities = n_agents + n_roads;
+
+    int n_lanes = 0;
+    float total_len = 0.0f;
+    float* lane_len = (float*)calloc((size_t)n_roads, sizeof(float));
+    int* lane_idx = (int*)calloc((size_t)n_roads, sizeof(int));
+    for (int i = 0; i < n_roads; i++) {
+        Entity* lane = &env->entities[n_agents + i];
+        if (lane->type != ROAD_LANE || lane->array_size < 2) continue;
+        float L = 0.0f;
+        for (int j = 0; j < lane->array_size - 1; j++) {
+            float dx = lane->traj_x[j + 1] - lane->traj_x[j];
+            float dy = lane->traj_y[j + 1] - lane->traj_y[j];
+            L += sqrtf(dx * dx + dy * dy);
+        }
+        if (L < 1.0f) continue;
+        lane_idx[n_lanes] = n_agents + i;
+        lane_len[n_lanes] = L;
+        total_len += L;
+        n_lanes++;
+    }
+    if (n_lanes == 0 || total_len <= 0.0f) {
+        free(lane_len);
+        free(lane_idx);
+        for (int i = 0; i < n_agents; i++) {
+            alloc_vehicle_entity(&env->entities[i]);
+            env->entities[i].traj_x[0] = INVALID_POSITION;
+            env->entities[i].traj_y[0] = INVALID_POSITION;
+        }
+        return;
+    }
+
+    float spacing = total_len / (float)n_agents;
+    for (int a = 0; a < n_agents; a++) {
+        float target = ((float)a + 0.5f) * spacing;
+        int li = 0;
+        float acc = 0.0f;
+        for (int i = 0; i < n_lanes; i++) {
+            if (acc + lane_len[i] >= target) {
+                li = i;
+                break;
+            }
+            acc += lane_len[i];
+            li = i;
+        }
+        Entity* lane = &env->entities[lane_idx[li]];
+        float x, y, heading;
+        point_along_lane(lane, target - acc, &x, &y, &heading);
+        float goal_x = lane->traj_x[lane->array_size - 1];
+        float goal_y = lane->traj_y[lane->array_size - 1];
+        float dist_goal = relative_distance_2d(x, y, goal_x, goal_y);
+        if (dist_goal < MIN_DISTANCE_TO_GOAL) {
+            goal_x = lane->traj_x[0];
+            goal_y = lane->traj_y[0];
+            dist_goal = relative_distance_2d(x, y, goal_x, goal_y);
+        }
+        if (dist_goal < MIN_DISTANCE_TO_GOAL) {
+            goal_x = x + 50.0f * cosf(heading);
+            goal_y = y + 50.0f * sinf(heading);
+        }
+
+        Entity* e = &env->entities[a];
+        alloc_vehicle_entity(e);
+        for (int t = 0; t < TRAJECTORY_LENGTH; t++) {
+            e->traj_x[t] = x;
+            e->traj_y[t] = y;
+            e->traj_z[t] = 0.0f;
+            e->traj_heading[t] = heading;
+            e->traj_valid[t] = 1;
+        }
+        e->goal_position_x = goal_x;
+        e->goal_position_y = goal_y;
+        e->goal_position_z = 0.0f;
+    }
+    free(lane_len);
+    free(lane_idx);
+}
+
 // Initialization / Cleanup
 void init(Drive* env) {
     env->timestep = 0;
+    env->grid_cell_size = GRID_CELL_SIZE;
     env->entities = load_map_binary(env->map_name, env);
     if (!env->entities) {
         fprintf(stderr, "ERROR: Cannot load map %s\n",
@@ -901,13 +1055,18 @@ void init(Drive* env) {
     }
     env->dynamics_model = CLASSIC;
     set_means(env);
+    if (env->mode == DRIVE_MACRO) {
+        spawn_macro_agents(env);
+    }
     init_grid_map(env);
     env->vision_range = VISION_RANGE;
     init_neighbor_offsets(env);
     env->neighbor_cache_indices = (int*)calloc((env->grid_cols * env->grid_rows) + 1, sizeof(int));
     cache_neighbor_offsets(env);
     set_active_agents(env);
-    remove_bad_trajectories(env);
+    if (env->mode != DRIVE_MACRO) {
+        remove_bad_trajectories(env);
+    }
     set_start_position(env);
     env->logs = (Log*)calloc(env->active_agent_count, sizeof(Log));
 }
@@ -1001,7 +1160,7 @@ void compute_observations(Drive* env) {
         // Partner observations
         int obs_idx = EGO_FEATURES;
         int cars_seen = 0;
-        for (int j = 0; j < MAX_AGENTS; j++) {
+        for (int j = 0; j < env->num_actors && cars_seen < MAX_PARTNER_OBS; j++) {
             int index = -1;
             if (j < env->active_agent_count) {
                 index = env->active_agent_indices[j];
@@ -1034,7 +1193,7 @@ void compute_observations(Drive* env) {
             cars_seen++;
             obs_idx += PARTNER_FEATURES;
         }
-        int remaining_partner_obs = (MAX_AGENTS - 1 - cars_seen) * PARTNER_FEATURES;
+        int remaining_partner_obs = (MAX_PARTNER_OBS - cars_seen) * PARTNER_FEATURES;
         memset(&obs[obs_idx], 0, remaining_partner_obs * sizeof(float));
         obs_idx += remaining_partner_obs;
 
@@ -1270,18 +1429,30 @@ Client* make_client(Drive* env) {
     for (int i = 0; i < MAX_AGENTS; i++) {
         client->car_assignments[i] = (rand_r(&env->rng) % 4) + 1;
     }
-    // Get initial target position from first active agent
     float map_center_x = 0.0f;
     float map_center_y = 0.0f;
+    float span = 200.0f;
     if (env->map_corners) {
         map_center_x = (env->map_corners[0] + env->map_corners[2]) / 2.0f;
         map_center_y = (env->map_corners[1] + env->map_corners[3]) / 2.0f;
+        float span_x = env->map_corners[2] - env->map_corners[0];
+        float span_y = env->map_corners[3] - env->map_corners[1];
+        span = span_x > span_y ? span_x : span_y;
+        if (span < 200.0f) span = 200.0f;
     }
     Vector3 target_pos = { map_center_x, map_center_y, 1.0f };
+    float cam_z = span * 0.85f;
+    float cam_y_off = span * 0.08f;
+    if (span > 1000.0f) {
+        cam_z = span * 1.15f;
+        cam_y_off = span * 0.02f;
+    }
+    if (cam_z < 175.0f) cam_z = 175.0f;
+    if (cam_y_off < 120.0f && span <= 1000.0f) cam_y_off = 120.0f;
     client->default_camera_position = (Vector3){
         map_center_x,
-        map_center_y + 120.0f,
-        175.0f
+        map_center_y + cam_y_off,
+        cam_z
     };
     client->default_camera_target = target_pos;
     client->camera.position = client->default_camera_position;
@@ -1382,7 +1553,7 @@ void draw_agent_obs(Drive* env, int agent_index) {
 
     // Draw partner observations
     int obs_idx = EGO_FEATURES;
-    for (int j = 0; j < MAX_AGENTS - 1; j++) {
+    for (int j = 0; j < MAX_PARTNER_OBS; j++) {
         if (agent_obs[obs_idx] == 0 || agent_obs[obs_idx + 1] == 0) {
             obs_idx += PARTNER_FEATURES;
             continue;
@@ -1414,7 +1585,7 @@ void draw_agent_obs(Drive* env, int agent_index) {
     }
 
     // Draw road edge observations
-    int map_start_idx = EGO_FEATURES + PARTNER_FEATURES * (MAX_AGENTS - 1);
+    int map_start_idx = EGO_FEATURES + PARTNER_FEATURES * MAX_PARTNER_OBS;
     for (int k = 0; k < MAX_ROAD_SEGMENT_OBSERVATIONS; k++) {
         int idx = map_start_idx + k * ROAD_FEATURES;
         if (agent_obs[idx] == 0 && agent_obs[idx + 1] == 0) continue;
@@ -1470,17 +1641,20 @@ void draw_road_edge(Drive* env, float start_x, float start_y, float end_x, float
     DrawTriangle3D(b4, t4, b1, CURB_SIDE); DrawTriangle3D(t4, t1, b1, CURB_SIDE);
 }
 
-void puf_render(Drive* env) {
-    if (env->client == NULL) {
-        env->client = make_client(env);
+static void drive_maybe_screenshot(void) {
+    static int drive_render_frames = 0;
+    drive_render_frames++;
+    const char* shot = getenv("DRIVE_SCREENSHOT");
+    if (shot && shot[0] && drive_render_frames == 3) {
+        TakeScreenshot(shot);
+        if (getenv("DRIVE_SCREENSHOT_EXIT")) {
+            CloseWindow();
+            exit(0);
+        }
     }
-    drive_human_controls(env);
-    Client* client = env->client;
-    BeginDrawing();
-    ClearBackground(ROAD_COLOR);
-    BeginMode3D(client->camera);
-    handle_camera_controls(client);
+}
 
+static void draw_scene(Drive* env, Client* client) {
     if (env->map_corners) {
         DrawLine3D((Vector3){env->map_corners[0], env->map_corners[1], 0}, (Vector3){env->map_corners[2], env->map_corners[1], 0}, PUFF_CYAN);
         DrawLine3D((Vector3){env->map_corners[0], env->map_corners[1], 0}, (Vector3){env->map_corners[0], env->map_corners[3], 0}, PUFF_CYAN);
@@ -1489,7 +1663,6 @@ void puf_render(Drive* env) {
     }
 
     for (int i = 0; i < env->num_entities; i++) {
-        // Draw vehicles
         if (env->entities[i].type == VEHICLE || env->entities[i].type == PEDESTRIAN) {
             bool is_active_agent = false;
             bool is_static_agent = false;
@@ -1524,14 +1697,12 @@ void puf_render(Drive* env) {
             if (is_active_agent) {
                 car_model = client->cars[client->car_assignments[i % MAX_AGENTS]];
             }
-            if (agent_index == env->human_agent_idx) {
-                // Human-controlled agent uses default model
-            }
             if (is_active_agent && env->entities[i].collision_state > NO_COLLISION) {
                 car_model = client->cars[0];
             }
 
-            if (agent_index == env->human_agent_idx && !env->entities[agent_index].reached_goal) {
+            if (agent_index == env->human_agent_idx && agent_index >= 0
+                && !env->entities[i].reached_goal) {
                 draw_agent_obs(env, agent_index);
             }
 
@@ -1545,7 +1716,6 @@ void puf_render(Drive* env) {
             DrawModelEx(car_model, (Vector3){0, 0, 0}, (Vector3){1, 0, 0}, 90.0f, scale, WHITE);
             rlPopMatrix();
 
-            // Draw collision box
             float cos_h = env->entities[i].heading_x;
             float sin_h = env->entities[i].heading_y;
             float hl = env->entities[i].length * 0.5f;
@@ -1560,92 +1730,109 @@ void puf_render(Drive* env) {
                 DrawLine3D(corners[j], corners[(j + 1) % 4], PURPLE);
             }
 
-            // FPV camera
-            if (IsKeyDown(KEY_SPACE) && env->human_agent_idx == agent_index) {
-                if (env->entities[agent_index].reached_goal) {
-                    env->human_agent_idx = rand_r(&env->rng) % env->active_agent_count;
-                }
-                client->camera.position = (Vector3){
-                    position.x - 25.0f * cosf(heading),
-                    position.y - 25.0f * sinf(heading),
-                    position.z + 15
-                };
-                client->camera.target = (Vector3){
-                    position.x + 40.0f * cosf(heading),
-                    position.y + 40.0f * sinf(heading),
-                    position.z - 5.0f
-                };
-                client->camera.up = (Vector3){0, 0, 1};
-            }
-            if (IsKeyReleased(KEY_SPACE)) {
-                client->camera.position = client->default_camera_position;
-                client->camera.target = client->default_camera_target;
-                client->camera.up = (Vector3){0, 0, 1};
-            }
-
             if (!is_active_agent || env->entities[i].valid == 0) continue;
             if (!IsKeyDown(KEY_LEFT_CONTROL)) {
                 DrawSphere((Vector3){env->entities[i].goal_position_x, env->entities[i].goal_position_y, 1}, 0.5f, DARKGREEN);
             }
         }
 
-        // Draw road elements
         if (env->entities[i].type < ROAD_LANE || env->entities[i].type > ROAD_EDGE) {
             continue;
         }
         for (int j = 0; j < env->entities[i].array_size - 1; j++) {
+            float x0 = env->entities[i].traj_x[j];
+            float y0 = env->entities[i].traj_y[j];
+            float x1 = env->entities[i].traj_x[j + 1];
+            float y1 = env->entities[i].traj_y[j + 1];
+            if (env->entities[i].type == ROAD_LANE || env->entities[i].type == ROAD_LINE) {
+                Color paint = env->entities[i].type == ROAD_LANE
+                    ? (Color){255, 214, 64, 255}
+                    : (Color){220, 220, 220, 255};
+                DrawLine3D((Vector3){x0, y0, 1.05f}, (Vector3){x1, y1, 1.05f}, paint);
+                continue;
+            }
             if (env->entities[i].type != ROAD_EDGE) continue;
             if (!IsKeyDown(KEY_LEFT_CONTROL)) {
-                draw_road_edge(env,
-                    env->entities[i].traj_x[j], env->entities[i].traj_y[j],
-                    env->entities[i].traj_x[j + 1], env->entities[i].traj_y[j + 1]);
+                draw_road_edge(env, x0, y0, x1, y1);
             }
         }
     }
 
-    // Grid overlay
-    float grid_start_x = env->map_corners ? env->map_corners[0] : 0.0f;
-    float grid_start_y = env->map_corners ? env->map_corners[1] : 0.0f;
-    for (int i = 0; i < env->grid_cols; i++) {
-        for (int j = 0; j < env->grid_rows; j++) {
-            float x = grid_start_x + i * GRID_CELL_SIZE;
-            float y = grid_start_y + j * GRID_CELL_SIZE;
-            DrawCubeWires(
-                (Vector3){x + GRID_CELL_SIZE / 2, y + GRID_CELL_SIZE / 2, 1},
-                GRID_CELL_SIZE, GRID_CELL_SIZE, 0.1f, PUFF_BACKGROUND2);
+    int grid_cells = env->grid_cols * env->grid_rows;
+    if (grid_cells > 0 && grid_cells <= 15000) {
+        float cell = env->grid_cell_size > 0.0f ? env->grid_cell_size : GRID_CELL_SIZE;
+        float grid_start_x = env->map_corners ? env->map_corners[0] : 0.0f;
+        float grid_start_y = env->map_corners ? env->map_corners[1] : 0.0f;
+        for (int i = 0; i < env->grid_cols; i++) {
+            for (int j = 0; j < env->grid_rows; j++) {
+                float x = grid_start_x + i * cell;
+                float y = grid_start_y + j * cell;
+                DrawCubeWires(
+                    (Vector3){x + cell / 2, y + cell / 2, 1},
+                    cell, cell, 0.1f, PUFF_BACKGROUND2);
+            }
         }
     }
+}
+
+// Orthographic bird's-eye view centered on human_agent_idx
+// (PufferDrive VIEW_MODE_BEV_AGENT_OBS).
+void puf_render(Drive* env) {
+    if (env->client == NULL) {
+        env->client = make_client(env);
+    }
+    Client* client = env->client;
+    drive_human_controls(env);
+
+    int agent_index = env->human_agent_idx;
+    if (env->active_agent_count > 0 && env->active_agent_indices) {
+        if (agent_index < 0 || agent_index >= env->active_agent_count) {
+            agent_index = 0;
+        }
+        if (IsWindowReady() && IsKeyPressed(KEY_TAB)) {
+            agent_index = (agent_index + 1) % env->active_agent_count;
+        }
+        env->human_agent_idx = agent_index;
+    }
+
+    Camera3D camera = client->camera;
+    int entity_idx = -1;
+    Entity* agent = NULL;
+    if (env->active_agent_count > 0 && env->active_agent_indices) {
+        entity_idx = env->active_agent_indices[agent_index];
+        agent = &env->entities[entity_idx];
+        int vr = env->vision_range > 0 ? env->vision_range : VISION_RANGE;
+        float fovy = (float)vr * GRID_CELL_SIZE * 2.0f;
+        if (fovy < 75.0f) fovy = 75.0f;
+        camera.position = (Vector3){agent->x, agent->y, 400.0f};
+        camera.target = (Vector3){agent->x, agent->y, 0.0f};
+        camera.up = (Vector3){0.0f, -1.0f, 0.0f};
+        camera.projection = CAMERA_ORTHOGRAPHIC;
+        camera.fovy = fovy;
+    }
+
+    BeginDrawing();
+    ClearBackground(ROAD_COLOR);
+    rlSetClipPlanes(1.0, 2000.0);
+    BeginMode3D(camera);
+    if (!agent) {
+        handle_camera_controls(client);
+    }
+    draw_scene(env, client);
     EndMode3D();
 
-    // Draw debug info
-    DrawText(TextFormat("Camera Position: (%.2f, %.2f, %.2f)",
-        client->camera.position.x, client->camera.position.y, client->camera.position.z), 10, 10, 20, PUFF_WHITE);
-    DrawText(TextFormat("Camera Target: (%.2f, %.2f, %.2f)",
-        client->camera.target.x, client->camera.target.y, client->camera.target.z), 10, 30, 20, PUFF_WHITE);
-    DrawText(TextFormat("Timestep: %d", env->timestep), 10, 50, 20, PUFF_WHITE);
-    int human_idx = -1;
-    int accel = 0;
-    int steer = 0;
-    if (env->active_agent_count > 0 && env->active_agent_indices
-        && env->human_agent_idx >= 0
-        && env->human_agent_idx < env->active_agent_count) {
-        human_idx = env->active_agent_indices[env->human_agent_idx];
-        float* atn = env->agents[env->human_agent_idx].actions;
-        if (atn) {
-            accel = (int)atn[0];
-            steer = (int)atn[1];
-        }
+    DrawText(TextFormat("t=%d", env->timestep), 10, 10, 26, PUFF_WHITE);
+    if (agent) {
+        DrawText(TextFormat("Agent slot: %d  entity: %d", agent_index, entity_idx), 10, 40, 20, PUFF_WHITE);
+        DrawText(TextFormat("pos (%.1f, %.1f)  heading %.2f", agent->x, agent->y, agent->heading), 10, 65, 20, PUFF_WHITE);
     }
-    DrawText(TextFormat("Controlling Agent: %d", env->human_agent_idx), 10, 70, 20, PUFF_WHITE);
-    DrawText(TextFormat("Agent Index: %d", human_idx), 10, 90, 20, PUFF_WHITE);
-    DrawText("Controls: W/S - Accelerate/Brake, A/D - Steer, 1-4 - Switch Agent",
-             10, client->height - 30, 20, PUFF_WHITE);
-    DrawText(TextFormat("Acceleration: %d", accel), 10, 110, 20, PUFF_WHITE);
-    DrawText(TextFormat("Steering: %d", steer), 10, 130, 20, PUFF_WHITE);
-    DrawText(TextFormat("Grid Rows: %d", env->grid_rows), 10, 150, 20, PUFF_WHITE);
-    DrawText(TextFormat("Grid Cols: %d", env->grid_cols), 10, 170, 20, PUFF_WHITE);
+    DrawText(TextFormat("Mode: %s  Agents: %d  Roads: %d",
+        env->mode == DRIVE_MACRO ? "macro" : "micro",
+        env->active_agent_count, env->num_roads), 10, 90, 20, PUFF_WHITE);
+    DrawText("Tab: next agent   Shift+WASD: drive", 10, client->height - 30, 20, PUFF_WHITE);
     EndDrawing();
     puf_web_vsync();
+    drive_maybe_screenshot();
 }
 
 void close_client(Client* client) {
@@ -1700,17 +1887,36 @@ static int peek_map_agent_count(const char* filename, int max_agents) {
     return n;
 }
 
+static int drive_mode_from_kwargs(Dict* kwargs) {
+    DictItem* item = dict_find(kwargs, "mode");
+    return item ? (int)item->value : DRIVE_MICRO;
+}
+
+static const char* drive_macro_map_name(Dict* kwargs) {
+    DictItem* item = dict_find(kwargs, "map_name");
+    if (item && item->str && item->str[0]) {
+        return item->str;
+    }
+    return MAP_I24_PATH;
+}
+
 void puf_init(Env* env, Dict* kwargs) {
     env->human_agent_idx = dict_get(kwargs, "human_agent_idx");
     env->reward_vehicle_collision = dict_get(kwargs, "reward_vehicle_collision");
     env->reward_offroad_collision = dict_get(kwargs, "reward_offroad_collision");
     env->reward_goal_post_respawn = dict_get(kwargs, "reward_goal_post_respawn");
     env->reward_vehicle_collision_post_respawn = dict_get(kwargs, "reward_vehicle_collision_post_respawn");
-    int map_id = dict_get(kwargs, "map_id");
-    char map_file[512];
-    resolve_map_path(map_id, map_file, sizeof(map_file));
-    env->map_name = strdup(map_file);
-    env->max_agents = MAX_AGENTS;
+    env->mode = drive_mode_from_kwargs(kwargs);
+    if (env->mode == DRIVE_MACRO) {
+        env->map_name = strdup(drive_macro_map_name(kwargs));
+        env->max_agents = NUM_AGENTS;
+    } else {
+        int map_id = dict_get(kwargs, "map_id");
+        char map_file[512];
+        resolve_map_path(map_id, map_file, sizeof(map_file));
+        env->map_name = strdup(map_file);
+        env->max_agents = MICRO_MAX_AGENTS;
+    }
     init(env);
     env->num_agents = env->active_agent_count;
     if (env->num_agents > MAX_AGENTS) env->num_agents = MAX_AGENTS;
@@ -1726,14 +1932,60 @@ Env* my_vec_init(int* num_envs_out, int* buffer_env_starts, int* buffer_env_coun
                  Dict* vec_kwargs, Dict* env_kwargs) {
     int total_agents = dict_get(vec_kwargs, "total_agents");
     int num_buffers = dict_get(vec_kwargs, "num_buffers");
-    int num_maps = dict_get(env_kwargs, "num_maps");
     int agents_per_buffer = total_agents / num_buffers;
+    int mode = drive_mode_from_kwargs(env_kwargs);
 
     float reward_vehicle_collision = dict_get(env_kwargs, "reward_vehicle_collision");
     float reward_offroad_collision = dict_get(env_kwargs, "reward_offroad_collision");
     float reward_goal_post_respawn = dict_get(env_kwargs, "reward_goal_post_respawn");
     float reward_vehicle_collision_post_respawn = dict_get(env_kwargs, "reward_vehicle_collision_post_respawn");
     int human_agent_idx = dict_get(env_kwargs, "human_agent_idx");
+
+    if (mode == DRIVE_MACRO) {
+        if (agents_per_buffer % NUM_AGENTS != 0) {
+            fprintf(stderr, "ERROR: total_agents/num_buffers (%d) must be divisible by NUM_AGENTS (%d)\n",
+                    agents_per_buffer, NUM_AGENTS);
+            exit(1);
+        }
+        const char* map_file = drive_macro_map_name(env_kwargs);
+        if (!drive_map_exists(map_file)) {
+            fprintf(stderr, "ERROR: Cannot find macro map %s\n", map_file);
+            fprintf(stderr, "Convert I24 JSON: python ocean/drive/dataset.py --input resources/drive/I24_map.json --output resources/drive/I24_map.bin\n");
+            exit(1);
+        }
+        int envs_per_buffer = agents_per_buffer / NUM_AGENTS;
+        int total_envs = envs_per_buffer * num_buffers;
+        Env* envs = (Env*)calloc(total_envs, sizeof(Env));
+        for (int b = 0; b < num_buffers; b++) {
+            buffer_env_starts[b] = b * envs_per_buffer;
+            buffer_env_counts[b] = envs_per_buffer;
+        }
+        for (int i = 0; i < total_envs; i++) {
+            Env* env = &envs[i];
+            env->rng = i;
+            env->mode = DRIVE_MACRO;
+            env->map_name = strdup(map_file);
+            env->human_agent_idx = human_agent_idx;
+            env->reward_vehicle_collision = reward_vehicle_collision;
+            env->reward_offroad_collision = reward_offroad_collision;
+            env->reward_goal_post_respawn = reward_goal_post_respawn;
+            env->reward_vehicle_collision_post_respawn = reward_vehicle_collision_post_respawn;
+            env->max_agents = NUM_AGENTS;
+            init(env);
+            env->num_agents = env->active_agent_count;
+            if (env->num_agents > env->max_agents) env->num_agents = env->max_agents;
+            if (env->num_agents > MAX_AGENTS) env->num_agents = MAX_AGENTS;
+            for (int a = 0; a < env->num_agents; a++) {
+                env->agents[a].policy = 0;
+                env->agents[a].action_mask = NULL;
+            }
+        }
+        printf("macro: %d envs x %d agents on %s\n", total_envs, NUM_AGENTS, map_file);
+        *num_envs_out = total_envs;
+        return envs;
+    }
+
+    int num_maps = dict_get(env_kwargs, "num_maps");
 
     char first_map[512];
     snprintf(first_map, sizeof(first_map), "%s/map_%03d.bin", MAP_BINARY_DIR, 0);
@@ -1751,7 +2003,7 @@ Env* my_vec_init(int* num_envs_out, int* buffer_env_starts, int* buffer_env_coun
     for (int m = 0; m < num_maps; m++) {
         char map_file[512];
         snprintf(map_file, sizeof(map_file), "%s/map_%03d.bin", MAP_BINARY_DIR, m);
-        agents_per_map[m] = peek_map_agent_count(map_file, MAX_AGENTS);
+        agents_per_map[m] = peek_map_agent_count(map_file, MICRO_MAX_AGENTS);
         if (agents_per_map[m] > 0) {
             valid_map_ids[num_valid_maps++] = m;
         }
@@ -1812,6 +2064,7 @@ Env* my_vec_init(int* num_envs_out, int* buffer_env_starts, int* buffer_env_coun
         env->reward_offroad_collision = reward_offroad_collision;
         env->reward_goal_post_respawn = reward_goal_post_respawn;
         env->reward_vehicle_collision_post_respawn = reward_vehicle_collision_post_respawn;
+        env->mode = DRIVE_MICRO;
         env->max_agents = env_max_agents[i];
         init(env);
         env->num_agents = env->active_agent_count;
