@@ -3,6 +3,7 @@ set -e
 
 # Usage:
 #   ./build.sh breakout              # Native train/eval -> ./puffer
+#                                    # (CPU play/eval -> ./puffer if nvcc is missing)
 #   ./build.sh breakout mybin        # Native -> ./mybin (does not clobber ./puffer)
 #   ./build.sh breakout --cu         # CUDA env (ENV_HEADER=ocean/ENV/ENV.cu; exclusive vs .h)
 #   ./build.sh robot_arm             # CUDA-only; implies --cu
@@ -22,6 +23,7 @@ set -e
 #   ./build.sh all                   # Build all envs native and native float32
 #
 # Env is compiled in. Run: ./puffer train|eval|match|sweep [--section.key=value ...]
+# CPU: ./puffer eval [latest|MODEL.bin] [--video [FILE]] [--headless] [--video-seconds=N]
 
 if [ -z "$1" ]; then
     echo "Usage: ./build.sh ENV [OUT] [--cu] [--float] [--debug] [--cpu] [--web] [--profile]"
@@ -117,6 +119,20 @@ download() {
     esac
 }
 
+# Prefer CUDA_HOME/CUDA_PATH; never use `which` in ${var:-$(...)} — with
+# set -e that can silently set CUDA_HOME=. and then fail on ccache/nvcc.
+find_nvcc() {
+    if [ -n "${CUDA_HOME:-}" ] && [ -x "$CUDA_HOME/bin/nvcc" ]; then
+        printf '%s\n' "$CUDA_HOME/bin/nvcc"
+        return 0
+    fi
+    if [ -n "${CUDA_PATH:-}" ] && [ -x "$CUDA_PATH/bin/nvcc" ]; then
+        printf '%s\n' "$CUDA_PATH/bin/nvcc"
+        return 0
+    fi
+    command -v nvcc 2>/dev/null || true
+}
+
 RAYLIB_URL="https://github.com/raysan5/raylib/releases/download/5.5"
 if [ "$MODE" = "web" ]; then
     RAYLIB_NAME='raylib-5.5_webassembly'
@@ -205,7 +221,9 @@ else
 fi
 
 # src/ocean.cu compiles only this env's custom net (PUFFER_NETHACK, PUFFER_NMMO3, …).
-EXTRA_CFLAGS+=(-DPUFFER_${ENV^^})
+# ${var^^} is bash 4+; macOS ships 3.2.
+ENV_UPPER=$(printf '%s' "$ENV" | tr '[:lower:]' '[:upper:]')
+EXTRA_CFLAGS+=(-DPUFFER_${ENV_UPPER})
 
 case "$ENV" in
     osrs_*)
@@ -276,6 +294,27 @@ if [ "$STANDALONE" = "1" ]; then
     fi
     exit 0
 fi
+
+# Default native build is the CUDA trainer. Without nvcc (typical on macOS),
+# fall back to the CPU play/eval binary so `./build.sh ENV` still produces
+# a runnable ./puffer.
+if [ -z "${MODE:-}" ] || [ "$MODE" = "native" ]; then
+    NVCC_BIN=$(find_nvcc)
+    if [ -z "$NVCC_BIN" ]; then
+        echo "nvcc not found; building CPU play/eval binary (CUDA trainer requires NVIDIA CUDA)"
+        MODE=cpu
+        if [ -z "$OUT" ] && [ -z "$USER_OUTPUT_NAME" ]; then
+            OUTPUT_NAME=puffer
+        fi
+    fi
+elif [ "$MODE" = "profile" ]; then
+    NVCC_BIN=$(find_nvcc)
+    if [ -z "$NVCC_BIN" ]; then
+        echo "Error: --profile requires nvcc (NVIDIA CUDA compiler)" >&2
+        exit 1
+    fi
+fi
+
 if [ "$MODE" = "cpu" ]; then
     STANDALONE_SOURCE="src/puffercpu.c"
     STANDALONE_DEFINES=()
@@ -420,7 +459,12 @@ elif [ "$MODE" = "cpu" ]; then
     exit 0
 fi
 
-CUDA_HOME=${CUDA_HOME:-${CUDA_PATH:-$(dirname "$(dirname "$(which nvcc)")")}}
+NVCC_BIN=${NVCC_BIN:-$(find_nvcc)}
+if [ -z "$NVCC_BIN" ]; then
+    echo "Error: nvcc not found (CUDA trainer requires NVIDIA CUDA compiler)" >&2
+    exit 1
+fi
+CUDA_HOME=${CUDA_HOME:-${CUDA_PATH:-$(dirname "$(dirname "$NVCC_BIN")")}}
 # NCCL include/lib fallback.
 # Needed when NCCL is provided by the nvidia-nccl-cu12 wheel in the active venv.
 NCCL_IFLAG=""
@@ -441,8 +485,13 @@ fi
 export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache}"
 export CCACHE_BASEDIR="$(pwd)"
 export CCACHE_COMPILERCHECK=content
-NVCC="ccache $CUDA_HOME/bin/nvcc"
-CC="${CC:-$(command -v ccache >/dev/null && echo 'ccache clang' || echo 'clang')}"
+if command -v ccache >/dev/null 2>&1; then
+    NVCC="ccache $NVCC_BIN"
+    CC="${CC:-ccache clang}"
+else
+    NVCC="$NVCC_BIN"
+    CC="${CC:-clang}"
+fi
 ARCH=${NVCC_ARCH:-native}
 
 # CPU and CUDA envs are separate sources. --cu selects the .cu; default is .h.

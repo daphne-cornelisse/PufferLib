@@ -914,6 +914,85 @@ void autoscale(Point* points, int size, PlotArgs *args) {
     }
 }
 
+void draw_plot_caption(PlotArgs args) {
+    if (args.z_label && args.z_label[0]) {
+        Vector2 sz = MeasureTextEx(args.font_small, args.z_label, args.axis_tick_font_size, 0);
+        DrawTextEx(args.font_small, args.z_label,
+            (Vector2){(args.width - sz.x) * 0.5f, 4}, args.axis_tick_font_size, 0, PUFF_WHITE);
+    }
+    if (args.x_label && args.x_label[0]) {
+        Vector2 sz = MeasureTextEx(args.font_small, args.x_label, args.axis_tick_font_size, 0);
+        float cx = args.left_margin
+            + (args.width - args.left_margin - args.right_margin - sz.x) * 0.5f;
+        DrawTextEx(args.font_small, args.x_label,
+            (Vector2){cx, args.height - sz.y - 6}, args.axis_tick_font_size, 0, PUFF_WHITE);
+    }
+    if (args.y_label && args.y_label[0]) {
+        Vector2 sz = MeasureTextEx(args.font_small, args.y_label, args.axis_tick_font_size, 0);
+        DrawTextPro(args.font_small, args.y_label,
+            (Vector2){10.0f, (args.top_margin + args.height - args.bottom_margin) * 0.5f},
+            (Vector2){sz.x * 0.5f, sz.y * 0.5f},
+            -90.0f, args.axis_tick_font_size, 0, PUFF_WHITE);
+    }
+}
+
+static int table_score_col(Table* table) {
+    int col = table_col(table, "env/score");
+    if (col < 0) {
+        col = table_col(table, "env/policy_0_score");
+    }
+    if (col < 0) {
+        col = table_col(table, "env/perf");
+    }
+    return col;
+}
+
+static const char* FLOOR_KEYS[] = {
+    "env/floor_0_overworld",
+    "env/floor_1_dungeon",
+    "env/floor_2_gnomish_mines",
+    "env/floor_3_sewers",
+    "env/floor_4_vault",
+    "env/floor_5_troll_mines",
+    "env/floor_6_fire_realm",
+    "env/floor_7_ice_realm",
+    "env/floor_8_graveyard",
+};
+
+static int cache_floor_cols(Table* table, int* cols) {
+    int found = 0;
+    for (int f = 1; f < 9; f++) {
+        cols[f] = table_col(table, FLOOR_KEYS[f]);
+        if (cols[f] >= 0) {
+            found = 1;
+        }
+    }
+    return found;
+}
+
+static float row_depth_from_cols(Table* table, int row, const int* cols) {
+    float depth = 0.0f;
+    for (int f = 1; f < 9; f++) {
+        if (cols[f] < 0) {
+            continue;
+        }
+        float p = table_get(table, row, cols[f]);
+        if (p > 0.0f) {
+            depth += p;
+        }
+    }
+    return depth;
+}
+
+static void reset_filters(bool* filter, Table* table, int f1, float f1min, float f1max,
+        int f2, float f2min, float f2max) {
+    for (int j = 0; j < table->rows; j++) {
+        filter[j] = true;
+    }
+    apply_filter(filter, table, f1, f1min, f1max);
+    apply_filter(filter, table, f2, f2min, f2max);
+}
+
 void toPx(Point *points, Glyph* glyphs, int size, PlotArgs args) {
     float mmin[4];
     float mmax[4];
@@ -1005,6 +1084,51 @@ void brighten_hit(Tooltip* tooltip, Vector2* indices, Glyph* glyphs, int size,
             follow = false;
         }
     }
+}
+
+static void fit_rt(RenderTexture2D *rt, int w, int h) {
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (rt->texture.width != w || rt->texture.height != h) {
+        UnloadRenderTexture(*rt);
+        *rt = LoadRenderTexture(w, h);
+    }
+}
+
+static void render_scatter_fig(RenderTexture2D fig, PlotArgs* args, Rectangle bounds,
+        Point* points, Glyph* glyphs, Vector2* env_indices, int size,
+        Shader* shader, Tooltip* tooltip, Vector2 click, int right_clicked,
+        float x_off, float y_off, int pin_x0, float x_max_floor) {
+    BeginTextureMode(fig);
+    ClearBackground(PUFF_BACKGROUND);
+    if (size > 0) {
+        autoscale(points, size, args);
+        if (pin_x0) {
+            args->mmin[0] = 0;
+            if (args->mmax[0] < x_max_floor) {
+                args->mmax[0] = x_max_floor;
+            }
+        }
+        for (int j = 0; j < 2; j++) {
+            if (!(args->mmin[j] < args->mmax[j])) {
+                args->mmin[j] -= 1.0f;
+                args->mmax[j] += 1.0f;
+            }
+        }
+        args->mmin[2] = 0.0f;
+        args->mmax[2] = 0.0f;
+        toPx(points, glyphs, size, *args);
+        if (right_clicked && CheckCollisionPointRec(click, bounds)) {
+            update_closest(tooltip, env_indices, glyphs, size, x_off, y_off);
+        }
+        brighten_hit(tooltip, env_indices, glyphs, size, x_off, y_off,
+            CheckCollisionPointRec(click, bounds));
+        plot_gl(glyphs, size, shader);
+    }
+    draw_axes(*args);
+    draw_all_ticks(*args);
+    draw_plot_caption(*args);
+    EndTextureMode();
 }
 
 void copy_hypers_to_clipboard(Table *table, char* buffer, int row) {
@@ -1216,8 +1340,16 @@ int main(void) {
     Vector2* env_indices = calloc(glyph_cap, sizeof(Vector2));
 
     // Initialize Raylib
-    SetConfigFlags(FLAG_MSAA_4X_HINT);
-    InitWindow(2*DEFAULT_PLOT_ARGS.width, DEFAULT_PLOT_ARGS.height + 2*SETTINGS_HEIGHT, "Puffer Constellation");
+    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
+    InitWindow(2*DEFAULT_PLOT_ARGS.width, 2*DEFAULT_PLOT_ARGS.height + 2*SETTINGS_HEIGHT, "Puffer Constellation");
+    SetWindowMinSize(640, 400);
+    int chrome = 2*SETTINGS_HEIGHT;
+    int mon_h = GetMonitorHeight(GetCurrentMonitor());
+    int max_h = mon_h - 80;
+    if (max_h > chrome + 400 && 2*DEFAULT_PLOT_ARGS.height + chrome > max_h) {
+        DEFAULT_PLOT_ARGS.height = (max_h - chrome) / 2;
+        SetWindowSize(2*DEFAULT_PLOT_ARGS.width, 2*DEFAULT_PLOT_ARGS.height + chrome);
+    }
     Texture2D puffer = LoadTexture("resources/shared/puffers.png");
 
     DEFAULT_PLOT_ARGS.font = LoadFontEx("resources/shared/JetBrainsMono-SemiBold.ttf", 32, NULL, 255);
@@ -1252,10 +1384,10 @@ int main(void) {
     args1.camera.projection = CAMERA_PERSPECTIVE;
     args1.scale[0] = 1;
     args1.scale[2] = 1;
-    args1.top_margin = 20;
+    args1.top_margin = 24;
     args1.left_margin = 100;
     args1.right_margin = 50;
-    args1.bottom_margin = 50;
+    args1.bottom_margin = 56;
     RenderTexture2D fig1 = LoadRenderTexture(args1.width, args1.height);
     RenderTexture2D fig1_overlay = LoadRenderTexture(args1.width, args1.height);
     Rectangle fig1_bounds = {0, 2*SETTINGS_HEIGHT, args1.width, args1.height};
@@ -1296,9 +1428,35 @@ int main(void) {
     args2.y_label = "Hyperparameter";
     args2.left_margin = 170;
     args2.right_margin = 50;
-    args2.top_margin = 10;
-    args2.bottom_margin = 50;
+    args2.top_margin = 24;
+    args2.bottom_margin = 56;
     Rectangle fig2_bounds = {args1.width, 2*SETTINGS_HEIGHT, args2.width, args2.height};
+
+    PlotArgs args3 = DEFAULT_PLOT_ARGS;
+    args3.x_label = "steps";
+    args3.y_label = "score";
+    args3.z_label = "score";
+    args3.scale[0] = LOG;
+    args3.scale[1] = LINEAR;
+    args3.left_margin = args1.left_margin;
+    args3.right_margin = args1.right_margin;
+    args3.top_margin = args1.top_margin;
+    args3.bottom_margin = args1.bottom_margin;
+    RenderTexture2D fig3 = LoadRenderTexture(args3.width, args3.height);
+    Rectangle fig3_bounds = {0, 2*SETTINGS_HEIGHT + args1.height, args3.width, args3.height};
+
+    PlotArgs args4 = DEFAULT_PLOT_ARGS;
+    args4.x_label = "depth";
+    args4.y_label = "score";
+    args4.z_label = "score vs depth";
+    args4.scale[0] = LINEAR;
+    args4.scale[1] = LINEAR;
+    args4.left_margin = args2.left_margin;
+    args4.right_margin = args2.right_margin;
+    args4.top_margin = args2.top_margin;
+    args4.bottom_margin = args2.bottom_margin;
+    RenderTexture2D fig4 = LoadRenderTexture(args4.width, args4.height);
+    Rectangle fig4_bounds = {args1.width, 2*SETTINGS_HEIGHT + args1.height, args4.width, args4.height};
 
     int x, y, z, c;
 
@@ -1309,6 +1467,19 @@ int main(void) {
     Vector2 focus = {0, 0};
 
     while (!WindowShouldClose()) {
+        int pw = GetScreenWidth() / 2;
+        int ph = (GetScreenHeight() - 2*SETTINGS_HEIGHT) / 2;
+        if (pw < 64) pw = 64;
+        if (ph < 64) ph = 64;
+        args1.width = args2.width = args3.width = args4.width = pw;
+        args1.height = args2.height = args3.height = args4.height = ph;
+        fit_rt(&fig1, pw, ph); fit_rt(&fig1_overlay, pw, ph);
+        fit_rt(&fig2, pw, ph); fit_rt(&fig3, pw, ph); fit_rt(&fig4, pw, ph);
+        fig1_bounds = (Rectangle){0, 2*SETTINGS_HEIGHT, pw, ph};
+        fig2_bounds = (Rectangle){pw, 2*SETTINGS_HEIGHT, pw, ph};
+        fig3_bounds = (Rectangle){0, 2*SETTINGS_HEIGHT + ph, pw, ph};
+        fig4_bounds = (Rectangle){pw, 2*SETTINGS_HEIGHT + ph, pw, ph};
+
         bool right_clicked = false;
 
         BeginDrawing();
@@ -1336,6 +1507,7 @@ int main(void) {
             start = fig_env_idx - 1;
             end = fig_env_idx;
         }
+        Vector2 click = {tooltip.click_x, tooltip.click_y};
         BeginTextureMode(fig1);
         ClearBackground(PUFF_BACKGROUND);
 
@@ -1378,7 +1550,6 @@ int main(void) {
             args1.mmax[2] = 0.0f;
         }
         toPx(points, glyphs, size, args1);
-        Vector2 click = {tooltip.click_x, tooltip.click_y};
         if (right_clicked && CheckCollisionPointRec(click, fig1_bounds)) {
             update_closest(&tooltip, env_indices, glyphs, size, 0, 2*SETTINGS_HEIGHT);
         }
@@ -1515,6 +1686,74 @@ int main(void) {
         draw_box_ticks(hyper_label, hyper_count, args2);
         EndTextureMode();
 
+        // Figure 3: score vs steps
+        int size3 = 0;
+        for (int i=start; i<end; i++) {
+            Table* table = &data.tables[i];
+            int steps_col = table_col(table, "agent_steps");
+            int score_col = table_score_col(table);
+            if (steps_col < 0 || score_col < 0) {
+                continue;
+            }
+            int color_col = (fig_color_idx != 0) ? table_col(table, hyper_key[fig_color_idx - 1]) : -1;
+            int f1 = table_col(table, hyper_key[fig_range1_idx]);
+            int f2 = table_col(table, hyper_key[fig_range2_idx]);
+            reset_filters(filter, table, f1, fig_range1_min_val, fig_range1_max_val,
+                f2, fig_range2_min_val, fig_range2_max_val);
+            for (int j=0; j<table->rows; j++) {
+                if (!filter[j]) {
+                    continue;
+                }
+                float steps = table_get(table, j, steps_col);
+                if (args3.scale[0] == LOG && steps <= 0) {
+                    continue;
+                }
+                points[size3] = (Point){
+                    steps,
+                    table_get(table, j, score_col),
+                    0.0f,
+                    (fig_color_idx == 0) ? i/(float)data.n : table_get(table, j, color_col),
+                };
+                env_indices[size3] = (Vector2){i, j};
+                size3++;
+            }
+        }
+        render_scatter_fig(fig3, &args3, fig3_bounds, points, glyphs, env_indices, size3,
+            &shader, &tooltip, click, right_clicked,
+            fig3_bounds.x, fig3_bounds.y, 0, 0);
+
+        // Figure 4: score vs depth (expected floors reached past overworld)
+        int size4 = 0;
+        for (int i=start; i<end; i++) {
+            Table* table = &data.tables[i];
+            int score_col = table_score_col(table);
+            int floor_cols[9];
+            if (score_col < 0 || !cache_floor_cols(table, floor_cols)) {
+                continue;
+            }
+            int color_col = (fig_color_idx != 0) ? table_col(table, hyper_key[fig_color_idx - 1]) : -1;
+            int f1 = table_col(table, hyper_key[fig_range1_idx]);
+            int f2 = table_col(table, hyper_key[fig_range2_idx]);
+            reset_filters(filter, table, f1, fig_range1_min_val, fig_range1_max_val,
+                f2, fig_range2_min_val, fig_range2_max_val);
+            for (int j=0; j<table->rows; j++) {
+                if (!filter[j]) {
+                    continue;
+                }
+                points[size4] = (Point){
+                    row_depth_from_cols(table, j, floor_cols),
+                    table_get(table, j, score_col),
+                    0.0f,
+                    (fig_color_idx == 0) ? i/(float)data.n : table_get(table, j, color_col),
+                };
+                env_indices[size4] = (Vector2){i, j};
+                size4++;
+            }
+        }
+        render_scatter_fig(fig4, &args4, fig4_bounds, points, glyphs, env_indices, size4,
+            &shader, &tooltip, click, right_clicked,
+            fig4_bounds.x, fig4_bounds.y, 1, 8.0f);
+
         DrawTextureRec(
             fig1.texture,
             (Rectangle){0, 0, fig1.texture.width, -fig1.texture.height },
@@ -1533,6 +1772,16 @@ int main(void) {
             fig2.texture,
             (Rectangle){ 0, 0, fig2.texture.width, -fig2.texture.height },
             (Vector2){ fig1.texture.width, 2*SETTINGS_HEIGHT }, WHITE
+        );
+        DrawTextureRec(
+            fig3.texture,
+            (Rectangle){ 0, 0, fig3.texture.width, -fig3.texture.height },
+            (Vector2){ 0, 2*SETTINGS_HEIGHT + fig1.texture.height }, WHITE
+        );
+        DrawTextureRec(
+            fig4.texture,
+            (Rectangle){ 0, 0, fig4.texture.width, -fig4.texture.height },
+            (Vector2){ fig1.texture.width, 2*SETTINGS_HEIGHT + fig1.texture.height }, WHITE
         );
 
         // UI
@@ -1696,6 +1945,8 @@ int main(void) {
     UnloadRenderTexture(fig1);
     UnloadRenderTexture(fig1_overlay);
     UnloadRenderTexture(fig2);
+    UnloadRenderTexture(fig3);
+    UnloadRenderTexture(fig4);
     CloseWindow();
     return 0;
 }

@@ -612,6 +612,142 @@ void free_puffernet(PufferNet* net) {
 
 #include ENV_HEADER
 
+#ifndef PLATFORM_WEB
+#include <errno.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+typedef struct {
+    pid_t pid;
+    int fd;
+    int w;
+    int h;
+    int fps;
+    int frames;
+    int max_frames;
+    const char* path;
+} PufVideo;
+
+static void puf_mkdir_parents(const char* file_path) {
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "%s", file_path);
+    for (char* p = buf + 1; *p; p++) {
+        if (*p == '/') {
+            *p = 0;
+            mkdir(buf, 0755);
+            *p = '/';
+        }
+    }
+}
+
+static int puf_write_all(int fd, const void* data, size_t n) {
+    const unsigned char* p = (const unsigned char*)data;
+    while (n) {
+        ssize_t w = write(fd, p, n);
+        if (w < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return 0;
+        }
+        p += (size_t)w;
+        n -= (size_t)w;
+    }
+    return 1;
+}
+
+static int puf_video_open(PufVideo* rec, const char* path, int w, int h, int fps) {
+    int pipefd[2];
+    signal(SIGPIPE, SIG_IGN);
+    if (pipe(pipefd) < 0) {
+        fprintf(stderr, "video: pipe failed\n");
+        return 0;
+    }
+    rec->pid = fork();
+    if (rec->pid < 0) {
+        fprintf(stderr, "video: fork failed\n");
+        return 0;
+    }
+    if (rec->pid == 0) {
+        close(pipefd[1]);
+        dup2(pipefd[0], STDIN_FILENO);
+        close(pipefd[0]);
+        char sz[32];
+        char rate[16];
+        snprintf(sz, sizeof(sz), "%dx%d", w, h);
+        snprintf(rate, sizeof(rate), "%d", fps);
+        execlp("ffmpeg", "ffmpeg", "-y",
+            "-f", "rawvideo", "-pix_fmt", "rgba",
+            "-s", sz, "-r", rate, "-i", "-",
+            "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-preset", "medium", "-crf", "23",
+            "-movflags", "+faststart",
+            "-loglevel", "error",
+            path, (char*)NULL);
+        fprintf(stderr, "video: ffmpeg not found in PATH\n");
+        _exit(1);
+    }
+    close(pipefd[0]);
+    rec->fd = pipefd[1];
+    rec->w = w;
+    rec->h = h;
+    rec->frames = 0;
+    rec->path = path;
+    printf("Recording eval video: %s (%dx%d @ %d fps)\n", path, w, h, fps);
+    fflush(stdout);
+    return 1;
+}
+
+static int puf_video_frame(PufVideo* rec) {
+    Image shot = LoadImageFromScreen();
+    if (shot.data == NULL || shot.width <= 0 || shot.height <= 0) {
+        fprintf(stderr, "video: failed to read frame\n");
+        UnloadImage(shot);
+        return 0;
+    }
+    if (rec->pid <= 0) {
+        if (!puf_video_open(rec, rec->path, shot.width, shot.height, rec->fps)) {
+            UnloadImage(shot);
+            return 0;
+        }
+    } else if (shot.width != rec->w || shot.height != rec->h) {
+        fprintf(stderr, "video: unexpected frame %dx%d (expected %dx%d)\n",
+            shot.width, shot.height, rec->w, rec->h);
+        UnloadImage(shot);
+        return 0;
+    }
+    size_t nbytes = (size_t)shot.width * (size_t)shot.height * 4u;
+    int ok = puf_write_all(rec->fd, shot.data, nbytes);
+    UnloadImage(shot);
+    if (!ok) {
+        fprintf(stderr, "video: ffmpeg pipe closed\n");
+        return 0;
+    }
+    rec->frames++;
+    return 1;
+}
+
+static void puf_video_close(PufVideo* rec) {
+    if (rec->fd > 0) {
+        close(rec->fd);
+        rec->fd = 0;
+    }
+    if (rec->pid > 0) {
+        int status = 0;
+        waitpid(rec->pid, &status, 0);
+        if (status == 0) {
+            printf("Wrote %s (%d frames)\n", rec->path, rec->frames);
+        } else {
+            fprintf(stderr, "video: ffmpeg failed (status %d)\n", status);
+        }
+        rec->pid = 0;
+        fflush(stdout);
+    }
+}
+#endif
+
 #if !defined(PUF_NMMO3_NET) && !defined(PUF_ASTEROIDS_NET) && !defined(PUF_MINIMAL_NET) && !defined(PUF_CRAFTAX_NET)
 static int puf_align8(int n) {
     return (n + 7) & ~7;
@@ -712,6 +848,12 @@ int main(int argc, char** argv) {
     int headless = 0;
     const char* cli_path = NULL;
     int cli_latest = 0;
+    int want_video = 0;
+    int video_fast = 0;
+    const char* video_path = NULL;
+    int video_seconds = -1;
+    int video_fps = 30;
+    char video_path_buf[1024];
 
     char* ini_argv[argc > 0 ? argc : 1];
     int ini_argc = 0;
@@ -722,6 +864,37 @@ int main(int argc, char** argv) {
         }
         if (strcmp(argv[i], "latest") == 0) {
             cli_latest = 1;
+            continue;
+        }
+        if (strcmp(argv[i], "--video") == 0 ||
+                strncmp(argv[i], "--video=", 8) == 0) {
+            want_video = 1;
+            const char* v = argv[i][7] == '=' ? argv[i] + 8 : NULL;
+            if (!v && i + 1 < argc && argv[i + 1][0] != '-' &&
+                    strchr(argv[i + 1], '=') == NULL &&
+                    strcmp(argv[i + 1], "latest") != 0 &&
+                    strstr(argv[i + 1], ".bin") == NULL) {
+                v = argv[++i];
+            }
+            if (v && v[0]) {
+                video_path = v;
+            }
+            continue;
+        }
+        if (strncmp(argv[i], "--video-seconds=", 16) == 0) {
+            video_seconds = atoi(argv[i] + 16);
+            continue;
+        }
+        if (strcmp(argv[i], "--video-seconds") == 0 && i + 1 < argc) {
+            video_seconds = atoi(argv[++i]);
+            continue;
+        }
+        if (strncmp(argv[i], "--video-fps=", 12) == 0) {
+            video_fps = atoi(argv[i] + 12);
+            continue;
+        }
+        if (strcmp(argv[i], "--video-fps") == 0 && i + 1 < argc) {
+            video_fps = atoi(argv[++i]);
             continue;
         }
         if (strchr(argv[i], '=') == NULL &&
@@ -741,13 +914,54 @@ int main(int argc, char** argv) {
             break;
         }
     }
+#ifdef PLATFORM_WEB
+    if (want_video) {
+        fprintf(stderr, "--video is not supported on web builds\n");
+        return 1;
+    }
+#else
+    if (want_video) {
+        if (video_fps <= 0) {
+            video_fps = 30;
+        }
+        if (!video_path) {
+            snprintf(video_path_buf, sizeof(video_path_buf),
+                "recordings/%s_eval.mp4", env_name);
+            video_path = video_path_buf;
+        }
+        if (video_seconds < 0 && eval_episodes <= 0) {
+            video_seconds = 30;
+        }
+        puf_mkdir_parents(video_path);
+        SetConfigFlags(FLAG_WINDOW_ALWAYS_RUN);
+        if (headless) {
+            SetConfigFlags(FLAG_WINDOW_HIDDEN);
+            video_fast = 1;
+        }
+        headless = 0;
+    }
+#endif
 
     int act_sizes[] = ACT_SIZES;
     int num_actions = sizeof(act_sizes) / sizeof(act_sizes[0]);
+    if (!cli_path && !cli_latest) {
+        const char* load_path = puf_ini_get_str(&ini, "base", "load_model_path");
+        if (load_path && strcmp(load_path, "None") != 0) {
+            if (strcmp(load_path, "latest") == 0) {
+                cli_latest = 1;
+            } else {
+                cli_path = load_path;
+            }
+        }
+    }
     char path_buf[1024];
     const char* path = puf_model_path(env_name, cli_path, cli_latest,
         path_buf, sizeof(path_buf));
     Weights* weights = path ? load_weights(path) : NULL;
+    if (path && !weights) {
+        fprintf(stderr, "Error: could not load weights '%s'\n", path);
+        return 1;
+    }
     int hidden_size = puf_ini_get(&ini, "policy", "hidden_size");
     int num_layers = puf_ini_get(&ini, "policy", "num_layers");
     int file_floats = weights ? (weights->size - 7) : 0;
@@ -763,9 +977,15 @@ int main(int argc, char** argv) {
     int need = puffernet_weight_count(OBS_SIZE, hidden_size, num_layers,
         act_sizes, num_actions);
 #endif
-    assert(!weights || (need - file_floats <= 7 && file_floats <= need));
+    if (weights && !(need - file_floats <= 7 && file_floats <= need)) {
+        fprintf(stderr,
+            "Error: weight count mismatch for %s\n"
+            "  file=%d need=%d hidden=%d layers=%d\n",
+            path, file_floats, need, hidden_size, num_layers);
+        return 1;
+    }
     int have_net = weights != NULL;
-    if (headless && eval_episodes > 0) {
+    if (path || (headless && eval_episodes > 0)) {
         printf("CPU_META env=%s path=%s file_floats=%d need=%d untrained=%d hidden=%d layers=%d\n",
             env_name, path ? path : "-", file_floats, need, !have_net,
             hidden_size, num_layers);
@@ -863,13 +1083,39 @@ int main(int argc, char** argv) {
     int sim_tick_cap = 5;
     int hold = 0;
     int steps = 0;
+    int video_steps_per_frame = 1;
+    if (want_video) {
+        video_steps_per_frame = PUF_STEPS_PER_SEC / video_fps;
+        if (video_steps_per_frame < 1) {
+            video_steps_per_frame = 1;
+        }
+    }
 #ifndef PLATFORM_WEB
-    if (!headless) {
+    PufVideo video = {0};
+    if (!headless && !want_video) {
         SetTargetFPS(60);
     }
 #endif
     if (!headless) {
         puf_render(&env);
+#ifndef PLATFORM_WEB
+        if (want_video) {
+            if (!IsWindowReady()) {
+                fprintf(stderr, "video: failed to open a window\n");
+                return 1;
+            }
+            video.path = video_path;
+            video.fps = video_fps;
+            video.max_frames = video_seconds > 0 ? video_seconds * video_fps : 0;
+            if (!puf_video_frame(&video)) {
+                puf_video_close(&video);
+                return 1;
+            }
+            if (video_fast) {
+                SetTargetFPS(0);
+            }
+        }
+#endif
     }
     // Web: Raylib 5.5 WindowShouldClose() always emscripten_sleep(16).
     // Pace frames with puf_web_vsync. Native checks WindowShouldClose after render.
@@ -877,8 +1123,19 @@ int main(int argc, char** argv) {
             ? (eval_episodes > 0 ? (env.log.n < eval_episodes)
                                  : (steps < 1024))
             : IsWindowReady()) {
+#ifndef PLATFORM_WEB
+        if (want_video && video.max_frames > 0 &&
+                video.frames >= video.max_frames) {
+            break;
+        }
+        if (want_video && eval_episodes > 0 && env.log.n >= eval_episodes) {
+            break;
+        }
+#endif
         int ticks = 1;
-        if (!headless) {
+        if (want_video) {
+            ticks = video_steps_per_frame;
+        } else if (!headless) {
             double now = GetTime();
             ticks = 0;
             if (sim_prev >= 0.0) {
@@ -928,7 +1185,7 @@ int main(int argc, char** argv) {
 #endif
             }
             puf_step(&env);
-            if (headless) {
+            if (headless || want_video) {
                 steps++;
             }
             if (eval_fwd) {
@@ -944,6 +1201,9 @@ int main(int argc, char** argv) {
         if (!headless) {
             puf_render(&env);
 #ifndef PLATFORM_WEB
+            if (want_video && !puf_video_frame(&video)) {
+                break;
+            }
             if (WindowShouldClose()) {
                 break;
             }
@@ -951,7 +1211,13 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (headless && eval_episodes > 0) {
+#ifndef PLATFORM_WEB
+    if (want_video) {
+        puf_video_close(&video);
+    }
+#endif
+
+    if ((headless && eval_episodes > 0) || want_video) {
         float n = env.log.n;
         float perf = 0.0f;
         float score = 0.0f;
