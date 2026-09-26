@@ -506,6 +506,50 @@ static inline void puf_ini_load_env(Ini* ini, const char* env_name,
     for (int i = 0; i < argc; i++) {
         puf_ini_apply_arg(ini, "base", argv[i], i);
     }
+
+    // If [env].mode is set and a matching [micro]/[macro] section exists,
+    // copy that section onto [env] so mode-specific keys (episode_length, …)
+    // are what puf_init sees.
+    {
+        Dict* env = NULL;
+        for (int i = 0; i < ini->num_sections; i++) {
+            if (strcmp(ini->sections[i].name, "env") == 0) {
+                env = &ini->sections[i];
+                break;
+            }
+        }
+        DictItem* mode_item = env ? dict_find(env, "mode") : NULL;
+        if (mode_item) {
+            const char* mode_name = ((int)mode_item->value) ? "macro" : "micro";
+            Dict* mode = NULL;
+            for (int i = 0; i < ini->num_sections; i++) {
+                if (strcmp(ini->sections[i].name, mode_name) == 0) {
+                    mode = &ini->sections[i];
+                    break;
+                }
+            }
+            if (mode) {
+                for (int i = 0; i < mode->size; i++) {
+                    DictItem* s = &mode->items[i];
+                    DictItem* d = dict_item(env, s->key);
+                    dict_item_clear(d);
+                    d->value = s->value;
+                    d->len = s->len;
+                    if (s->str) {
+                        d->str = dict_strdup(s->str);
+                    }
+                    if (s->values && s->len > 0) {
+                        d->values = (double*)calloc((size_t)s->len, sizeof(double));
+                        if (!d->values) {
+                            perror("calloc");
+                            exit(1);
+                        }
+                        memcpy(d->values, s->values, (size_t)s->len * sizeof(double));
+                    }
+                }
+            }
+        }
+    }
 }
 
 static inline void puf_ini_write(FILE* fp, Ini* ini) {

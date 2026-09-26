@@ -69,7 +69,7 @@ void performance_test() {
     Drive env = {
         .dynamics_model = CLASSIC,
         .human_agent_idx = 0,
-	    .map_name = "resources/drive/map_942.bin",
+	    .map_name = "resources/drive/womd/map_942.bin",
     };
     init(&env);
     bind_demo_buffers(&env);

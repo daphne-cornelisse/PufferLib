@@ -174,8 +174,9 @@ ocean/impulse_wars/include/
 ocean/antibody/generated/
 
 # Data
-resources/drive/data/*
-resources/drive/binaries/*
+drive_data/
+resources/drive/womd/
+resources/drive/i24/
 resources/boxoban/levels/
 resources/boxoban/boxoban_maps_*.bin
 
