@@ -1,0 +1,12 @@
+run_id=sweep_1790481271420_0031
+score=0.9899
+steps=2079326208
+hidden_size=512
+num_layers=2
+source=checkpoints/drive/sweep_1790481271420_0031/0000002079326208.bin
+
+CPU eval / video (needs a display, or xvfb):
+  ./build.sh drive drive_eval --cpu
+  ./drive_eval resources/drive/drive_weights.bin --env.mode=0 --micro.map_id=10 --policy.hidden_size=512 --policy.num_layers=2
+  PUFFER_RECORD=logs/drive/videos/map010.mp4 PUFFER_RECORD_STEPS=273 \
+    ./drive_eval resources/drive/drive_weights.bin --env.mode=0 --micro.map_id=10 --policy.hidden_size=512 --policy.num_layers=2

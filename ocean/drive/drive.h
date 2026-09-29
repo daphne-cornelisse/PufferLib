@@ -35,22 +35,31 @@ typedef float obs_t;
 // Simulation constants
 #define TRAJECTORY_LENGTH 91 // Discretized Waymo scenarios (micro)
 #define SIM_DT 0.1f
-#define MACRO_MIN_GOAL_SPAWN_DIST 100.0f
+#define MACRO_MIN_GOAL_SPAWN_DIST 50.0f
 
-// Goal-distance mix so some +1 rewards fall inside horizon (~128 steps).
-#define MACRO_GOAL_SHORT_MIN 40.0f
-#define MACRO_GOAL_SHORT_MAX 200.0f
+// Easy macro: short on-lane goals, cruise spawn, dense progress.
+#define MACRO_GOAL_SHORT_MIN 20.0f
+#define MACRO_GOAL_SHORT_MAX 40.0f
 #define MACRO_GOAL_MID_MAX 600.0f
+#define MACRO_CRUISE_SPEED 12.0f
+#define MACRO_GOAL_PROGRESS 0.05f
+#define MACRO_MAX_LANE_SEG 80.0f
+#define MACRO_GRAPH_JOIN 12.0f
 
 // Simulation regime. Selected at runtime by [env].mode in config/drive.ini.
 #define DRIVE_MICRO 0  // WOMD: many maps, agents from scenario trajectories
 #define DRIVE_MACRO 1  // I24: single map, NUM_AGENTS spawned along lanes
 
-// Macro agent count per map. Micro caps scenario agents at MICRO_MAX_AGENTS.
-#define NUM_AGENTS 2048
+// Macro agent count per map. Power of 2 so Protein vec.total_agents samples divide evenly.
+#define NUM_AGENTS 32
 #define MICRO_MAX_AGENTS 64
+// Array cap must fit both regimes. Macro uses NUM_AGENTS; WOMD micro caps at 64.
 #ifndef MAX_AGENTS
+#if NUM_AGENTS > MICRO_MAX_AGENTS
 #define MAX_AGENTS NUM_AGENTS
+#else
+#define MAX_AGENTS MICRO_MAX_AGENTS
+#endif
 #endif
 
 #define MAP_I24_PATH "resources/drive/i24/I24_map.bin"
@@ -195,6 +204,13 @@ struct Entity {
     int collided_before_goal;
     int reached_goal_this_episode;
     int active_agent;
+    int macro_lane_i;
+    float macro_s;
+    int macro_goal_lane;
+    float macro_goal_s;
+    int macro_spawn_lane;
+    float macro_spawn_s;
+    float prev_goal_dist;
 };
 
 void free_entity(Entity* entity) {
@@ -273,6 +289,7 @@ struct Env {
     float reward_goal_post_respawn;
     float reward_vehicle_collision_post_respawn;
     unsigned int rng;
+    int* macro_lane_succ;
 };
 
 void add_log(Drive* env) {
@@ -833,6 +850,28 @@ void set_active_agents(Drive* env) {
         env->max_agents = MAX_AGENTS;
     }
 
+    if (env->mode == DRIVE_MACRO) {
+        int n = env->num_objects;
+        if (n > env->max_agents) n = env->max_agents;
+        if (n > MAX_AGENTS) n = MAX_AGENTS;
+        env->active_agent_count = 0;
+        env->num_actors = 0;
+        for (int i = 0; i < n; i++) {
+            Entity* e = &env->entities[i];
+            if (e->type != VEHICLE) continue;
+            e->width *= COLLISION_BOX_SCALE;
+            e->length *= COLLISION_BOX_SCALE;
+            e->active_agent = 1;
+            active_agent_indices[env->active_agent_count++] = i;
+            env->num_actors++;
+        }
+        env->active_agent_indices = (int*)malloc(env->active_agent_count * sizeof(int));
+        env->static_agent_indices = (int*)malloc(sizeof(int));
+        env->expert_static_agent_indices = (int*)malloc(sizeof(int));
+        memcpy(env->active_agent_indices, active_agent_indices, env->active_agent_count * sizeof(int));
+        return;
+    }
+
     // First agent: last object (SDC equivalent)
     int first_agent_id = env->num_objects - 1;
     float distance_to_goal = valid_active_agent(env, first_agent_id);
@@ -934,6 +973,13 @@ static void alloc_vehicle_entity(Entity* e) {
     e->height = 1.5f;
     e->mark_as_expert = 0;
     e->respawn_timestep = -1;
+    e->macro_lane_i = -1;
+    e->macro_s = 0.0f;
+    e->macro_goal_lane = -1;
+    e->macro_goal_s = 0.0f;
+    e->macro_spawn_lane = -1;
+    e->macro_spawn_s = 0.0f;
+    e->prev_goal_dist = 0.0f;
 }
 
 // Two farthest lane endpoints = the two ends of the highway corridor.
@@ -1032,52 +1078,197 @@ static void macro_snap_to_lane(Drive* env, float x, float y, float* ox, float* o
     }
 }
 
-static float macro_sample_goal_dist(Drive* env, float dist_to_end) {
-    float u = (float)(rand_r(&env->rng) % 10000) / 10000.0f;
-    float d;
-    if (u < 0.5f) {
-        d = MACRO_GOAL_SHORT_MIN + (u / 0.5f) * (MACRO_GOAL_SHORT_MAX - MACRO_GOAL_SHORT_MIN);
-    } else if (u < 0.8f) {
-        d = MACRO_GOAL_SHORT_MAX + ((u - 0.5f) / 0.3f) * (MACRO_GOAL_MID_MAX - MACRO_GOAL_SHORT_MAX);
-    } else {
-        float span = dist_to_end - MACRO_GOAL_MID_MAX;
-        if (span < 0.0f) span = 0.0f;
-        d = MACRO_GOAL_MID_MAX + ((u - 0.8f) / 0.2f) * span;
+static float lane_polyline_length(Entity* lane) {
+    float L = 0.0f;
+    for (int j = 0; j < lane->array_size - 1; j++) {
+        float dx = lane->traj_x[j + 1] - lane->traj_x[j];
+        float dy = lane->traj_y[j + 1] - lane->traj_y[j];
+        L += sqrtf(dx * dx + dy * dy);
     }
-    if (d > dist_to_end) d = dist_to_end;
-    float floor_d = MACRO_GOAL_SHORT_MIN;
-    if (dist_to_end < floor_d) floor_d = dist_to_end;
-    if (d < floor_d) d = floor_d;
-    if (d < MIN_DISTANCE_TO_GOAL + 1.0f) d = MIN_DISTANCE_TO_GOAL + 1.0f;
-    return d;
+    return L;
+}
+
+static float lane_max_seg(Entity* lane) {
+    float mx = 0.0f;
+    for (int j = 0; j < lane->array_size - 1; j++) {
+        float dx = lane->traj_x[j + 1] - lane->traj_x[j];
+        float dy = lane->traj_y[j + 1] - lane->traj_y[j];
+        float seg = sqrtf(dx * dx + dy * dy);
+        if (seg > mx) mx = seg;
+    }
+    return mx;
+}
+
+static int lane_is_driveable(Entity* lane) {
+    return lane->type == ROAD_LANE && lane->array_size >= 2
+        && lane_max_seg(lane) <= MACRO_MAX_LANE_SEG
+        && lane_polyline_length(lane) >= 1.0f;
+}
+
+static void macro_build_succ(Drive* env) {
+    free(env->macro_lane_succ);
+    env->macro_lane_succ = (int*)malloc((size_t)env->num_entities * sizeof(int));
+    for (int i = 0; i < env->num_entities; i++) {
+        env->macro_lane_succ[i] = -1;
+    }
+    for (int i = 0; i < env->num_entities; i++) {
+        Entity* a = &env->entities[i];
+        if (!lane_is_driveable(a)) continue;
+        int n = a->array_size;
+        float ax = a->traj_x[n - 1];
+        float ay = a->traj_y[n - 1];
+        float ah = atan2f(a->traj_y[n - 1] - a->traj_y[n - 2],
+                          a->traj_x[n - 1] - a->traj_x[n - 2]);
+        float best_d = MACRO_GRAPH_JOIN;
+        float best_dh = 1e9f;
+        int best = -1;
+        for (int j = 0; j < env->num_entities; j++) {
+            if (i == j) continue;
+            Entity* b = &env->entities[j];
+            if (!lane_is_driveable(b)) continue;
+            float dx = b->traj_x[0] - ax;
+            float dy = b->traj_y[0] - ay;
+            float d = sqrtf(dx * dx + dy * dy);
+            if (d > MACRO_GRAPH_JOIN) continue;
+            float bh = atan2f(b->traj_y[1] - b->traj_y[0],
+                              b->traj_x[1] - b->traj_x[0]);
+            float dh = fabsf(normalize_heading(bh - ah));
+            if (dh > 1.2f) continue;
+            if (d < best_d - 0.1f || (fabsf(d - best_d) < 0.1f && dh < best_dh)) {
+                best_d = d;
+                best_dh = dh;
+                best = j;
+            }
+        }
+        env->macro_lane_succ[i] = best;
+    }
+}
+
+static int macro_walk(Drive* env, int lane_i, float s, float dist,
+        int* out_lane, float* out_s, float* x, float* y, float* heading) {
+    int guard = 0;
+    while (guard++ < 128) {
+        if (lane_i < 0 || lane_i >= env->num_entities) return 0;
+        Entity* lane = &env->entities[lane_i];
+        if (!lane_is_driveable(lane)) return 0;
+        float L = lane_polyline_length(lane);
+        if (s < 0.0f) s = 0.0f;
+        if (s > L) s = L;
+        float rem = L - s;
+        if (dist <= rem + 1e-3f) {
+            point_along_lane(lane, s + dist, x, y, heading);
+            *out_lane = lane_i;
+            *out_s = s + dist;
+            return 1;
+        }
+        dist -= rem;
+        int nxt = env->macro_lane_succ ? env->macro_lane_succ[lane_i] : -1;
+        if (nxt < 0) return 0;
+        lane_i = nxt;
+        s = 0.0f;
+    }
+    return 0;
+}
+
+static float macro_chain_remaining(Drive* env, int lane_i, float s) {
+    float dist = 0.0f;
+    int guard = 0;
+    while (guard++ < 256) {
+        if (lane_i < 0 || lane_i >= env->num_entities) break;
+        Entity* lane = &env->entities[lane_i];
+        if (!lane_is_driveable(lane)) break;
+        float L = lane_polyline_length(lane);
+        if (s < 0.0f) s = 0.0f;
+        if (s > L) s = L;
+        dist += L - s;
+        int nxt = env->macro_lane_succ ? env->macro_lane_succ[lane_i] : -1;
+        if (nxt < 0 || nxt == lane_i) break;
+        lane_i = nxt;
+        s = 0.0f;
+    }
+    return dist;
+}
+
+static int macro_pick_wrap_lane(Drive* env, float need) {
+    int best = -1;
+    float best_rem = 0.0f;
+    for (int i = 0; i < env->num_entities; i++) {
+        if (!lane_is_driveable(&env->entities[i])) continue;
+        float rem = macro_chain_remaining(env, i, 5.0f);
+        if (rem >= need && rem > best_rem) {
+            best = i;
+            best_rem = rem;
+        }
+    }
+    return best;
+}
+
+static void macro_place_on_lane(Entity* e, Entity* lane, float s, float speed) {
+    float x, y, heading;
+    point_along_lane(lane, s, &x, &y, &heading);
+    e->x = x;
+    e->y = y;
+    e->z = 0.0f;
+    e->heading = heading;
+    e->heading_x = cosf(heading);
+    e->heading_y = sinf(heading);
+    e->macro_s = s;
+    e->vx = speed * e->heading_x;
+    e->vy = speed * e->heading_y;
+    e->vz = 0.0f;
+    for (int t = 0; t < TRAJECTORY_LENGTH; t++) {
+        e->traj_x[t] = x;
+        e->traj_y[t] = y;
+        e->traj_z[t] = 0.0f;
+        e->traj_heading[t] = heading;
+        e->traj_vx[t] = e->vx;
+        e->traj_vy[t] = e->vy;
+        e->traj_vz[t] = 0.0f;
+        e->traj_valid[t] = 1;
+    }
 }
 
 static void macro_assign_goal(Drive* env, Entity* e) {
-    float hx = e->heading_x;
-    float hy = e->heading_y;
-    if (hx == 0.0f && hy == 0.0f) {
-        hx = cosf(e->heading);
-        hy = sinf(e->heading);
+    float u = (float)(rand_r(&env->rng) % 10000) / 10000.0f;
+    float d = MACRO_GOAL_SHORT_MIN + u * (MACRO_GOAL_SHORT_MAX - MACRO_GOAL_SHORT_MIN);
+    int out_lane = e->macro_lane_i;
+    float out_s = 0.0f, gx = 0.0f, gy = 0.0f, gh = 0.0f;
+    if (!macro_walk(env, e->macro_lane_i, e->macro_s, d,
+            &out_lane, &out_s, &gx, &gy, &gh)) {
+        // End of this graph chain: wrap onto a lane with enough remaining
+        // centerline. Never place a goal by flying along heading (off-road).
+        int wrap = macro_pick_wrap_lane(env, d + 5.0f);
+        if (wrap >= 0) {
+            macro_place_on_lane(e, &env->entities[wrap], 5.0f, MACRO_CRUISE_SPEED);
+            e->macro_lane_i = wrap;
+        }
+        if (!macro_walk(env, e->macro_lane_i, e->macro_s, d,
+                &out_lane, &out_s, &gx, &gy, &gh)) {
+            float rem = macro_chain_remaining(env, e->macro_lane_i, e->macro_s);
+            float along = rem > 1.0f ? rem - 0.5f : 0.0f;
+            if (!macro_walk(env, e->macro_lane_i, e->macro_s, along,
+                    &out_lane, &out_s, &gx, &gy, &gh)) {
+                Entity* lane = (e->macro_lane_i >= 0 && e->macro_lane_i < env->num_entities)
+                    ? &env->entities[e->macro_lane_i] : NULL;
+                if (lane && lane_is_driveable(lane)) {
+                    point_along_lane(lane, e->macro_s, &gx, &gy, &gh);
+                    out_lane = e->macro_lane_i;
+                    out_s = e->macro_s;
+                } else {
+                    gx = e->x;
+                    gy = e->y;
+                    out_lane = e->macro_lane_i;
+                    out_s = e->macro_s;
+                }
+            }
+        }
     }
-    float da = (env->macro_end_ax - e->x) * hx + (env->macro_end_ay - e->y) * hy;
-    float db = (env->macro_end_bx - e->x) * hx + (env->macro_end_by - e->y) * hy;
-    float ex = env->macro_end_ax;
-    float ey = env->macro_end_ay;
-    if (db > da) {
-        ex = env->macro_end_bx;
-        ey = env->macro_end_by;
-    }
-    float dist_to_end = relative_distance_2d(e->x, e->y, ex, ey);
-    float d = macro_sample_goal_dist(env, dist_to_end);
-    float gx = e->x + d * hx;
-    float gy = e->y + d * hy;
-    macro_snap_to_lane(env, gx, gy, &e->goal_position_x, &e->goal_position_y);
+    e->goal_position_x = gx;
+    e->goal_position_y = gy;
     e->goal_position_z = 0.0f;
-    if (relative_distance_2d(e->x, e->y, e->goal_position_x, e->goal_position_y)
-        < MIN_DISTANCE_TO_GOAL + 1.0f) {
-        e->goal_position_x = e->x + d * hx;
-        e->goal_position_y = e->y + d * hy;
-    }
+    e->macro_goal_lane = out_lane;
+    e->macro_goal_s = out_s;
+    e->prev_goal_dist = relative_distance_2d(e->x, e->y, gx, gy);
 }
 
 // Replace map objects with NUM_AGENTS vehicles placed uniformly along lanes.
@@ -1098,19 +1289,18 @@ static void spawn_macro_agents(Drive* env) {
     env->num_entities = n_agents + n_roads;
 
     int n_lanes = 0;
+    int n_long_seg = 0;
     float total_len = 0.0f;
     float* lane_len = (float*)calloc((size_t)n_roads, sizeof(float));
     int* lane_idx = (int*)calloc((size_t)n_roads, sizeof(int));
     for (int i = 0; i < n_roads; i++) {
         Entity* lane = &env->entities[n_agents + i];
         if (lane->type != ROAD_LANE || lane->array_size < 2) continue;
-        float L = 0.0f;
-        for (int j = 0; j < lane->array_size - 1; j++) {
-            float dx = lane->traj_x[j + 1] - lane->traj_x[j];
-            float dy = lane->traj_y[j + 1] - lane->traj_y[j];
-            L += sqrtf(dx * dx + dy * dy);
+        if (!lane_is_driveable(lane)) {
+            n_long_seg++;
+            continue;
         }
-        if (L < 1.0f) continue;
+        float L = lane_polyline_length(lane);
         lane_idx[n_lanes] = n_agents + i;
         lane_len[n_lanes] = L;
         total_len += L;
@@ -1136,46 +1326,57 @@ static void spawn_macro_agents(Drive* env) {
     env->macro_end_by = end_by;
     float highway_len = relative_distance_2d(end_ax, end_ay, end_bx, end_by);
     if (env->max_episode_length <= 0) env->max_episode_length = 4096;
+    macro_build_succ(env);
+    int n_succ = 0;
+    for (int i = 0; i < env->num_entities; i++) {
+        if (env->macro_lane_succ && env->macro_lane_succ[i] >= 0) n_succ++;
+    }
+    float* spawn_len = (float*)calloc((size_t)n_lanes, sizeof(float));
+    float spawn_total = 0.0f;
+    float need = MACRO_GOAL_SHORT_MAX + 1.0f;
+    for (int i = 0; i < n_lanes; i++) {
+        float rem0 = macro_chain_remaining(env, lane_idx[i], 0.0f);
+        float valid = rem0 - need;
+        if (valid < 0.0f) valid = 0.0f;
+        if (valid > lane_len[i]) valid = lane_len[i];
+        spawn_len[i] = valid;
+        spawn_total += valid;
+    }
     printf("macro: highway %.0fm  ends (%.0f,%.0f)-(%.0f,%.0f)  episode_len=%d\n",
         highway_len, end_ax, end_ay, end_bx, end_by, env->max_episode_length);
+    printf("macro: road graph %d lanes (%.0fm), %d with successor, spawnable %.0fm, skipped %d undriveable\n",
+        n_lanes, total_len, n_succ, spawn_total, n_long_seg);
 
-    float spacing = total_len / (float)n_agents;
+    if (spawn_total < 1.0f) {
+        spawn_total = total_len;
+        for (int i = 0; i < n_lanes; i++) spawn_len[i] = lane_len[i];
+    }
+    float spacing = spawn_total / (float)n_agents;
     for (int a = 0; a < n_agents; a++) {
         float target = ((float)a + 0.5f) * spacing;
-        float x = 0.0f, y = 0.0f, heading = 0.0f;
-        float sample = target;
-        while (sample >= total_len) sample -= total_len;
+        while (target >= spawn_total) target -= spawn_total;
         int li = 0;
         float acc = 0.0f;
         for (int i = 0; i < n_lanes; i++) {
-            if (acc + lane_len[i] >= sample) {
+            if (acc + spawn_len[i] >= target) {
                 li = i;
                 break;
             }
-            acc += lane_len[i];
+            acc += spawn_len[i];
             li = i;
         }
         Entity* lane = &env->entities[lane_idx[li]];
-        point_along_lane(lane, sample - acc, &x, &y, &heading);
-
         Entity* e = &env->entities[a];
         alloc_vehicle_entity(e);
-        for (int t = 0; t < TRAJECTORY_LENGTH; t++) {
-            e->traj_x[t] = x;
-            e->traj_y[t] = y;
-            e->traj_z[t] = 0.0f;
-            e->traj_heading[t] = heading;
-            e->traj_valid[t] = 1;
-        }
-        e->x = x;
-        e->y = y;
-        e->heading = heading;
-        e->heading_x = cosf(heading);
-        e->heading_y = sinf(heading);
+        e->macro_lane_i = lane_idx[li];
+        e->macro_spawn_lane = lane_idx[li];
+        macro_place_on_lane(e, lane, target - acc, MACRO_CRUISE_SPEED);
+        e->macro_spawn_s = e->macro_s;
         macro_assign_goal(env, e);
     }
     free(lane_len);
     free(lane_idx);
+    free(spawn_len);
 }
 
 // Initialization / Cleanup
@@ -1193,6 +1394,7 @@ void init(Drive* env) {
         env->max_episode_length = TRAJECTORY_LENGTH;
     }
     set_means(env);
+    env->macro_lane_succ = NULL;
     if (env->mode == DRIVE_MACRO) {
         spawn_macro_agents(env);
         if (env->max_episode_length <= 0) env->max_episode_length = 4096;
@@ -1227,6 +1429,8 @@ void puf_close(Drive* env) {
     free(env->neighbor_cache_indices);
     free(env->static_agent_indices);
     free(env->expert_static_agent_indices);
+    free(env->macro_lane_succ);
+    env->macro_lane_succ = NULL;
 }
 
 // Dynamics
@@ -1393,7 +1597,12 @@ void puf_reset(Drive* env) {
         env->entities[agent_idx].collided_before_goal = 0;
         env->entities[agent_idx].reached_goal_this_episode = 0;
         if (env->mode == DRIVE_MACRO) {
-            macro_assign_goal(env, &env->entities[agent_idx]);
+            Entity* e = &env->entities[agent_idx];
+            if (e->macro_spawn_lane >= 0) {
+                e->macro_lane_i = e->macro_spawn_lane;
+                e->macro_s = e->macro_spawn_s;
+            }
+            macro_assign_goal(env, e);
         }
 
         collision_check(env, agent_idx);
@@ -1518,12 +1727,24 @@ void puf_step(Drive* env) {
             env->entities[agent_idx].x, env->entities[agent_idx].y,
             env->entities[agent_idx].goal_position_x, env->entities[agent_idx].goal_position_y);
 
+        if (env->mode == DRIVE_MACRO) {
+            Entity* e = &env->entities[agent_idx];
+            if (e->prev_goal_dist > 0.0f) {
+                float progress = (e->prev_goal_dist - distance_to_goal) * MACRO_GOAL_PROGRESS;
+                env->agents[i].rewards[0] += progress;
+                env->logs[i].episode_return += progress;
+            }
+            e->prev_goal_dist = distance_to_goal;
+        }
+
         if (distance_to_goal < MIN_DISTANCE_TO_GOAL) {
             if (env->mode == DRIVE_MACRO) {
                 env->agents[i].rewards[0] += 1.0f;
                 env->logs[i].episode_return += 1.0f;
                 env->entities[agent_idx].reached_goal_this_episode = 1;
                 env->entities[agent_idx].reached_goal = 0;
+                env->entities[agent_idx].macro_lane_i = env->entities[agent_idx].macro_goal_lane;
+                env->entities[agent_idx].macro_s = env->entities[agent_idx].macro_goal_s;
                 macro_assign_goal(env, &env->entities[agent_idx]);
             } else if (env->entities[agent_idx].respawn_timestep != -1) {
                 env->agents[i].rewards[0] += env->reward_goal_post_respawn;

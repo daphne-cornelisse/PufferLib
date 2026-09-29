@@ -185,8 +185,12 @@ resources/**/*_weights.bin
 
 # Pretrained weights live on puffer.ai; fetched on first load
 resources/**/*weights*.bin
+!resources/drive/drive_weights.bin
 resources/onlyfish/danadvantage.bin
 resources/onlyfish/lonelypuff.bin
+
+# Local CPU eval binary (./build.sh drive drive_eval --cpu)
+drive_eval
 
 
 # Local refactor baselines (not for commit)

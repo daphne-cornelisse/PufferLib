@@ -7,6 +7,10 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <time.h>
+#ifndef PLATFORM_WEB
+#include <unistd.h>
+#include <sys/wait.h>
+#endif
 
 typedef struct {
     void* data;
@@ -638,6 +642,83 @@ void free_puffernet(PufferNet* net) {
 
 #include ENV_HEADER
 
+#ifndef PLATFORM_WEB
+typedef struct {
+    int pipefd[2];
+    pid_t pid;
+    int open;
+    int frames;
+} PufRec;
+
+static int puf_rec_open(PufRec* rec, const char* path, int w, int h, int fps) {
+    if (pipe(rec->pipefd) == -1) {
+        fprintf(stderr, "record: pipe failed\n");
+        return 0;
+    }
+    rec->pid = fork();
+    if (rec->pid == -1) {
+        fprintf(stderr, "record: fork failed\n");
+        return 0;
+    }
+    if (rec->pid == 0) {
+        close(rec->pipefd[1]);
+        dup2(rec->pipefd[0], STDIN_FILENO);
+        close(rec->pipefd[0]);
+        for (int fd = 3; fd < 256; fd++) {
+            close(fd);
+        }
+        char sz[32];
+        char fps_s[8];
+        snprintf(sz, sizeof(sz), "%dx%d", w, h);
+        snprintf(fps_s, sizeof(fps_s), "%d", fps);
+        execlp("ffmpeg", "ffmpeg", "-y",
+            "-f", "rawvideo", "-pix_fmt", "rgba",
+            "-s", sz, "-r", fps_s, "-i", "-",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-preset", "fast", "-crf", "20",
+            "-loglevel", "error",
+            path, NULL);
+        fprintf(stderr, "record: ffmpeg exec failed\n");
+        _exit(1);
+    }
+    close(rec->pipefd[0]);
+    rec->open = 1;
+    rec->frames = 0;
+    fprintf(stderr, "recording %s (%dx%d @ %dfps)\n", path, w, h, fps);
+    return 1;
+}
+
+static void puf_rec_frame(PufRec* rec, int w, int h) {
+    if (!rec->open) {
+        return;
+    }
+    rlDrawRenderBatchActive();
+    unsigned char* data = rlReadScreenPixels(w, h);
+    size_t nbytes = (size_t)w * (size_t)h * 4;
+    if (write(rec->pipefd[1], data, nbytes) != (ssize_t)nbytes) {
+        fprintf(stderr, "record: write failed after %d frames\n", rec->frames);
+        rec->open = 0;
+    }
+    RL_FREE(data);
+    rec->frames++;
+}
+
+static void puf_rec_close(PufRec* rec) {
+    if (!rec->open && rec->pid <= 0) {
+        return;
+    }
+    if (rec->pipefd[1] >= 0) {
+        close(rec->pipefd[1]);
+        rec->pipefd[1] = -1;
+    }
+    if (rec->pid > 0) {
+        waitpid(rec->pid, NULL, 0);
+        rec->pid = 0;
+    }
+    rec->open = 0;
+}
+#endif
+
 #if !defined(PUF_NMMO3_NET) && !defined(PUF_ASTEROIDS_NET) && !defined(PUF_MINIMAL_NET) && !defined(PUF_CRAFTAX_NET)
 static int puf_align8(int n) {
     return (n + 7) & ~7;
@@ -886,6 +967,30 @@ int main(int argc, char** argv) {
     if (!headless) {
         puf_render(&env);
     }
+#ifndef PLATFORM_WEB
+    PufRec rec = {.pipefd = {-1, -1}, .pid = 0, .open = 0, .frames = 0};
+    const char* rec_path = getenv("PUFFER_RECORD");
+    int rec_steps = 180;
+    int rec_fps = 30;
+    if (getenv("PUFFER_RECORD_STEPS")) {
+        rec_steps = atoi(getenv("PUFFER_RECORD_STEPS"));
+        if (rec_steps < 1) rec_steps = 180;
+    }
+    if (getenv("PUFFER_RECORD_FPS")) {
+        rec_fps = atoi(getenv("PUFFER_RECORD_FPS"));
+        if (rec_fps < 1) rec_fps = 30;
+    }
+    if (!headless && rec_path && rec_path[0] && IsWindowReady()) {
+        int rw = GetScreenWidth();
+        int rh = GetScreenHeight();
+        if ((rw & 1) || (rh & 1)) {
+            rw &= ~1;
+            rh &= ~1;
+        }
+        SetTargetFPS(rec_fps);
+        puf_rec_open(&rec, rec_path, rw, rh, rec_fps);
+    }
+#endif
     // Raylib 5.5 WindowShouldClose() on web always emscripten_sleep(16).
     // With ASYNCIFY that wait is ~40ms; plus puf_web_vsync rAF => ~18fps.
     // Pace frames only with puf_web_vsync. Native still uses WindowShouldClose.
@@ -897,6 +1002,11 @@ int main(int argc, char** argv) {
             : (!IsWindowReady() || !WindowShouldClose())) {
 #endif
         int ticks = 1;
+#ifndef PLATFORM_WEB
+        if (rec.open) {
+            ticks = 1;
+        } else
+#endif
         if (!headless) {
             double now = GetTime();
             ticks = 0;
@@ -962,6 +1072,14 @@ int main(int argc, char** argv) {
         }
         if (!headless) {
             puf_render(&env);
+#ifndef PLATFORM_WEB
+            if (rec.open) {
+                puf_rec_frame(&rec, GetScreenWidth() & ~1, GetScreenHeight() & ~1);
+                if (rec.frames >= rec_steps) {
+                    break;
+                }
+            }
+#endif
         }
     }
 
@@ -992,6 +1110,15 @@ int main(int argc, char** argv) {
         fflush(stdout);
     }
 
+#ifndef PLATFORM_WEB
+    if (rec.open || rec.pid > 0) {
+        int nframes = rec.frames;
+        puf_rec_close(&rec);
+        if (rec_path && rec_path[0]) {
+            fprintf(stderr, "wrote %s (%d frames)\n", rec_path, nframes);
+        }
+    }
+#endif
     puf_close(&env);
     puf_ini_free(&ini);
     return 0;

@@ -15,8 +15,8 @@ Step 2: Process to map binaries
 
 I24 (macro) single-map conversion:
   python ocean/drive/dataset.py --input resources/drive/i24/I24_map.json --output resources/drive/i24/I24_map.bin --preview resources/drive/i24/I24_map.png
-  Lane-only I24 JSON is extended with inferred ROAD_EDGE polylines (outer pavement
-  boundary) so off-road collision has geometry. Re-running is a no-op if edges exist.
+  I24 is one highway in the same schema as WOMD: stitch the sparse lane graph
+  into long centerlines, densify at 0.5 m, add left/right ROAD_EDGE polylines.
 """
 
 import json
@@ -100,134 +100,186 @@ I24_TYPE_TO_WORD = {
     "DRIVEWAY": "driveway",
 }
 
-# Half a standard 12 ft lane plus a small shoulder. Used when inferring
-# ROAD_EDGE from lane centerlines (I24 JSON ships lanes only).
-I24_LANE_HALF_WIDTH_M = 2.0
-I24_EDGE_CELL_M = 1.5
+# I24 ships a sparse lane graph of one highway. Convert it into the same
+# WOMD road schema: dense centerlines (0.5 m) plus left/right ROAD_EDGE
+# polylines. Join graph edges into long lanes; keep the mainline.
+I24_DENSIFY_M = 0.5
+I24_GRAPH_JOIN_M = 12.0
+I24_MAINLINE_MIN_M = 2000.0
+I24_EDGE_OFFSET_M = 4.0
 
 
-def _densify_polyline(pts, step):
-    out = []
+def _i24_xyz(p):
+    if isinstance(p, dict):
+        return (float(p["x"]), float(p["y"]), float(p.get("z", 0.0)))
+    return (
+        float(p[0]),
+        float(p[1]),
+        float(p[2]) if len(p) > 2 else 0.0,
+    )
+
+
+def _i24_plen(pts):
+    length = 0.0
     for a, b in zip(pts, pts[1:]):
-        dx = b[0] - a[0]
-        dy = b[1] - a[1]
-        dist = math.hypot(dx, dy)
-        n = max(1, int(math.ceil(dist / step)))
-        for i in range(n):
-            t = i / n
-            out.append((a[0] + t * dx, a[1] + t * dy, a[2] if len(a) > 2 else 0.0))
-    out.append((pts[-1][0], pts[-1][1], pts[-1][2] if len(pts[-1]) > 2 else 0.0))
-    return out
+        length += math.hypot(b[0] - a[0], b[1] - a[1])
+    return length
 
 
-def infer_road_edges_from_lanes(lane_polylines, half_width=I24_LANE_HALF_WIDTH_M, cell=I24_EDGE_CELL_M):
-    """Build outer ROAD_EDGE polylines from lane centerlines.
+def _i24_heading(pts, at_end=False):
+    a, b = (pts[-2], pts[-1]) if at_end else (pts[0], pts[1])
+    return math.atan2(b[1] - a[1], b[0] - a[0])
 
-    Stamp a paved disk along every lane, then trace the occupancy boundary so
-    internal lane lines are not treated as off-road walls.
+
+def i24_densify_lane_polyline(pl, step=I24_DENSIFY_M):
+    """Insert vertices so consecutive points are at most `step` meters apart.
+
+    WOMD lane geometry is sampled at ~0.5 m; I24 graph chords are 300–1500 m.
     """
-    if not lane_polylines:
-        return []
-
-    pts = []
-    for pl in lane_polylines:
-        if len(pl) < 2:
-            continue
-        raw = [(float(p[0]), float(p[1]), float(p[2]) if len(p) > 2 else 0.0) for p in pl]
-        pts.extend(_densify_polyline(raw, step=cell))
-    if not pts:
-        return []
-
-    pad = half_width + 2.0 * cell
-    min_x = min(p[0] for p in pts) - pad
-    min_y = min(p[1] for p in pts) - pad
-    max_x = max(p[0] for p in pts) + pad
-    max_y = max(p[1] for p in pts) + pad
-    nx = int(math.ceil((max_x - min_x) / cell)) + 1
-    ny = int(math.ceil((max_y - min_y) / cell)) + 1
-    occ = bytearray(nx * ny)
-
-    r_cells = int(math.ceil(half_width / cell))
-    r2 = half_width * half_width
-    for x, y, _z in pts:
-        ci = int((x - min_x) / cell)
-        cj = int((y - min_y) / cell)
-        for dj in range(-r_cells, r_cells + 1):
-            jj = cj + dj
-            if jj < 0 or jj >= ny:
-                continue
-            dy = dj * cell
-            for di in range(-r_cells, r_cells + 1):
-                ii = ci + di
-                if ii < 0 or ii >= nx:
-                    continue
-                dx = di * cell
-                if dx * dx + dy * dy <= r2:
-                    occ[jj * nx + ii] = 1
-
-    def occupied(i, j):
-        return 0 <= i < nx and 0 <= j < ny and occ[j * nx + i]
-
-    edges = []
-    for j in range(ny):
-        for i in range(nx):
-            if not occ[j * nx + i]:
-                continue
-            x0 = min_x + i * cell
-            y0 = min_y + j * cell
-            x1 = x0 + cell
-            y1 = y0 + cell
-            if not occupied(i - 1, j):
-                edges.append(((x0, y0), (x0, y1)))
-            if not occupied(i + 1, j):
-                edges.append(((x1, y0), (x1, y1)))
-            if not occupied(i, j - 1):
-                edges.append(((x0, y0), (x1, y0)))
-            if not occupied(i, j + 1):
-                edges.append(((x0, y1), (x1, y1)))
-
-    from collections import defaultdict
-    adj = defaultdict(list)
-    for a, b in edges:
-        adj[a].append(b)
-        adj[b].append(a)
-
-    used = set()
-    polylines = []
-    for start, nbrs in adj.items():
-        for nxt in nbrs:
-            key = (start, nxt) if start < nxt else (nxt, start)
-            if key in used:
-                continue
-            line = [start, nxt]
-            used.add(key)
-            cur = nxt
-            while True:
-                found = None
-                for n in adj[cur]:
-                    k = (cur, n) if cur < n else (n, cur)
-                    if k not in used:
-                        found = n
-                        used.add(k)
-                        break
-                if found is None:
-                    break
-                line.append(found)
-                cur = found
-                if cur == start:
-                    break
-            if len(line) >= 2:
-                polylines.append(line)
-
-    out = []
-    for pl in polylines:
-        geom = [{"x": p[0], "y": p[1], "z": 0.0} for p in pl]
-        if len(geom) > 10:
-            # dist() is squared; 400 ~= 20 m max edge after simplification
-            geom = simplify_polyline(geom, 2.0, 400.0)
-        if len(geom) >= 2:
-            out.append(geom)
+    if not pl or len(pl) < 2:
+        return list(pl or [])
+    pts = [_i24_xyz(p) for p in pl]
+    out = [pts[0]]
+    for a, b in zip(pts, pts[1:]):
+        dist = math.hypot(b[0] - a[0], b[1] - a[1])
+        n = max(1, int(math.ceil(dist / step))) if dist > 0 else 1
+        for i in range(1, n):
+            t = i / n
+            out.append((
+                a[0] + t * (b[0] - a[0]),
+                a[1] + t * (b[1] - a[1]),
+                a[2] + t * (b[2] - a[2]),
+            ))
+        out.append(b)
     return out
+
+
+def i24_extract_lanes(scenario):
+    lanes = []
+    for feat in scenario.get("map_features") or []:
+        if str(feat.get("type", "LANE")).upper() != "LANE":
+            continue
+        pl = feat.get("polyline") or []
+        if len(pl) >= 2:
+            lanes.append([_i24_xyz(p) for p in pl])
+    if lanes:
+        return lanes
+    for road in scenario.get("roads") or []:
+        if str(road.get("type", "")).lower() not in ("lane", "road_lane"):
+            continue
+        geom = road.get("geometry") or []
+        if len(geom) >= 2:
+            lanes.append([_i24_xyz(p) for p in geom])
+    return lanes
+
+
+def i24_stitch_lanes(lanes, join=I24_GRAPH_JOIN_M, max_dh=1.2):
+    """Join sparse graph edges end-to-end into WOMD-style long lane polylines."""
+    n = len(lanes)
+    succ = [-1] * n
+    for i, a in enumerate(lanes):
+        ax, ay = a[-1][0], a[-1][1]
+        ah = _i24_heading(a, at_end=True)
+        best, best_i, best_dh = join + 1.0, -1, 1e9
+        for j, b in enumerate(lanes):
+            if i == j:
+                continue
+            d = math.hypot(b[0][0] - ax, b[0][1] - ay)
+            if d > join:
+                continue
+            dh = abs(((_i24_heading(b) - ah + math.pi) % (2 * math.pi)) - math.pi)
+            if dh > max_dh:
+                continue
+            if d < best - 0.1 or (abs(d - best) < 0.1 and dh < best_dh):
+                best, best_i, best_dh = d, j, dh
+        succ[i] = best_i
+    pred = [-1] * n
+    for i, s in enumerate(succ):
+        if s >= 0 and pred[s] < 0:
+            pred[s] = i
+    used = [False] * n
+
+    def walk(start):
+        chain, cur = [], start
+        while cur >= 0 and not used[cur]:
+            used[cur] = True
+            chain.append(cur)
+            cur = succ[cur]
+        return chain
+
+    chains = []
+    for i in range(n):
+        if pred[i] < 0 and not used[i]:
+            chain = walk(i)
+            if chain:
+                chains.append(chain)
+    for i in range(n):
+        if not used[i]:
+            chain = walk(i)
+            if chain:
+                chains.append(chain)
+
+    stitched = []
+    for chain in chains:
+        pts = []
+        for k, idx in enumerate(chain):
+            pl = lanes[idx]
+            if k == 0:
+                pts.extend(pl)
+            elif math.hypot(pts[-1][0] - pl[0][0], pts[-1][1] - pl[0][1]) < 0.5:
+                pts.extend(pl[1:])
+            else:
+                pts.extend(pl)
+        if len(pts) >= 2:
+            stitched.append(pts)
+    return stitched
+
+
+def i24_keep_mainline(stitched, min_len=I24_MAINLINE_MIN_M):
+    """I24 is one highway: keep long carriageway lanes, drop short stubs."""
+    kept = [pl for pl in stitched if _i24_plen(pl) >= min_len]
+    return kept if kept else stitched
+
+
+def i24_offset_polyline(pts, dist):
+    out = []
+    n = len(pts)
+    for i, p in enumerate(pts):
+        if i < n - 1:
+            dx, dy = pts[i + 1][0] - p[0], pts[i + 1][1] - p[1]
+        else:
+            dx, dy = p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]
+        h = math.hypot(dx, dy) or 1.0
+        nx, ny = -dy / h, dx / h
+        out.append((p[0] + nx * dist, p[1] + ny * dist, p[2] if len(p) > 2 else 0.0))
+    return out
+
+
+def i24_highway_edges(lanes, offset=I24_EDGE_OFFSET_M):
+    """WOMD-style left/right ROAD_EDGE polylines from outermost lanes."""
+    if not lanes:
+        return []
+    ref = _i24_heading(lanes[0])
+    dirs = [[], []]
+    for pl in lanes:
+        dh = abs(((_i24_heading(pl) - ref + math.pi) % (2 * math.pi)) - math.pi)
+        dirs[0 if dh <= math.pi / 2 else 1].append(pl)
+    edges = []
+    for group in dirs:
+        if not group:
+            continue
+        longest = max(group, key=_i24_plen)
+        gh = _i24_heading(longest)
+        nx, ny = -math.sin(gh), math.cos(gh)
+        ox, oy = group[0][0][0], group[0][0][1]
+
+        def mean_lat(pl):
+            return sum((p[0] - ox) * nx + (p[1] - oy) * ny for p in pl) / len(pl)
+
+        ranked = sorted(group, key=mean_lat)
+        edges.append(i24_offset_polyline(ranked[-1], offset))
+        edges.append(i24_offset_polyline(ranked[0], -offset))
+    return edges
 
 
 def _polyline_to_geometry(polyline):
@@ -261,54 +313,33 @@ def _road_record(road_type_word, geometry, map_element_id):
     }
 
 
-def i24_scenario_has_road_edges(scenario):
-    for feat in scenario.get("map_features", []):
-        if str(feat.get("type", "")).upper() == "ROAD_EDGE":
-            return True
-    return False
-
-
-def i24_add_inferred_road_edges(scenario):
-    """Append inferred ROAD_EDGE features when the scenario has lanes only."""
-    if i24_scenario_has_road_edges(scenario):
-        return scenario, 0
-    lanes = []
-    max_id = -1
-    for feat in scenario.get("map_features", []):
-        max_id = max(max_id, int(feat.get("id", -1)))
-        if str(feat.get("type", "LANE")).upper() != "LANE":
-            continue
-        pl = feat.get("polyline") or []
-        if len(pl) >= 2:
-            lanes.append(pl)
-    edges = infer_road_edges_from_lanes(lanes)
-    for geom in edges:
-        max_id += 1
-        scenario.setdefault("map_features", []).append({
-            "id": max_id,
-            "type": "ROAD_EDGE",
-            "polyline": [[p["x"], p["y"], p["z"]] for p in geom],
-        })
-    return scenario, len(edges)
-
-
 def i24_scenario_to_map_data(scenario, include_objects=False):
-    """Convert an I24 JSON scenario (map_features polylines) to WOMD-style map_data.
+    """Convert I24 map_features into a WOMD roads dict.
 
-    Macro traffic sim spawns agents in C from NUM_AGENTS, so objects are omitted
-    unless include_objects is set. Lane-only I24 maps get inferred ROAD_EDGE
-    polylines so off-road collision has geometry to test against.
+    Stitch the sparse lane graph into long centerlines (one highway), densify
+    at 0.5 m like WOMD, and add left/right ROAD_EDGE polylines. Macro spawn
+    does not use scenario objects unless include_objects is set.
     """
-    scenario, n_inferred = i24_add_inferred_road_edges(scenario)
+    raw_lanes = i24_extract_lanes(scenario)
+    stitched = i24_stitch_lanes(raw_lanes)
+    mainline = i24_keep_mainline(stitched)
+    lanes = [i24_densify_lane_polyline(pl) for pl in mainline]
+    edge_pls = i24_highway_edges(lanes)
+
     roads = []
-    for feat in scenario.get("map_features", []):
-        geometry = _polyline_to_geometry(feat.get("polyline", []))
-        if len(geometry) < 2:
-            continue
-        feat_type = str(feat.get("type", "LANE")).upper()
-        word = I24_TYPE_TO_WORD.get(feat_type, "lane")
-        mid = 2 if feat_type == "LANE" else 15 if feat_type == "ROAD_EDGE" else 5 if feat_type == "ROAD_LINE" else 0
-        roads.append(_road_record(word, geometry, mid))
+    rid = 0
+    for pl in lanes:
+        geom = _polyline_to_geometry(pl)
+        rec = _road_record("lane", geom, 2)
+        rec["id"] = rid
+        rid += 1
+        roads.append(rec)
+    for pl in edge_pls:
+        geom = _polyline_to_geometry(pl)
+        rec = _road_record("road_edge", geom, 15)
+        rec["id"] = rid
+        rid += 1
+        roads.append(rec)
 
     objects = []
     if include_objects:
@@ -343,7 +374,7 @@ def i24_scenario_to_map_data(scenario, include_objects=False):
                 "mark_as_expert": 0,
             })
 
-    return {"objects": objects, "roads": roads, "inferred_road_edges": n_inferred}
+    return {"objects": objects, "roads": roads, "name": "i24", "scenario_id": scenario.get("scenario_id", "i24")}
 
 
 def load_map_json(path):
@@ -448,28 +479,34 @@ def write_map_preview_png(map_data, output_file, size=2048, pad=0.04):
 def convert_json_file(json_path, binary_path, preview_path=None):
     with open(json_path, "r") as f:
         raw = json.load(f)
-    inferred = 0
     if isinstance(raw, list) and raw:
-        _, inferred = i24_add_inferred_road_edges(raw[0])
-        if inferred:
-            with open(json_path, "w") as f:
-                json.dump(raw, f)
-            print(f"Added {inferred} ROAD_EDGE features to {json_path}")
         map_data = i24_scenario_to_map_data(raw[0])
     elif isinstance(raw, dict) and "map_features" in raw and "roads" not in raw:
-        _, inferred = i24_add_inferred_road_edges(raw)
-        if inferred:
-            with open(json_path, "w") as f:
-                json.dump(raw, f)
-            print(f"Added {inferred} ROAD_EDGE features to {json_path}")
         map_data = i24_scenario_to_map_data(raw)
     else:
         map_data = raw
+        # Already-WOMD I24 JSON that was stitched once: re-run if it still
+        # looks like the sparse graph (many short lanes, no road_edge).
+        roads = map_data.get("roads") or []
+        n_lane = sum(1 for r in roads if str(r.get("type", "")).lower() == "lane")
+        n_edge = sum(1 for r in roads if str(r.get("type", "")).lower() == "road_edge")
+        if n_lane > 50 and n_edge == 0:
+            map_data = i24_scenario_to_map_data(map_data)
+    if map_data.get("name") == "i24" or (isinstance(raw, list) or (isinstance(raw, dict) and "map_features" in raw)):
+        with open(json_path, "w") as f:
+            json.dump({
+                "name": "i24",
+                "scenario_id": map_data.get("scenario_id", "i24"),
+                "objects": map_data.get("objects", []),
+                "roads": map_data.get("roads", []),
+            }, f)
+        print(f"Wrote WOMD-schema map JSON {json_path}")
     save_map_binary(map_data, str(binary_path), 0)
     n_obj = len(map_data.get("objects", []))
     n_road = len(map_data.get("roads", []))
     n_edge = sum(1 for r in map_data.get("roads", []) if r.get("type") == "road_edge")
-    print(f"Wrote {binary_path} ({n_obj} objects, {n_road} roads, {n_edge} road_edge)")
+    n_lane = sum(1 for r in map_data.get("roads", []) if r.get("type") == "lane")
+    print(f"Wrote {binary_path} ({n_obj} objects, {n_lane} lane, {n_edge} road_edge, {n_road} roads)")
     if preview_path:
         write_map_preview_png(map_data, str(preview_path))
         print(f"Wrote {preview_path}")
